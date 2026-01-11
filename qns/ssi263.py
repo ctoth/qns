@@ -242,6 +242,8 @@ class SSI263:
 
         elif reg == self.REG_RATEINF:
             self.rate_inflection = value
+            rate = (value >> 4) & 0x0F
+            print(f"[SSI263] RATEINF: 0x{value:02X} rate={rate}")
             if self._synth:
                 self._synth.write_rateinf(value)
 

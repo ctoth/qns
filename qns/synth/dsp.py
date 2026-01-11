@@ -65,6 +65,9 @@ def time_stretch(samples: np.ndarray, rate: int, duration: int) -> np.ndarray:
     Returns:
         Time-stretched samples (int16)
     """
+    # HACK: Disable time stretching for now - dur=3 causes too much compression
+    return samples.copy()
+
     if duration == 0 or duration == 1:
         # No averaging
         return samples.copy()
@@ -99,6 +102,10 @@ def pitch_shift(samples: np.ndarray, inflection: int) -> np.ndarray:
     Returns:
         Pitch-shifted samples (int16)
     """
+    # HACK: Disable pitch shifting for now - inflection values from firmware
+    # seem to be incorrect, causing very low pitched audio
+    return samples.copy()
+
     # Calculate pitch ratio
     # Inflection 2048 = neutral, range approximately 0.5x to 2.0x
     ratio = 1.0 + (inflection - 2048) / 4096.0

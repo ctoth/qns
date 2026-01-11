@@ -19,9 +19,9 @@ class SSI263State:
     """Current SSI-263 register state."""
 
     phoneme: int = 0  # 6-bit (0-63)
-    duration: int = 3  # 2-bit (0-3)
-    inflection: int = 0  # 12-bit (0-4095)
-    rate: int = 0  # 4-bit (0-15)
+    duration: int = 0  # 2-bit (0-3), 0 = no averaging (longest output)
+    inflection: int = 2048  # 12-bit (0-4095), 2048 = neutral pitch
+    rate: int = 8  # 4-bit (0-15), 8 = middle speed
     articulation: int = 0  # 3-bit (0-7)
     amplitude: int = 15  # 4-bit (0-15)
     filter_freq: int = 0  # 8-bit (0-255)
@@ -189,13 +189,30 @@ class SSI263Synth:
         """Get processed audio samples for a phoneme.
 
         Returns float32 samples normalized to -1.0 to 1.0.
+
+        SSI-263 phoneme mapping (from AppleWin):
+        - Phoneme 0: pause (return silence)
+        - Phoneme 1: missing sample, maps to phoneme 2
+        - Phonemes 2-63: map to data indices 0-61 (subtract 2)
         """
-        # Get raw samples (handle out of range phonemes)
-        if phoneme >= len(PHONEME_INFO):
+        # Handle pause phoneme
+        if phoneme == 0:
+            # Return short silence for pause
+            return np.zeros(int(self.sample_rate * 0.05), dtype=np.float32)
+
+        # Map phoneme 1 to phoneme 2 (missing sample workaround)
+        if phoneme == 1:
+            phoneme = 2
+
+        # Convert SSI-263 phoneme code to data index (subtract 2)
+        data_index = phoneme - 2
+
+        # Validate index
+        if data_index < 0 or data_index >= len(PHONEME_INFO):
             # Return silence for invalid phonemes
             return np.zeros(100, dtype=np.float32)
 
-        samples = get_phoneme_samples(phoneme)
+        samples = get_phoneme_samples(data_index)
 
         # Apply DSP chain
         samples = apply_amplitude(samples, amplitude)
@@ -214,7 +231,7 @@ class SSI263Synth:
         # HACK: Force amplitude to 15 if it's 0 (workaround for VOLUME bug)
         if self.state.amplitude == 0:
             self.state.amplitude = 15
-        print(f"[SYNTH] _play_current_phoneme: phon={phoneme}, amp={self.state.amplitude}, ctl={self.state.control}")
+        print(f"[SYNTH] _play_current_phoneme: phon={phoneme}, amp={self.state.amplitude}, infl={self.state.inflection}, dur={self.state.duration}")
 
         # Notify callback
         if self._phoneme_callback:
