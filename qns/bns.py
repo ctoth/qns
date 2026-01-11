@@ -36,7 +36,7 @@ class BNS:
 
         # Peripherals
         self.ssi263 = SSI263(base_port=self.PORT_SSI263)
-        self.keyboard = BrailleKeyboard(port=self.PORT_KEYBOARD)
+        self.keyboard = BrailleKeyboard(port=self.PORT_KEYBOARD, keyclr_port=self.PORT_KEYCLR)
         self.display = BrailleDisplay(base_port=self.PORT_DISPLAY)
         self.watchdog = Watchdog(port=self.PORT_WATCHDOG)
 
@@ -56,6 +56,9 @@ class BNS:
             io_read=self._io_read,
             io_write=self._io_write,
         )
+
+        # Connect keyboard interrupt (INT2) to CPU
+        self.keyboard.set_irq_callback(lambda state: self.cpu.set_irq(2, state))
 
     def _mem_read(self, addr: int) -> int:
         """Memory read callback for CPU."""
@@ -79,8 +82,9 @@ class BNS:
         for port, read_h, write_h in self.ssi263.get_io_handlers():
             self.io.register(port, read_h, write_h)
 
-        # Keyboard (0x40)
+        # Keyboard (0x40) and keyclr (0x20)
         self.io.register(self.PORT_KEYBOARD, self.keyboard.read, self.keyboard.write)
+        self.io.register(self.PORT_KEYCLR, self.keyboard.keyclr_read, self.keyboard.keyclr_write)
 
         # Display (0x80-0x83)
         self.io.register_range(0x80, 0x83, self.display.read, self.display.write)
@@ -94,13 +98,25 @@ class BNS:
                         lambda p, v: self.memory.set_mmu(cbar=v))
 
     def load_rom(self, path: Path | str) -> None:
-        """Load ROM file."""
+        """Load ROM file.
+
+        Handles both raw firmware and .bns update packages.
+        Update packages have firmware at IMAGE_OFFSET (0x3000).
+        """
         path = Path(path)
         data = path.read_bytes()
 
-        # Verify BNS header
-        if len(data) >= 5 and data[2:5] != b'BNS':
-            print(f"Warning: No BNS magic at offset 2 (got {data[2:5]!r})")
+        # Check for BNS update package format
+        if len(data) >= 5 and data[2:5] == b'BNS':
+            # This is an update package - firmware is at offset 0x3000
+            IMAGE_OFFSET = 0x3000
+            if len(data) > IMAGE_OFFSET:
+                firmware = data[IMAGE_OFFSET:]
+                print(f"Extracted firmware from update package at offset 0x{IMAGE_OFFSET:X}")
+                print(f"  Package size: {len(data)} bytes, Firmware size: {len(firmware)} bytes")
+                data = firmware
+            else:
+                print(f"Warning: BNS package too small for firmware extraction")
 
         self.memory.load_rom(data)
         print(f"Loaded ROM: {path.name} ({len(data)} bytes)")

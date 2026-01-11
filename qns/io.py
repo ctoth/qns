@@ -2,11 +2,27 @@
 
 
 class BrailleKeyboard:
-    """8-dot Braille keyboard input."""
+    """8-dot Braille keyboard input with interrupt support.
 
-    def __init__(self, port: int = 0x40):
+    The BNS uses INT2 for keyboard interrupts. When a key is pressed,
+    INT2 is asserted. The ISR reads the keyboard port and clears the
+    interrupt by writing to the keyclr port.
+    """
+
+    def __init__(self, port: int = 0x40, keyclr_port: int = 0x20):
         self.port = port
+        self.keyclr_port = keyclr_port
         self.dots = 0x00  # Bits 0-7 = dots 1-8
+        self.latched = False  # Key press latched (pending interrupt)
+        self._irq_callback = None  # Callback to trigger INT2
+
+    def set_irq_callback(self, callback):
+        """Set callback for triggering keyboard interrupt.
+
+        Args:
+            callback: Function(state) where state is 1=assert, 0=clear
+        """
+        self._irq_callback = callback
 
     def read(self, port: int) -> int:
         """Read current key state."""
@@ -14,11 +30,31 @@ class BrailleKeyboard:
 
     def write(self, port: int, value: int):
         """Write to keyboard (latch clear)."""
-        pass  # Keyboard is input only
+        pass  # Keyboard port is input only
+
+    def keyclr_read(self, port: int) -> int:
+        """Read from keyclr port - clears keyboard latch."""
+        self._clear_latch()
+        return 0xFF
+
+    def keyclr_write(self, port: int, value: int):
+        """Write to keyclr port - clears keyboard latch."""
+        self._clear_latch()
+
+    def _clear_latch(self):
+        """Clear the keyboard latch and interrupt."""
+        if self.latched:
+            self.latched = False
+            if self._irq_callback:
+                self._irq_callback(0)  # Clear INT2
 
     def press(self, dots: int):
         """Simulate key press (dots as bitmask)."""
         self.dots = dots & 0xFF
+        if self.dots and not self.latched:
+            self.latched = True
+            if self._irq_callback:
+                self._irq_callback(1)  # Assert INT2
 
     def release(self):
         """Release all keys."""

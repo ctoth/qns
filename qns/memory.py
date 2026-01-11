@@ -54,21 +54,21 @@ class Memory:
         return is_rom, physical
 
     def read(self, addr: int) -> int:
-        """Read byte from logical address."""
-        is_rom, physical = self._translate(addr)
-        if is_rom:
-            return self.rom[physical] if physical < len(self.rom) else 0xFF
+        """Read byte from physical address (z180emu does MMU translation)."""
+        addr &= 0xFFFFF  # 20-bit physical address
+        if addr < len(self.rom):
+            return self.rom[addr]
         else:
-            ram_addr = physical - len(self.rom)
+            ram_addr = addr - len(self.rom)
             return self.ram[ram_addr] if ram_addr < len(self.ram) else 0xFF
 
     def write(self, addr: int, value: int):
-        """Write byte to logical address."""
-        is_rom, physical = self._translate(addr)
-        if is_rom:
+        """Write byte to physical address (z180emu does MMU translation)."""
+        addr &= 0xFFFFF  # 20-bit physical address
+        if addr < len(self.rom):
             pass  # ROM is read-only
         else:
-            ram_addr = physical - len(self.rom)
+            ram_addr = addr - len(self.rom)
             if ram_addr < len(self.ram):
                 self.ram[ram_addr] = value & 0xFF
 

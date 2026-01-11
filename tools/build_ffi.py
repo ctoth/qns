@@ -87,6 +87,10 @@ void qns_z180_destroy(qns_z180_t* cpu);
 // Reset the CPU
 void qns_z180_reset(qns_z180_t* cpu);
 
+// Debug counters
+unsigned long qns_get_io_read_count(void);
+unsigned long qns_get_io_write_count(void);
+
 // Execute for given cycles, return actual cycles executed
 int qns_z180_execute(qns_z180_t* cpu, int cycles);
 
@@ -160,8 +164,12 @@ static void mem_write_thunk(offs_t addr, UINT8 data) {{
     }}
 }}
 
-// IO read/write thunks
+// IO read/write thunks - with debug counters
+static unsigned long io_read_count = 0;
+static unsigned long io_write_count = 0;
+
 static UINT8 io_read_thunk(offs_t port) {{
+    io_read_count++;
     if (g_cpu && g_cpu->py_io_read) {{
         return g_cpu->py_io_read(port);
     }}
@@ -169,10 +177,14 @@ static UINT8 io_read_thunk(offs_t port) {{
 }}
 
 static void io_write_thunk(offs_t port, UINT8 data) {{
+    io_write_count++;
     if (g_cpu && g_cpu->py_io_write) {{
         g_cpu->py_io_write(port, data);
     }}
 }}
+
+unsigned long qns_get_io_read_count(void) {{ return io_read_count; }}
+unsigned long qns_get_io_write_count(void) {{ return io_write_count; }}
 
 // IRQ acknowledge callback
 static int irq_ack(device_t* device, int irqnum) {{
