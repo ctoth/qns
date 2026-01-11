@@ -104,3 +104,26 @@ uv run python -m qns.bns --audio roms/NFB99/BSPENG/bspeng.bns
 2. **Missing Peripherals**
    - RTC (0x60-0x6F) - returns 0xFF
    - Status ports may need proper emulation
+
+## Development Principle: Tooling First
+
+**This project lives and dies on tooling.**
+
+1. **Always use project tooling** - CLI tools in `qns/bns.py` and `tools/`
+2. **If tooling doesn't exist, build it first** - Spec what you need, dispatch subagent to implement, then use it
+3. **Expand the CLI** - Add click commands for any repeated debugging task
+4. **Invest in visibility** - Every mystery is a missing debug tool
+
+Current CLI (`qns/bns.py`):
+```bash
+uv run python -m qns.bns --help
+uv run python -m qns.bns --cycles N --stats rom.bns
+uv run python -m qns.bns --trace-writes 0xADDR rom.bns
+uv run python -m qns.bns --trace-io rom.bns
+```
+
+When adding tools, consider:
+- What question am I trying to answer?
+- What visibility do I lack?
+- Can z180emu expose more state? (modify C, rebuild CFFI)
+- Can the CLI filter/format output better?
