@@ -3,17 +3,23 @@
 
 class Memory:
     """
-    Z180 memory with MMU support.
+    Z180 memory with MMU support for BNS hardware.
 
-    The Z180 MMU divides the 64KB logical space into three areas:
-    - Common Area 0: 0x0000 to (CBAR[3:0] << 12) - 1
-    - Bank Area: (CBAR[3:0] << 12) to (CBAR[7:4] << 12) - 1
-    - Common Area 1: (CBAR[7:4] << 12) to 0xFFFF
+    Physical memory layout (from BNS hardware):
+    - Physical 0x00000-0x0FFFF: ROM (64KB max, typically 27512 EPROM)
+    - Physical 0x10000-0x8FFFF: RAM (512KB)
 
-    Physical addresses are 20-bit (1MB addressable).
+    z180emu handles MMU translation internally and passes physical addresses
+    to our callbacks. We just need to provide ROM at low addresses and
+    RAM at 0x10000+.
     """
 
-    def __init__(self, ram_size: int = 512 * 1024, rom_size: int = 256 * 1024):
+    # BNS memory map constants
+    ROM_START = 0x00000
+    ROM_SIZE = 0x10000  # 64KB ROM
+    RAM_START = 0x10000  # RAM starts at physical 64KB
+
+    def __init__(self, ram_size: int = 512 * 1024, rom_size: int = 64 * 1024):
         self.ram = bytearray(ram_size)
         self.rom = bytearray(rom_size)
 
@@ -56,19 +62,22 @@ class Memory:
     def read(self, addr: int) -> int:
         """Read byte from physical address (z180emu does MMU translation)."""
         addr &= 0xFFFFF  # 20-bit physical address
-        if addr < len(self.rom):
-            return self.rom[addr]
+        if addr < self.RAM_START:
+            # ROM region (physical 0x00000-0x0FFFF)
+            return self.rom[addr] if addr < len(self.rom) else 0xFF
         else:
-            ram_addr = addr - len(self.rom)
+            # RAM region (physical 0x10000+)
+            ram_addr = addr - self.RAM_START
             return self.ram[ram_addr] if ram_addr < len(self.ram) else 0xFF
 
     def write(self, addr: int, value: int):
         """Write byte to physical address (z180emu does MMU translation)."""
         addr &= 0xFFFFF  # 20-bit physical address
-        if addr < len(self.rom):
-            pass  # ROM is read-only
+        if addr < self.RAM_START:
+            pass  # ROM region is read-only
         else:
-            ram_addr = addr - len(self.rom)
+            # RAM region (physical 0x10000+)
+            ram_addr = addr - self.RAM_START
             if ram_addr < len(self.ram):
                 self.ram[ram_addr] = value & 0xFF
 

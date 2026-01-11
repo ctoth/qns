@@ -1,5 +1,6 @@
 """Main BNS emulator."""
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -23,16 +24,30 @@ class BNS:
     PORT_BBR = 0x39
     PORT_CBAR = 0x3A
 
-    def __init__(self, clock: int = 12_288_000, audio: bool = False):
+    def __init__(self, clock: int = 12_288_000, audio: bool = False,
+                 trace_io: bool = False, trace_writes: int = None):
         """Initialize the BNS emulator.
 
         Args:
             clock: CPU clock frequency in Hz (default 12.288 MHz for BSPLUS)
             audio: Enable audio output for SSI-263 speech
+            trace_io: Log all I/O port reads/writes
+            trace_writes: Physical address to trace writes to (None = disabled)
         """
         self.clock = clock
         self.memory = Memory()
         self.io = IOBus()
+
+        # Debugging options
+        self.trace_writes_addr = trace_writes
+        self.io.logging = trace_io  # Enable/disable I/O logging
+
+        # Statistics
+        self.stats = {
+            'cycles': 0,
+            'writes': 0,
+            'phonemes': 0,
+        }
 
         # Peripherals
         self.ssi263 = SSI263(base_port=self.PORT_SSI263)
@@ -66,6 +81,9 @@ class BNS:
 
     def _mem_write(self, addr: int, value: int) -> None:
         """Memory write callback for CPU."""
+        self.stats['writes'] += 1
+        if self.trace_writes_addr is not None and addr == self.trace_writes_addr:
+            print(f"[TRACE] Write 0x{addr:05X} = 0x{value:02X}")
         self.memory.write(addr, value)
 
     def _io_read(self, port: int) -> int:
@@ -102,6 +120,9 @@ class BNS:
 
         Handles both raw firmware and .bns update packages.
         Update packages have firmware at IMAGE_OFFSET (0x3000).
+
+        The BNS hardware uses a 64KB ROM (27512 EPROM). The firmware files
+        contain multiple 64KB banks - we load only the first bank.
         """
         path = Path(path)
         data = path.read_bytes()
@@ -118,8 +139,13 @@ class BNS:
             else:
                 print(f"Warning: BNS package too small for firmware extraction")
 
+        # Limit to 64KB (first bank) - the BNS hardware uses a 27512 EPROM
+        if len(data) > 0x10000:
+            print(f"  Truncating to 64KB ROM (from {len(data)} bytes)")
+            data = data[:0x10000]
+
         self.memory.load_rom(data)
-        print(f"Loaded ROM: {path.name} ({len(data)} bytes)")
+        print(f"Loaded ROM: {path.name} ({len(data)} bytes at physical 0x00000)")
 
     def reset(self) -> None:
         """Reset the emulator."""
@@ -149,9 +175,17 @@ class BNS:
                 cycles_run += actual
 
                 # Check for speech output (log only if no audio)
-                if self.ssi263.phoneme_log and not self.synth:
-                    print(f"[Speech] Phonemes: {self.ssi263.phoneme_log}")
+                if self.ssi263.phoneme_log:
+                    self.stats['phonemes'] += len(self.ssi263.phoneme_log)
+                    if not self.synth:
+                        print(f"[Speech] Phonemes: {self.ssi263.phoneme_log}")
                     self.ssi263.phoneme_log.clear()
+
+                # Print I/O log if tracing (periodically to avoid flooding)
+                if self.io.logging and self.io._log:
+                    for entry in self.io.dump_log():
+                        print(f"[IO] {entry}")
+                    self.io._log.clear()
 
         except KeyboardInterrupt:
             print("\nEmulation stopped by user")
@@ -159,12 +193,28 @@ class BNS:
             if self.synth:
                 self.synth.stop()
 
+        self.stats['cycles'] = cycles_run
         print(f"Executed {cycles_run:,} cycles")
         print(f"Final PC: {self.cpu.pc:04X}")
 
     def step(self) -> int:
         """Execute a single instruction. Returns cycles consumed."""
         return self.cpu.step()
+
+    def dump_ram(self, path: Path | str) -> None:
+        """Dump RAM contents to a file."""
+        path = Path(path)
+        path.write_bytes(bytes(self.memory.ram))
+        print(f"RAM dumped to {path} ({len(self.memory.ram)} bytes)")
+
+    def print_stats(self) -> None:
+        """Print execution statistics."""
+        print("\n=== Execution Statistics ===")
+        print(f"Cycles executed: {self.stats['cycles']:,}")
+        print(f"Memory writes:   {self.stats['writes']:,}")
+        print(f"Phonemes output: {self.stats['phonemes']}")
+        print(f"Final PC:        0x{self.cpu.pc:04X}")
+        print(f"CPU halted:      {self.cpu.halted}")
 
     def trace_boot(self) -> None:
         """Trace the boot sequence (diagnostic mode)."""
@@ -192,25 +242,60 @@ class BNS:
             print(f"{i+1}. PC: {pc_before:04X} -> {pc_after:04X} ({cycles} cycles)")
 
 
+def parse_hex_address(value: str) -> int:
+    """Parse a hex address like 0xD468 or D468."""
+    try:
+        return int(value, 16)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Invalid hex address: {value}")
+
+
 def main() -> None:
     """CLI entry point."""
-    if len(sys.argv) < 2:
-        print("Usage: python -m qns.bns [--audio] [--trace] <rom_file>")
-        print("       --audio  Enable SSI-263 audio output")
-        print("       --trace  Show boot trace instead of running")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        prog="qns.bns",
+        description="BNS (Braille 'N Speak) emulator"
+    )
+    parser.add_argument("rom_file", help="ROM file to load (.bns or raw firmware)")
 
-    trace_mode = '--trace' in sys.argv
-    audio_mode = '--audio' in sys.argv
-    rom_path = sys.argv[-1]
+    # Basic options
+    parser.add_argument("--audio", action="store_true",
+                        help="Enable SSI-263 audio output")
+    parser.add_argument("--trace", action="store_true",
+                        help="Show boot trace instead of running")
 
-    bns = BNS(audio=audio_mode)
-    bns.load_rom(rom_path)
+    # Debugging options
+    parser.add_argument("--cycles", type=int, default=0, metavar="N",
+                        help="Run for N cycles then exit (default: unlimited)")
+    parser.add_argument("--trace-io", action="store_true",
+                        help="Log all I/O port reads/writes")
+    parser.add_argument("--trace-writes", type=parse_hex_address, metavar="ADDR",
+                        help="Log writes to specific physical address (hex, e.g., 0xD468)")
+    parser.add_argument("--dump-ram", type=str, metavar="FILE",
+                        help="Dump RAM contents to file after execution")
+    parser.add_argument("--stats", action="store_true",
+                        help="Show execution statistics at end")
 
-    if trace_mode:
+    args = parser.parse_args()
+
+    bns = BNS(
+        audio=args.audio,
+        trace_io=args.trace_io,
+        trace_writes=args.trace_writes
+    )
+    bns.load_rom(args.rom_file)
+
+    if args.trace:
         bns.trace_boot()
     else:
-        bns.run()
+        bns.run(max_cycles=args.cycles)
+
+    # Post-run actions
+    if args.dump_ram:
+        bns.dump_ram(args.dump_ram)
+
+    if args.stats:
+        bns.print_stats()
 
 
 if __name__ == "__main__":
