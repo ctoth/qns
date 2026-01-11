@@ -108,14 +108,16 @@ class SSI263:
     # Control bit
     CONTROL_BIT = 0x80  # CTL in REG_CTRLAMP
 
-    def __init__(self, base_port: int = 0xC0):
+    def __init__(self, base_port: int = 0xC0, clock: int = 12_288_000):
         """Initialize SSI-263.
 
         Args:
             base_port: Base I/O port (0xC0 for BSPLUS, 0x90 for BL40)
+            clock: CPU clock frequency in Hz for timing calculations
         """
         self.base_port = base_port
         self.phoneme_log: list[int] = []
+        self._clock = clock
 
         # Registers
         self.duration_phoneme = 0xC0  # MODE_PHONEME_TRANSITIONED | phoneme 0
@@ -129,9 +131,14 @@ class SSI263:
         self.irq_enabled = False
         self.current_phoneme = 0
 
+        # Timing for INT1 (phoneme completion interrupt)
+        self._pending_irq_cycle: int | None = None  # Cycle when INT1 should fire
+        self._current_cycle: int = 0  # Current cycle count (set via set_cycle_count)
+
         # Callbacks
         self._on_phoneme: Callable[[int, str], None] | None = None
         self._synth = None  # Optional SSI263Synth for audio output
+        self._irq_callback: Callable[[int], None] | None = None  # INT1 signal
 
     def set_synth(self, synth) -> None:
         """Connect a synthesizer for audio output.
@@ -150,6 +157,55 @@ class SSI263:
             callback: Function(phoneme_code, phoneme_name) called when phoneme played
         """
         self._on_phoneme = callback
+
+    def set_irq_callback(self, callback: Callable[[int], None]) -> None:
+        """Set callback for IRQ signaling (INT1).
+
+        The SSI-263 asserts the A/R line when ready for the next phoneme.
+        This is connected to INT1 on the Z180.
+
+        Args:
+            callback: Function(state) called with 1 when asserting, 0 when clearing
+        """
+        self._irq_callback = callback
+
+    def set_cycle_count(self, cycles: int) -> None:
+        """Update the current cycle count for timing calculations.
+
+        Args:
+            cycles: Current CPU cycle count
+        """
+        self._current_cycle = cycles
+
+    def _calc_phoneme_duration_cycles(self) -> int:
+        """Calculate phoneme duration in CPU cycles.
+
+        Uses the AppleWin formula from SSI263.cpp line 95:
+            phonemeDuration_ms = (((16 - rate) * 4096) / 1023) * (4 - dur_mode)
+
+        Where:
+            rate = bits 7:4 of rate_inflection register (0 = fastest, 15 = slowest)
+            dur_mode = bits 7:6 of duration_phoneme register (0-3)
+
+        Returns:
+            Duration in CPU cycles
+        """
+        rate = (self.rate_inflection >> 4) & 0x0F
+        dur_mode = (self.duration_phoneme >> 6) & 0x03
+        duration_ms = (((16 - rate) * 4096) // 1023) * (4 - dur_mode)
+        return (duration_ms * self._clock) // 1000
+
+    def check_pending_irq(self, current_cycle: int) -> None:
+        """Check if pending IRQ should fire. Call from main loop.
+
+        Args:
+            current_cycle: Current CPU cycle count
+        """
+        if self._pending_irq_cycle is not None and current_cycle >= self._pending_irq_cycle:
+            self._pending_irq_cycle = None
+            self.speaking = False  # Phoneme finished
+            if self._irq_callback:
+                self._irq_callback(1)  # Assert INT1
 
     def read(self, port: int) -> int:
         """Read from SSI-263 register."""
@@ -217,18 +273,25 @@ class SSI263:
         self.phoneme_log.append(phoneme)
 
         info = PHONEMES.get(phoneme, ("?", "unknown", ""))
-        name, example, ipa = info
+        name, example, _ = info
 
         # Log it
-        print(f"[SSI263] Phoneme: 0x{phoneme:02X} {name} ({example})")
+        duration_cycles = self._calc_phoneme_duration_cycles()
+        duration_ms = (duration_cycles * 1000) // self._clock
+        print(f"[SSI263] Phoneme: 0x{phoneme:02X} {name} ({example}) duration={duration_ms}ms")
 
         # Call callback if set
         if self._on_phoneme:
             self._on_phoneme(phoneme, name)
 
-        # In real hardware, speaking would take time.
-        # For now, we complete immediately.
-        self.speaking = False
+        # Mark as speaking while phoneme plays
+        self.speaking = True
+
+        # Schedule INT1 to fire after phoneme duration
+        # The real SSI-263 asserts the A/R line AFTER the phoneme finishes,
+        # which triggers INT1 and lets the ISR queue the next phoneme
+        if self.irq_enabled and self._irq_callback:
+            self._pending_irq_cycle = self._current_cycle + duration_cycles
 
     def _reset(self) -> None:
         """Reset the chip."""
