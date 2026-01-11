@@ -211,6 +211,10 @@ class SSI263Synth:
     def _play_current_phoneme(self) -> None:
         """Play phoneme with current register state."""
         phoneme = self.state.phoneme
+        # HACK: Force amplitude to 15 if it's 0 (workaround for VOLUME bug)
+        if self.state.amplitude == 0:
+            self.state.amplitude = 15
+        print(f"[SYNTH] _play_current_phoneme: phon={phoneme}, amp={self.state.amplitude}, ctl={self.state.control}")
 
         # Notify callback
         if self._phoneme_callback:

@@ -26,6 +26,9 @@ class Memory:
         self.rom = bytearray(rom_size)
         self.rom_loaded = False  # Track if ROM data was loaded
 
+        # Track which addresses have been written to (for shadow RAM)
+        self._written_addrs: set[int] = set()
+
         # MMU registers
         self.cbr = 0x00   # Common Base Register
         self.bbr = 0x00   # Bank Base Register
@@ -39,16 +42,25 @@ class Memory:
     def read(self, addr: int) -> int:
         """Read byte from physical address (z180emu does MMU translation).
 
-        Shadow RAM: Reads from ROM region return ROM data (if loaded),
-        otherwise return RAM data.
+        Shadow RAM architecture:
+        - The BNS has ROM that can be banked into the lower 64KB physical space
+        - RAM "shadows" ROM - writes always go to RAM
+        - Reads: return RAM if that address was written, otherwise ROM
+
+        To properly implement this, we track written addresses. Any address
+        that was written to returns RAM; unwritten addresses return ROM.
         """
         addr &= 0xFFFFF  # 20-bit physical address
 
-        # If in ROM region and ROM is loaded, return ROM data
+        # If address was written to, return RAM (shadow RAM took priority)
+        if addr < len(self.ram) and addr in self._written_addrs:
+            return self.ram[addr]
+
+        # Otherwise return ROM if in ROM region
         if addr < len(self.rom) and self.rom_loaded:
             return self.rom[addr]
 
-        # Otherwise return RAM data
+        # Fall back to RAM for addresses beyond ROM
         if addr < len(self.ram):
             return self.ram[addr]
         return 0xFF
@@ -62,6 +74,11 @@ class Memory:
         addr &= 0xFFFFF  # 20-bit physical address
         if addr < len(self.ram):
             self.ram[addr] = value & 0xFF
+            was_new = addr not in self._written_addrs
+            self._written_addrs.add(addr)  # Track for shadow RAM reads
+            # Debug: track VOLUME address (0x4215C)
+            if addr == 0x4215C:
+                print(f"[MEM] Write to VOLUME (0x4215C): {value}")
 
     def set_mmu(self, cbr: int | None = None, bbr: int | None = None, cbar: int | None = None):
         """Update MMU registers."""

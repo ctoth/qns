@@ -249,6 +249,8 @@ class SSI263:
             old_ctl = self.ctrl_art_amp & self.CONTROL_BIT
             self.ctrl_art_amp = value
             new_ctl = value & self.CONTROL_BIT
+            amp = value & 0x0F
+            print(f"[SSI263] CTRLAMP write: 0x{value:02X} CTL={1 if new_ctl else 0} AMP={amp}")
 
             # Forward to synth if connected
             if self._synth:
