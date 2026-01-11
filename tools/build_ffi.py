@@ -105,6 +105,11 @@ UINT16 qns_z180_get_pc(qns_z180_t* cpu);
 
 // Check if halted
 int qns_z180_is_halted(qns_z180_t* cpu);
+
+// Get MMU register values (internal z180emu state)
+UINT8 qns_z180_get_cbr(qns_z180_t* cpu);
+UINT8 qns_z180_get_bbr(qns_z180_t* cpu);
+UINT8 qns_z180_get_cbar(qns_z180_t* cpu);
 """
 
 # C source that wraps z180emu
@@ -297,6 +302,21 @@ UINT16 qns_z180_get_pc(qns_z180_t* cpu) {{
 
 int qns_z180_is_halted(qns_z180_t* cpu) {{
     return (int)qns_z180_get_reg(cpu, Z180_HALT);
+}}
+
+// MMU register accessors using cpu_get_state_z180
+// Z180_CBR/BBR/CBAR are I/O register indices 56/57/58 in the Z180 enum
+
+UINT8 qns_z180_get_cbr(qns_z180_t* cpu) {{
+    return (UINT8)qns_z180_get_reg(cpu, 56);  // Z180_CBR
+}}
+
+UINT8 qns_z180_get_bbr(qns_z180_t* cpu) {{
+    return (UINT8)qns_z180_get_reg(cpu, 57);  // Z180_BBR
+}}
+
+UINT8 qns_z180_get_cbar(qns_z180_t* cpu) {{
+    return (UINT8)qns_z180_get_reg(cpu, 58);  // Z180_CBAR
 }}
 '''
 

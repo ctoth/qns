@@ -183,6 +183,27 @@ class Z180:
         if CFFI_AVAILABLE and self._cpu:
             lib.qns_z180_set_irq(self._cpu, line, state)
 
+    @property
+    def cbr(self) -> int:
+        """Get Common Base Register (MMU)."""
+        if CFFI_AVAILABLE and self._cpu:
+            return lib.qns_z180_get_cbr(self._cpu)
+        return 0
+
+    @property
+    def bbr(self) -> int:
+        """Get Bank Base Register (MMU)."""
+        if CFFI_AVAILABLE and self._cpu:
+            return lib.qns_z180_get_bbr(self._cpu)
+        return 0
+
+    @property
+    def cbar(self) -> int:
+        """Get Common/Bank Area Register (MMU)."""
+        if CFFI_AVAILABLE and self._cpu:
+            return lib.qns_z180_get_cbar(self._cpu)
+        return 0xF0
+
     def __del__(self) -> None:
         """Clean up the CPU."""
         if CFFI_AVAILABLE and hasattr(self, '_cpu') and self._cpu:
