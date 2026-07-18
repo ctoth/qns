@@ -51,6 +51,20 @@ def test_bsplus_port_80_is_watchdog_read_and_speech_power_write():
         assert bns._io_read(port) == 0xFF
 
 
+def test_bsplus_maps_msm6242_clock_window_at_port_60():
+    """The BSP must see its direct-bus RTC rather than floating port values."""
+    bns = BNS()
+
+    assert bns._io_read(0x6F) == 0x04
+    bns._io_write(0x6D, 1)
+    assert bns._io_read(0x6D) == 1
+    bns._io_write(0x6D, 0)
+    assert bns._io_read(0x6D) == 0
+
+    for port in range(0x60, 0x6D):
+        assert 0 <= bns._io_read(port) <= 9
+
+
 def test_serial_standard_streams_select_one_asci_channel():
     """Raw serial input and output must not leak across ASCI channels."""
     output = BytesIO()

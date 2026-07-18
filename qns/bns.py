@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from .cpu import Z180
-from .io import BrailleKeyboard, IOBus, Watchdog
+from .io import MSM6242RTC, BrailleKeyboard, IOBus, Watchdog
 from .memory import Memory
 from .ssi263 import SSI263
 from .synth import SSI263Synth
@@ -46,6 +46,8 @@ class BNS:
     PORT_SSI263 = 0xC0
     PORT_WATCHDOG = 0x80
     PORT_SPEECH_POWER = 0x80
+    PORT_RTC_START = 0x60
+    PORT_RTC_END = 0x6F
     PORT_CBR = 0x38
     PORT_BBR = 0x39
     PORT_CBAR = 0x3A
@@ -109,6 +111,7 @@ class BNS:
         # Peripherals
         self.ssi263 = SSI263(base_port=self.PORT_SSI263, clock=clock)
         self.keyboard = BrailleKeyboard(port=self.PORT_KEYBOARD, keyclr_port=self.PORT_KEYCLR)
+        self.rtc = MSM6242RTC(base_port=self.PORT_RTC_START)
         self.watchdog = Watchdog(port=self.PORT_WATCHDOG)
         self.speech_power_enabled = False
 
@@ -224,6 +227,14 @@ class BNS:
         # Keyboard (0x40) and keyclr (0x20)
         self.io.register(self.PORT_KEYBOARD, self.keyboard.read, self.keyboard.write)
         self.io.register(self.PORT_KEYCLR, self.keyboard.keyclr_read, self.keyboard.keyclr_write)
+
+        # BSPLUS maps the MSM6242 direct-bus RTC across 0x60-0x6F.
+        self.io.register_range(
+            self.PORT_RTC_START,
+            self.PORT_RTC_END,
+            self.rtc.read,
+            self.rtc.write,
+        )
 
         # BSPLUS decodes reads at 0x80 as watchdog service and writes as
         # speech-power control. This speech-only model has no Braille display.
