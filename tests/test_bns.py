@@ -28,3 +28,20 @@ def test_bsp_command_loop_gate_requires_starta_bg_task_sequence():
 
     bns._mem_write(0x41653, 0)
     assert bns._bsp_command_loop_ready
+
+
+def test_bsplus_port_80_is_watchdog_read_and_speech_power_write():
+    """The speech-only BSP model must not expose a display at port 0x80."""
+    bns = BNS()
+
+    assert not hasattr(bns, "display")
+    assert bns._io_read(0x80) == 0xFF
+
+    bns._io_write(0x80, 1)
+    assert bns.speech_power_enabled
+
+    bns._io_write(0x80, 0)
+    assert not bns.speech_power_enabled
+
+    for port in (0x81, 0x82, 0x83):
+        assert bns._io_read(port) == 0xFF

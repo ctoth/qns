@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 from .cpu import Z180
-from .io import BrailleDisplay, BrailleKeyboard, IOBus, Watchdog
+from .io import BrailleKeyboard, IOBus, Watchdog
 from .memory import Memory
 from .ssi263 import SSI263
 from .synth import SSI263Synth
@@ -41,9 +41,9 @@ class BNS:
     # I/O port assignments (BSPLUS variant)
     PORT_KEYBOARD = 0x40
     PORT_KEYCLR = 0x20
-    PORT_DISPLAY = 0x80
     PORT_SSI263 = 0xC0
     PORT_WATCHDOG = 0x80
+    PORT_SPEECH_POWER = 0x80
     PORT_CBR = 0x38
     PORT_BBR = 0x39
     PORT_CBAR = 0x3A
@@ -100,8 +100,8 @@ class BNS:
         # Peripherals
         self.ssi263 = SSI263(base_port=self.PORT_SSI263, clock=clock)
         self.keyboard = BrailleKeyboard(port=self.PORT_KEYBOARD, keyclr_port=self.PORT_KEYCLR)
-        self.display = BrailleDisplay(base_port=self.PORT_DISPLAY)
         self.watchdog = Watchdog(port=self.PORT_WATCHDOG)
+        self.speech_power_enabled = False
 
         # Audio synthesis
         self.synth = None
@@ -214,8 +214,13 @@ class BNS:
         self.io.register(self.PORT_KEYBOARD, self.keyboard.read, self.keyboard.write)
         self.io.register(self.PORT_KEYCLR, self.keyboard.keyclr_read, self.keyboard.keyclr_write)
 
-        # Display (0x80-0x83)
-        self.io.register_range(0x80, 0x83, self.display.read, self.display.write)
+        # BSPLUS decodes reads at 0x80 as watchdog service and writes as
+        # speech-power control. This speech-only model has no Braille display.
+        self.io.register(
+            self.PORT_SPEECH_POWER,
+            self.watchdog.read,
+            self._write_speech_power,
+        )
 
         # MMU registers
         self.io.register(self.PORT_CBR, lambda p: self.memory.cbr,
@@ -224,6 +229,10 @@ class BNS:
                         lambda p, v: self.memory.set_mmu(bbr=v))
         self.io.register(self.PORT_CBAR, lambda p: self.memory.cbar,
                         lambda p, v: self.memory.set_mmu(cbar=v))
+
+    def _write_speech_power(self, port: int, value: int) -> None:
+        """Apply the BSPLUS speech-power latch's bit-zero state."""
+        self.speech_power_enabled = bool(value & 0x01)
 
     def load_rom(self, path: Path | str) -> None:
         """Load ROM file.
