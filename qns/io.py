@@ -12,7 +12,8 @@ class BrailleKeyboard:
     def __init__(self, port: int = 0x40, keyclr_port: int = 0x20):
         self.port = port
         self.keyclr_port = keyclr_port
-        self.dots = 0x00  # Bits 0-7 = dots 1-8
+        self.dots = 0x00  # Latched bits 0-7 = dots 1-8
+        self._key_down = False
         self.latched = False  # Key press latched (pending interrupt)
         self._irq_callback = None  # Callback to trigger INT2
 
@@ -47,18 +48,27 @@ class BrailleKeyboard:
             self.latched = False
             if self._irq_callback:
                 self._irq_callback(0)  # Clear INT2
+        if not self._key_down:
+            self.dots = 0x00
 
     def press(self, dots: int):
         """Simulate key press (dots as bitmask)."""
         self.dots = dots & 0xFF
+        self._key_down = bool(self.dots)
         if self.dots and not self.latched:
             self.latched = True
             if self._irq_callback:
                 self._irq_callback(1)  # Assert INT2
 
     def release(self):
-        """Release all keys."""
-        self.dots = 0x00
+        """Latch the completed chord and signal the key-up edge."""
+        if not self._key_down:
+            return
+        self._key_down = False
+        if not self.latched:
+            self.latched = True
+            if self._irq_callback:
+                self._irq_callback(1)  # Assert INT2
 
 
 class BrailleDisplay:
