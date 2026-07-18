@@ -4,6 +4,8 @@ import subprocess
 import sys
 from io import BytesIO
 
+import pytest
+
 from qns.bns import _ASCII_TO_BNS_KEY, BNS
 
 
@@ -80,6 +82,43 @@ def test_bsplus_port_a0_controls_rs232_transceiver_power():
 
     bns._io_write(0xA0, 9)
     assert bns.rs232_power_enabled
+
+
+def test_bs2_uses_bsnew_combined_power_latch():
+    """BS2 power writes expose the documented BSNEW OUTSEL bit fields."""
+    bns = BNS(model="bs2")
+
+    bns._io_write(0xA0, 0x8C)
+    assert bns.power_latch == 0x8C
+    assert not bns.rs232_power_enabled
+    assert not bns.speech_power_enabled
+    assert bns.flash_power_enabled
+    assert bns.disk_power_enabled
+    assert bns.charge_output_high
+
+    bns._io_write(0xA0, 0xAF)
+    assert bns.rs232_power_enabled
+    assert bns.speech_power_enabled
+
+
+def test_bs2_owns_8255_and_high_bank_ports():
+    """BS2 must not apply the BSPLUS speech latch to its 8255 port A."""
+    bns = BNS(model="bs2")
+
+    bns._io_write(0x80, 0x55)
+    bns._io_write(0x83, 0xA2)
+    bns._io_write(0xE0, 0x08)
+
+    assert not bns.speech_power_enabled
+    assert bns._io_read(0x80) == 0xFF
+    assert bns._io_read(0x83) == 0xFF
+    assert bns.parallel_ports[3] == 0xA2
+    assert bns.high_bank_latch == 0x08
+
+
+def test_bns_rejects_unknown_hardware_model():
+    with pytest.raises(ValueError, match="Unsupported BNS model: unknown"):
+        BNS(model="unknown")
 
 
 def test_serial_standard_streams_select_one_asci_channel():

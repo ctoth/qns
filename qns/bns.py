@@ -57,6 +57,7 @@ class BNS:
     PORT_ITC = 0x34
 
     def __init__(self, clock: int = 12_288_000, audio: bool = False,
+                 model: str = "bsp",
                  trace_io: bool = False, trace_writes: int | None = None,
                  trace_writes_range: tuple[int, int] | None = None,
                  trace_first_writes: int | None = None,
@@ -70,6 +71,7 @@ class BNS:
         Args:
             clock: CPU clock frequency in Hz (default 12.288 MHz for BSPLUS)
             audio: Enable audio output for SSI-263 speech
+            model: Hardware profile: bsp (BSPLUS) or bs2 (BSNEW)
             trace_io: Log all I/O port reads/writes
             trace_writes: Physical address to trace writes to (None = disabled)
             trace_writes_range: (start, end) tuple for range tracing
@@ -80,7 +82,11 @@ class BNS:
             serial_output: Raw byte stream for the selected serial output channel
             serial_output_channel: ASCI channel routed to serial_output
         """
+        if model not in ("bsp", "bs2"):
+            raise ValueError(f"Unsupported BNS model: {model}")
+
         self.clock = clock
+        self.model = model
         self.memory = Memory()
         self.io = IOBus()
         self.trace_interrupts = trace_interrupts
@@ -116,6 +122,12 @@ class BNS:
         self.watchdog = Watchdog(port=self.PORT_WATCHDOG)
         self.speech_power_enabled = False
         self.rs232_power_enabled = False
+        self.flash_power_enabled = False
+        self.disk_power_enabled = False
+        self.charge_output_high = False
+        self.power_latch = 0
+        self.parallel_ports = [0xFF] * 4
+        self.high_bank_latch = 0
 
         # Audio synthesis
         self.synth = None
@@ -238,16 +250,25 @@ class BNS:
             self.rtc.write,
         )
 
-        # BSPLUS decodes reads at 0x80 as watchdog service and writes as
-        # speech-power control. This speech-only model has no Braille display.
-        self.io.register(
-            self.PORT_SPEECH_POWER,
-            self.watchdog.read,
-            self._write_speech_power,
-        )
+        if self.model == "bs2":
+            # BSNEW shares 0x80 with watchdog reads and 8255 port-A writes.
+            self.io.register(0x80, self.watchdog.read, self._write_parallel_port)
+            for port in range(0x81, 0x83):
+                self.io.register(port, self._read_parallel_port, self._write_parallel_port)
+            self.io.register(0x83, write_handler=self._write_parallel_port)
+            self.io.register(0xA0, write_handler=self._write_bsnew_power)
+            self.io.register(0xE0, write_handler=self._write_high_bank)
+        else:
+            # BSPLUS decodes reads at 0x80 as watchdog service and writes as
+            # speech-power control. This speech-only model has no Braille display.
+            self.io.register(
+                self.PORT_SPEECH_POWER,
+                self.watchdog.read,
+                self._write_speech_power,
+            )
 
-        # BSPLUS MAXON/MAXOFF drive bit zero of the MAX232 power latch.
-        self.io.register(self.PORT_RS232_POWER, write_handler=self._write_rs232_power)
+            # BSPLUS MAXON/MAXOFF drive bit zero of the MAX232 power latch.
+            self.io.register(self.PORT_RS232_POWER, write_handler=self._write_rs232_power)
 
         # MMU registers
         self.io.register(self.PORT_CBR, lambda p: self.memory.cbr,
@@ -264,6 +285,27 @@ class BNS:
     def _write_rs232_power(self, port: int, value: int) -> None:
         """Apply the BSPLUS RS-232 transceiver-power latch's bit-zero state."""
         self.rs232_power_enabled = bool(value & 0x01)
+
+    def _read_parallel_port(self, port: int) -> int:
+        """Read one BSNEW 8255 register."""
+        return self.parallel_ports[port - 0x80]
+
+    def _write_parallel_port(self, port: int, value: int) -> None:
+        """Store one BSNEW 8255 register write."""
+        self.parallel_ports[port - 0x80] = value
+
+    def _write_bsnew_power(self, port: int, value: int) -> None:
+        """Apply the BSNEW combined serial, speech, flash, and disk latch."""
+        self.power_latch = value
+        self.rs232_power_enabled = bool(value & 0x01)
+        self.speech_power_enabled = bool(value & 0x02)
+        self.flash_power_enabled = bool(value & 0x04)
+        self.disk_power_enabled = bool(value & 0x08)
+        self.charge_output_high = bool(value & 0x80)
+
+    def _write_high_bank(self, port: int, value: int) -> None:
+        """Store the BSNEW language-ROM/high-bank latch."""
+        self.high_bank_latch = value
 
     def _serial_receive(self, channel: int) -> int:
         """Return the next stdin byte for the selected ASCI channel."""
@@ -514,6 +556,8 @@ def main() -> None:
     # Basic options
     parser.add_argument("--audio", action="store_true",
                         help="Enable SSI-263 audio output")
+    parser.add_argument("--model", choices=("bsp", "bs2"), default="bsp",
+                        help="Select the hardware profile (default: bsp)")
     parser.add_argument("--trace", action="store_true",
                         help="Show boot trace instead of running")
     parser.add_argument("--input", choices=("keyboard", "serial0", "serial1"),
@@ -561,6 +605,7 @@ def main() -> None:
     with output_context:
         bns = BNS(
             audio=args.audio,
+            model=args.model,
             trace_io=args.trace_io,
             trace_interrupts=args.trace_interrupts,
             trace_writes=args.trace_writes,
