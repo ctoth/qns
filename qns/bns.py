@@ -4,7 +4,9 @@ import argparse
 import queue
 import sys
 import threading
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
+from typing import BinaryIO
 
 from .cpu import Z180
 from .io import BrailleKeyboard, IOBus, Watchdog
@@ -57,7 +59,9 @@ class BNS:
                  trace_first_writes: int | None = None,
                  dump_writes_file: str | None = None,
                  trace_interrupts: bool = False,
-                 stdio: bool = False):
+                 stdin_device: str | None = None,
+                 serial_output: BinaryIO | None = None,
+                 serial_output_channel: int | None = None):
         """Initialize the BNS emulator.
 
         Args:
@@ -69,13 +73,18 @@ class BNS:
             trace_first_writes: Number of first writes to log
             dump_writes_file: File to dump all write addresses to (CSV format)
             trace_interrupts: Log interrupt-related activity (IRQ lines, ITC register)
-            stdio: Read terminal characters as English BNS keyboard chords
+            stdin_device: Standard-input target: keyboard, serial0, or serial1
+            serial_output: Raw byte stream for the selected serial output channel
+            serial_output_channel: ASCI channel routed to serial_output
         """
         self.clock = clock
         self.memory = Memory()
         self.io = IOBus()
         self.trace_interrupts = trace_interrupts
-        self.stdio = stdio
+        self.stdin_device = stdin_device
+        self.serial_output = serial_output
+        self.serial_output_channel = serial_output_channel
+        self._serial_input_queue: queue.Queue[int] = queue.Queue()
 
         # Debugging options
         self.trace_writes_addr = trace_writes
@@ -118,6 +127,8 @@ class BNS:
             mem_write=self._mem_write,
             io_read=self._io_read,
             io_write=self._io_write,
+            serial_rx=self._serial_receive,
+            serial_tx=self._serial_transmit,
         )
 
         # Connect keyboard interrupt (INT2) to CPU
@@ -234,6 +245,25 @@ class BNS:
         """Apply the BSPLUS speech-power latch's bit-zero state."""
         self.speech_power_enabled = bool(value & 0x01)
 
+    def _serial_receive(self, channel: int) -> int:
+        """Return the next stdin byte for the selected ASCI channel."""
+        if self.stdin_device != f"serial{channel}":
+            return -1
+        try:
+            return self._serial_input_queue.get_nowait()
+        except queue.Empty:
+            return -1
+
+    def _serial_transmit(self, channel: int, value: int) -> None:
+        """Write an ASCI byte to its selected raw stream or the console log."""
+        if self.serial_output is not None:
+            if channel != self.serial_output_channel:
+                return
+            self.serial_output.write(bytes((value,)))
+            self.serial_output.flush()
+            return
+        print(f"[Serial{channel}] {bytes((value,))!r}")
+
     def load_rom(self, path: Path | str) -> None:
         """Load ROM file.
 
@@ -295,20 +325,22 @@ class BNS:
             print("Audio: ENABLED")
             self.synth.start()
 
-        input_queue: queue.Queue[str | None] | None = None
+        keyboard_input_queue: queue.Queue[str] | None = None
         input_phase: str | None = None
-        if self.stdio:
-            input_queue = queue.Queue()
+        if self.stdin_device is not None:
+            if self.stdin_device == "keyboard":
+                keyboard_input_queue = queue.Queue()
 
             def read_stdin() -> None:
-                try:
+                if self.stdin_device == "keyboard":
                     while character := sys.stdin.read(1):
-                        input_queue.put(character)
-                finally:
-                    input_queue.put(None)
+                        keyboard_input_queue.put(character)
+                else:
+                    while data := sys.stdin.buffer.read(1):
+                        self._serial_input_queue.put(data[0])
 
             threading.Thread(target=read_stdin, daemon=True, name="bns-stdin").start()
-            print("Input: STDIN (English BNS keyboard)")
+            print(f"Input: STDIN ({self.stdin_device})")
 
         cycles_run = 0
         try:
@@ -329,19 +361,22 @@ class BNS:
                 elif input_phase == "up" and not self.keyboard.latched:
                     input_phase = None
 
-                if input_queue is not None and input_phase is None and self._bsp_command_loop_ready:
+                if (
+                    keyboard_input_queue is not None
+                    and input_phase is None
+                    and self._bsp_command_loop_ready
+                ):
                     try:
-                        character = input_queue.get_nowait()
+                        character = keyboard_input_queue.get_nowait()
                     except queue.Empty:
                         pass
                     else:
-                        if character is not None:
-                            codepoint = ord(character)
-                            if codepoint < len(_ASCII_TO_BNS_KEY):
-                                self.keyboard.press(_ASCII_TO_BNS_KEY[codepoint])
-                                input_phase = "down"
-                            else:
-                                print(f"[Input] Unsupported character: U+{codepoint:04X}")
+                        codepoint = ord(character)
+                        if codepoint < len(_ASCII_TO_BNS_KEY):
+                            self.keyboard.press(_ASCII_TO_BNS_KEY[codepoint])
+                            input_phase = "down"
+                        else:
+                            print(f"[Input] Unsupported character: U+{codepoint:04X}")
 
                 # Check for speech output (log only if no audio)
                 if self.ssi263.phoneme_log:
@@ -451,6 +486,12 @@ def main() -> None:
                         help="Enable SSI-263 audio output")
     parser.add_argument("--trace", action="store_true",
                         help="Show boot trace instead of running")
+    parser.add_argument("--input", choices=("keyboard", "serial0", "serial1"),
+                        default="keyboard",
+                        help="Route standard input to the BNS keyboard or an ASCI channel")
+    parser.add_argument("--output", choices=("console", "serial0", "serial1"),
+                        default="console",
+                        help="Show console logs or route one raw ASCI channel to standard output")
 
     # Debugging options
     parser.add_argument("--cycles", type=int, default=0, metavar="N",
@@ -480,32 +521,40 @@ def main() -> None:
     if args.trace_writes_range:
         trace_range = tuple(args.trace_writes_range)
 
-    bns = BNS(
-        audio=args.audio,
-        trace_io=args.trace_io,
-        trace_interrupts=args.trace_interrupts,
-        trace_writes=args.trace_writes,
-        trace_writes_range=trace_range,
-        trace_first_writes=args.trace_first_writes,
-        dump_writes_file=args.dump_writes,
-        stdio=True,
-    )
-    bns.load_rom(args.rom_file)
+    raw_serial_output = args.output != "console"
+    serial_output_channel = int(args.output[-1]) if raw_serial_output else None
+    serial_output = sys.stdout.buffer if raw_serial_output else None
+    output_context = redirect_stdout(sys.stderr) if raw_serial_output else nullcontext()
 
-    if args.trace:
-        bns.trace_boot()
-    else:
-        bns.run(max_cycles=args.cycles)
+    with output_context:
+        bns = BNS(
+            audio=args.audio,
+            trace_io=args.trace_io,
+            trace_interrupts=args.trace_interrupts,
+            trace_writes=args.trace_writes,
+            trace_writes_range=trace_range,
+            trace_first_writes=args.trace_first_writes,
+            dump_writes_file=args.dump_writes,
+            stdin_device=args.input,
+            serial_output=serial_output,
+            serial_output_channel=serial_output_channel,
+        )
+        bns.load_rom(args.rom_file)
 
-    # Post-run actions
-    if args.dump_ram:
-        bns.dump_ram(args.dump_ram)
+        if args.trace:
+            bns.trace_boot()
+        else:
+            bns.run(max_cycles=args.cycles)
 
-    # Dump trace data if any tracing was enabled
-    bns.dump_trace_data()
+        # Post-run actions
+        if args.dump_ram:
+            bns.dump_ram(args.dump_ram)
 
-    if args.stats:
-        bns.print_stats()
+        # Dump trace data if any tracing was enabled
+        bns.dump_trace_data()
+
+        if args.stats:
+            bns.print_stats()
 
 
 if __name__ == "__main__":

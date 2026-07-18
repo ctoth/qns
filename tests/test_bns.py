@@ -1,5 +1,9 @@
 """Tests for BNS firmware-facing behavior."""
 
+import subprocess
+import sys
+from io import BytesIO
+
 from qns.bns import _ASCII_TO_BNS_KEY, BNS
 
 
@@ -45,3 +49,62 @@ def test_bsplus_port_80_is_watchdog_read_and_speech_power_write():
 
     for port in (0x81, 0x82, 0x83):
         assert bns._io_read(port) == 0xFF
+
+
+def test_serial_standard_streams_select_one_asci_channel():
+    """Raw serial input and output must not leak across ASCI channels."""
+    output = BytesIO()
+    bns = BNS(
+        stdin_device="serial0",
+        serial_output=output,
+        serial_output_channel=0,
+    )
+    bns._serial_input_queue.put(0x5A)
+
+    assert bns._serial_receive(1) == -1
+    assert bns._serial_receive(0) == 0x5A
+    assert bns._serial_receive(0) == -1
+
+    bns._serial_transmit(1, 0x58)
+    bns._serial_transmit(0, 0x41)
+    assert output.getvalue() == b"A"
+
+
+def test_cli_serial_standard_io_round_trip(tmp_path):
+    """A firmware byte must travel from stdin through ASCI and back to stdout."""
+    echo_rom = tmp_path / "serial-echo.bin"
+    echo_rom.write_bytes(bytes((
+        0x3E, 0x64,        # LD A,64h: 8-N-1, transmit and receive enabled
+        0xED, 0x39, 0x00,  # OUT0 (CNTLA0),A
+        0x3E, 0x02,        # LD A,2: BSP's initial 9600-baud divisor
+        0xED, 0x39, 0x02,  # OUT0 (CNTLB0),A
+        0xED, 0x38, 0x04,  # IN0 A,(STAT0)
+        0xE6, 0x80,        # AND RDRF
+        0x28, 0xF9,        # JR Z back to the status read
+        0xED, 0x38, 0x08,  # IN0 A,(RDR0)
+        0xED, 0x39, 0x06,  # OUT0 (TDR0),A
+        0x18, 0xF0,        # JR back to the status read
+    )))
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "qns.bns",
+            str(echo_rom),
+            "--cycles",
+            "200000",
+            "--input",
+            "serial0",
+            "--output",
+            "serial0",
+        ),
+        input=b"Z",
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert result.stdout == b"Z"
+    assert b"Input: STDIN (serial0)" in result.stderr
