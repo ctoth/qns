@@ -1,14 +1,38 @@
 """Main BNS emulator."""
 
 import argparse
+import queue
 import sys
+import threading
 from pathlib import Path
 
 from .cpu import Z180
+from .io import BrailleDisplay, BrailleKeyboard, IOBus, Watchdog
 from .memory import Memory
 from .ssi263 import SSI263
 from .synth import SSI263Synth
-from .io import IOBus, BrailleKeyboard, BrailleDisplay, Watchdog
+
+# Raw English BNS keyboard chords from BSTABLES.ASM's regular English TABLE.
+# A terminal newline represents the BNS carriage-return chord, and a terminal
+# space represents the physical space-bar chord before firmware translation.
+_ASCII_TO_BNS_KEY = bytes((
+    0x88, 0x81, 0x83, 0x89, 0x99, 0x91, 0x8B, 0x9B,
+    0x93, 0x8A, 0x8D, 0x85, 0x87, 0x8D, 0x9D, 0x95,
+    0x8F, 0x9F, 0x97, 0x8E, 0x9E, 0xA5, 0xA7, 0xBA,
+    0xAD, 0xBD, 0xB5, 0xAA, 0xB3, 0xBB, 0x98, 0xB8,
+    0x40, 0x2E, 0x10, 0x3C, 0x2B, 0x29, 0x2F, 0x04,
+    0x37, 0x3E, 0x21, 0x2C, 0x20, 0x24, 0x28, 0x0C,
+    0x34, 0x02, 0x06, 0x12, 0x32, 0x22, 0x16, 0x36,
+    0x26, 0x14, 0x31, 0x30, 0x23, 0x3F, 0x1C, 0x39,
+    0x48, 0x41, 0x43, 0x49, 0x59, 0x51, 0x4B, 0x5B,
+    0x53, 0x4A, 0x5A, 0x45, 0x47, 0x4D, 0x5D, 0x55,
+    0x4F, 0x5F, 0x57, 0x4E, 0x5E, 0x65, 0x67, 0x7A,
+    0x6D, 0x7D, 0x75, 0x6A, 0x73, 0x7B, 0x58, 0x38,
+    0x08, 0x01, 0x03, 0x09, 0x19, 0x11, 0x0B, 0x1B,
+    0x13, 0x0A, 0x1A, 0x05, 0x07, 0x0D, 0x1D, 0x15,
+    0x0F, 0x1F, 0x17, 0x0E, 0x1E, 0x25, 0x27, 0x3A,
+    0x2D, 0x3D, 0x35, 0x2A, 0x33, 0x3B, 0x18, 0x78,
+))
 
 
 class BNS:
@@ -32,7 +56,8 @@ class BNS:
                  trace_writes_range: tuple[int, int] | None = None,
                  trace_first_writes: int | None = None,
                  dump_writes_file: str | None = None,
-                 trace_interrupts: bool = False):
+                 trace_interrupts: bool = False,
+                 stdio: bool = False):
         """Initialize the BNS emulator.
 
         Args:
@@ -44,11 +69,13 @@ class BNS:
             trace_first_writes: Number of first writes to log
             dump_writes_file: File to dump all write addresses to (CSV format)
             trace_interrupts: Log interrupt-related activity (IRQ lines, ITC register)
+            stdio: Read terminal characters as English BNS keyboard chords
         """
         self.clock = clock
         self.memory = Memory()
         self.io = IOBus()
         self.trace_interrupts = trace_interrupts
+        self.stdio = stdio
 
         # Debugging options
         self.trace_writes_addr = trace_writes
@@ -60,6 +87,8 @@ class BNS:
         # Write tracking for first-N and dump-all modes
         self.write_log = []  # List of (addr, value) tuples
         self.write_counts = {}  # Address -> occurrence count
+        self._bsp_bg_timer_zero_writes = 0
+        self._bsp_command_loop_ready = False
 
         # Statistics
         self.stats = {
@@ -119,6 +148,17 @@ class BNS:
     def _mem_write(self, addr: int, value: int) -> None:
         """Memory write callback for CPU."""
         self.stats['writes'] += 1
+
+        # BSP STARTA writes zero to bg_timer and immediately calls bg_task,
+        # which writes zero there again.  Under the linked BSP MMU state,
+        # logical 0xD653 is physical 0x41653.
+        if addr == 0x41653:
+            if value == 0:
+                self._bsp_bg_timer_zero_writes += 1
+                if self._bsp_bg_timer_zero_writes >= 2:
+                    self._bsp_command_loop_ready = True
+            else:
+                self._bsp_bg_timer_zero_writes = 0
 
         # Single address trace
         if self.trace_writes_addr is not None and addr == self.trace_writes_addr:
@@ -246,6 +286,21 @@ class BNS:
             print("Audio: ENABLED")
             self.synth.start()
 
+        input_queue: queue.Queue[str | None] | None = None
+        input_phase: str | None = None
+        if self.stdio:
+            input_queue = queue.Queue()
+
+            def read_stdin() -> None:
+                try:
+                    while character := sys.stdin.read(1):
+                        input_queue.put(character)
+                finally:
+                    input_queue.put(None)
+
+            threading.Thread(target=read_stdin, daemon=True, name="bns-stdin").start()
+            print("Input: STDIN (English BNS keyboard)")
+
         cycles_run = 0
         try:
             while (max_cycles == 0 or cycles_run < max_cycles) and not self.cpu.halted:
@@ -253,10 +308,31 @@ class BNS:
                 chunk = 1000 if max_cycles == 0 else min(1000, max_cycles - cycles_run)
                 actual = self.cpu.run(chunk)
                 cycles_run += actual
+                self.stats['cycles'] = cycles_run
 
                 # Update SSI-263 cycle count and check for pending phoneme completion IRQ
                 self.ssi263.set_cycle_count(cycles_run)
                 self.ssi263.check_pending_irq(cycles_run)
+
+                if input_phase == "down" and not self.keyboard.latched:
+                    self.keyboard.release()
+                    input_phase = "up"
+                elif input_phase == "up" and not self.keyboard.latched:
+                    input_phase = None
+
+                if input_queue is not None and input_phase is None and self._bsp_command_loop_ready:
+                    try:
+                        character = input_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    else:
+                        if character is not None:
+                            codepoint = ord(character)
+                            if codepoint < len(_ASCII_TO_BNS_KEY):
+                                self.keyboard.press(_ASCII_TO_BNS_KEY[codepoint])
+                                input_phase = "down"
+                            else:
+                                print(f"[Input] Unsupported character: U+{codepoint:04X}")
 
                 # Check for speech output (log only if no audio)
                 if self.ssi263.phoneme_log:
@@ -402,7 +478,8 @@ def main() -> None:
         trace_writes=args.trace_writes,
         trace_writes_range=trace_range,
         trace_first_writes=args.trace_first_writes,
-        dump_writes_file=args.dump_writes
+        dump_writes_file=args.dump_writes,
+        stdio=True,
     )
     bns.load_rom(args.rom_file)
 
