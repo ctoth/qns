@@ -46,6 +46,7 @@ class BNS:
     PORT_SSI263 = 0xC0
     PORT_WATCHDOG = 0x80
     PORT_SPEECH_POWER = 0x80
+    PORT_RS232_POWER = 0xA0
     PORT_RTC_START = 0x60
     PORT_RTC_END = 0x6F
     PORT_CBR = 0x38
@@ -114,6 +115,7 @@ class BNS:
         self.rtc = MSM6242RTC(base_port=self.PORT_RTC_START)
         self.watchdog = Watchdog(port=self.PORT_WATCHDOG)
         self.speech_power_enabled = False
+        self.rs232_power_enabled = False
 
         # Audio synthesis
         self.synth = None
@@ -244,6 +246,9 @@ class BNS:
             self._write_speech_power,
         )
 
+        # BSPLUS MAXON/MAXOFF drive bit zero of the MAX232 power latch.
+        self.io.register(self.PORT_RS232_POWER, write_handler=self._write_rs232_power)
+
         # MMU registers
         self.io.register(self.PORT_CBR, lambda p: self.memory.cbr,
                         lambda p, v: self.memory.set_mmu(cbr=v))
@@ -255,6 +260,10 @@ class BNS:
     def _write_speech_power(self, port: int, value: int) -> None:
         """Apply the BSPLUS speech-power latch's bit-zero state."""
         self.speech_power_enabled = bool(value & 0x01)
+
+    def _write_rs232_power(self, port: int, value: int) -> None:
+        """Apply the BSPLUS RS-232 transceiver-power latch's bit-zero state."""
+        self.rs232_power_enabled = bool(value & 0x01)
 
     def _serial_receive(self, channel: int) -> int:
         """Return the next stdin byte for the selected ASCI channel."""

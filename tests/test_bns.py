@@ -65,6 +65,23 @@ def test_bsplus_maps_msm6242_clock_window_at_port_60():
         assert 0 <= bns._io_read(port) <= 9
 
 
+def test_bsplus_port_a0_controls_rs232_transceiver_power():
+    """MAXON and MAXOFF use bit zero of the BSPLUS RS-232 power latch."""
+    bns = BNS()
+
+    assert not bns.rs232_power_enabled
+    assert bns._io_read(0xA0) == 0xFF
+
+    bns._io_write(0xA0, 1)
+    assert bns.rs232_power_enabled
+
+    bns._io_write(0xA0, 0)
+    assert not bns.rs232_power_enabled
+
+    bns._io_write(0xA0, 9)
+    assert bns.rs232_power_enabled
+
+
 def test_serial_standard_streams_select_one_asci_channel():
     """Raw serial input and output must not leak across ASCI channels."""
     output = BytesIO()
