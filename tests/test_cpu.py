@@ -68,3 +68,41 @@ def test_asci_receive_consumes_python_byte_callback():
     cpu.run(1_000)
 
     assert memory[0x100] == 0x5A
+
+
+def test_csio_exchange_crosses_native_callback_boundary():
+    """CSI/O must deliver transmit data and return a received byte to firmware."""
+    assert CFFI_AVAILABLE
+    transmitted: list[int] = []
+    pending = [0x0A]
+    program = bytes((
+        0x3E, 0x81,        # LD A,81h
+        0xED, 0x39, 0x0B,  # OUT0 (TRDR),A
+        0x3E, 0x10,        # LD A,TE
+        0xED, 0x39, 0x0A,  # OUT0 (CNTR),A
+        0xED, 0x38, 0x0A,  # IN0 A,(CNTR)
+        0xE6, 0x10,        # AND TE
+        0x20, 0xF9,        # JR NZ back to the control read
+        0x3E, 0x20,        # LD A,RE
+        0xED, 0x39, 0x0A,  # OUT0 (CNTR),A
+        0xED, 0x38, 0x0A,  # IN0 A,(CNTR)
+        0xE6, 0x20,        # AND RE
+        0x20, 0xF9,        # JR NZ back to the control read
+        0xED, 0x38, 0x0B,  # IN0 A,(TRDR)
+        0x32, 0x00, 0x01,  # LD (0100h),A
+        0x76,              # HALT
+    ))
+
+    def receive() -> int:
+        return pending.pop() if pending else -1
+
+    cpu, memory = _cpu_with_program(
+        program,
+        csio_rx=receive,
+        csio_tx=transmitted.append,
+    )
+
+    cpu.run(1_000)
+
+    assert transmitted == [0x81]
+    assert memory[0x100] == 0x0A

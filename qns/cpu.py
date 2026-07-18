@@ -52,6 +52,8 @@ class Z180:
         io_write: Callable[[int, int], None] | None = None,
         serial_rx: Callable[[int], int] | None = None,
         serial_tx: Callable[[int, int], None] | None = None,
+        csio_rx: Callable[[], int] | None = None,
+        csio_tx: Callable[[int], None] | None = None,
     ):
         """Create a Z180 CPU.
 
@@ -63,6 +65,8 @@ class Z180:
             io_write: Callback for I/O writes (port, value) -> None
             serial_rx: Callback returning a byte or -1 when no byte is available
             serial_tx: Callback for transmitted (channel, byte) pairs
+            csio_rx: Callback returning a CSI/O byte or -1 when unavailable
+            csio_tx: Callback for transmitted CSI/O bytes
         """
         self.clock = clock
         self._halted = False
@@ -74,6 +78,8 @@ class Z180:
         self._io_write = io_write
         self._serial_rx = serial_rx
         self._serial_tx = serial_tx
+        self._csio_rx = csio_rx
+        self._csio_tx = csio_tx
 
         if CFFI_AVAILABLE:
             self._init_cffi()
@@ -118,6 +124,17 @@ class Z180:
             if self._serial_tx:
                 self._serial_tx(channel, val)
 
+        @ffi.callback("int(void)")
+        def c_csio_rx() -> int:
+            if self._csio_rx:
+                return self._csio_rx()
+            return -1
+
+        @ffi.callback("void(UINT8)")
+        def c_csio_tx(val: int) -> None:
+            if self._csio_tx:
+                self._csio_tx(val)
+
         # Keep callbacks alive
         self._c_callbacks = (
             c_mem_read,
@@ -126,6 +143,8 @@ class Z180:
             c_io_write,
             c_serial_rx,
             c_serial_tx,
+            c_csio_rx,
+            c_csio_tx,
         )
 
         # Create the CPU
@@ -137,6 +156,8 @@ class Z180:
             c_io_write,
             c_serial_rx,
             c_serial_tx,
+            c_csio_rx,
+            c_csio_tx,
         )
         if self._cpu == ffi.NULL:
             raise RuntimeError("Failed to create Z180 CPU")

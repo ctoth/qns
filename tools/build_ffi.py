@@ -44,6 +44,8 @@ typedef UINT8 (*io_read_callback)(offs_t port);
 typedef void (*io_write_callback)(offs_t port, UINT8 data);
 typedef int (*serial_rx_callback)(int channel);
 typedef void (*serial_tx_callback)(int channel, UINT8 data);
+typedef int (*csio_rx_callback)(void);
+typedef void (*csio_tx_callback)(UINT8 data);
 
 // CPU state indices
 #define Z180_PC 0x100000
@@ -82,7 +84,9 @@ qns_z180_t* qns_z180_create(
     io_read_callback io_read,
     io_write_callback io_write,
     serial_rx_callback serial_rx,
-    serial_tx_callback serial_tx
+    serial_tx_callback serial_tx,
+    csio_rx_callback csio_rx,
+    csio_tx_callback csio_tx
 );
 
 // Destroy the CPU
@@ -130,11 +134,6 @@ int VERBOSE = 0;
 #include "z180/z180asci.h"
 #include "z180/z180.h"
 
-// Stub for debugger hook (required by z180emu)
-void debugger_instruction_hook(device_t *device, offs_t curpc) {{
-    // No-op: debugger not used
-}}
-
 // Callback types for Python
 typedef UINT8 (*mem_read_callback)(offs_t address);
 typedef void (*mem_write_callback)(offs_t address, UINT8 data);
@@ -142,6 +141,11 @@ typedef UINT8 (*io_read_callback)(offs_t port);
 typedef void (*io_write_callback)(offs_t port, UINT8 data);
 typedef int (*serial_rx_callback)(int channel);
 typedef void (*serial_tx_callback)(int channel, UINT8 data);
+typedef int (*csio_rx_callback)(void);
+typedef void (*csio_tx_callback)(UINT8 data);
+
+struct z180_state;
+void z180_writecontrol(struct z180_state *cpustate, offs_t port, UINT8 data);
 
 // Our wrapper structure
 typedef struct qns_z180 {{
@@ -154,11 +158,53 @@ typedef struct qns_z180 {{
     io_write_callback py_io_write;
     serial_rx_callback py_serial_rx;
     serial_tx_callback py_serial_tx;
+    csio_rx_callback py_csio_rx;
+    csio_tx_callback py_csio_tx;
     unsigned int asci_cycles;
 }} qns_z180_t;
 
 // Static pointer for callback routing (single instance for now)
 static qns_z180_t* g_cpu = NULL;
+static void service_csio(qns_z180_t* cpu) {{
+    UINT8 cntr = (UINT8)cpu_get_state_z180(cpu->device, Z180_CNTR);
+    offs_t control_base = cpu_get_state_z180(cpu->device, Z180_IOCR) & 0xc0;
+
+    if (cntr & 0x10) {{
+        if (cpu->py_csio_tx) {{
+            cpu->py_csio_tx((UINT8)cpu_get_state_z180(cpu->device, Z180_TRDR));
+        }}
+        cntr &= (UINT8)~0x10;
+        z180_writecontrol(
+            (struct z180_state *)cpu->device->m_token,
+            control_base + Z180_CNTR,
+            cntr
+        );
+    }}
+
+    if (cntr & 0x20) {{
+        int received = cpu->py_csio_rx ? cpu->py_csio_rx() : -1;
+        if (received >= 0) {{
+            z180_writecontrol(
+                (struct z180_state *)cpu->device->m_token,
+                control_base + Z180_TRDR,
+                (UINT8)received
+            );
+            cntr &= (UINT8)~0x20;
+            z180_writecontrol(
+                (struct z180_state *)cpu->device->m_token,
+                control_base + Z180_CNTR,
+                cntr
+            );
+        }}
+    }}
+}}
+
+// The CPU core calls this before every instruction.
+void debugger_instruction_hook(device_t *device, offs_t curpc) {{
+    if (g_cpu && g_cpu->device == (struct z180_device *)device) {{
+        service_csio(g_cpu);
+    }}
+}}
 
 // Memory read thunk
 static UINT8 mem_read_thunk(offs_t addr) {{
@@ -226,7 +272,9 @@ qns_z180_t* qns_z180_create(
     io_read_callback io_read,
     io_write_callback io_write,
     serial_rx_callback serial_rx_cb,
-    serial_tx_callback serial_tx_cb
+    serial_tx_callback serial_tx_cb,
+    csio_rx_callback csio_rx_cb,
+    csio_tx_callback csio_tx_cb
 ) {{
     qns_z180_t* cpu = (qns_z180_t*)calloc(1, sizeof(qns_z180_t));
     if (!cpu) return NULL;
@@ -238,6 +286,8 @@ qns_z180_t* qns_z180_create(
     cpu->py_io_write = io_write;
     cpu->py_serial_rx = serial_rx_cb;
     cpu->py_serial_tx = serial_tx_cb;
+    cpu->py_csio_rx = csio_rx_cb;
+    cpu->py_csio_tx = csio_tx_cb;
 
     // Set up address spaces with our thunks
     cpu->mem_space.read_byte = mem_read_thunk;
