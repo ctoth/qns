@@ -1,5 +1,9 @@
 """Memory subsystem with Z180 MMU banking."""
 
+from pathlib import Path
+
+_STATE_MAGIC = b"QNSRAM\x00\x01"
+
 
 class Memory:
     """
@@ -38,6 +42,52 @@ class Memory:
         """Load ROM image."""
         self.rom[offset:offset + len(data)] = data
         self.rom_loaded = True
+
+    def load_state(self, path: Path | str) -> None:
+        """Load nonvolatile RAM bytes and the shadow-RAM written bitmap."""
+        data = Path(path).read_bytes()
+        header_size = len(_STATE_MAGIC) + 4
+        if len(data) < header_size or data[:len(_STATE_MAGIC)] != _STATE_MAGIC:
+            raise ValueError("not a QNS nonvolatile RAM state file")
+
+        ram_size = int.from_bytes(data[len(_STATE_MAGIC):header_size], "little")
+        if ram_size != len(self.ram):
+            raise ValueError(
+                f"state RAM size is {ram_size} bytes; emulator requires {len(self.ram)}"
+            )
+
+        bitmap_size = (ram_size + 7) // 8
+        expected_size = header_size + bitmap_size + ram_size
+        if len(data) != expected_size:
+            raise ValueError(
+                f"state file is {len(data)} bytes; expected {expected_size}"
+            )
+
+        bitmap = data[header_size:header_size + bitmap_size]
+        self.ram[:] = data[header_size + bitmap_size:]
+        self._written_addrs = {
+            address
+            for address in range(ram_size)
+            if bitmap[address >> 3] & (1 << (address & 7))
+        }
+
+    def save_state(self, path: Path | str) -> None:
+        """Atomically save nonvolatile RAM and shadow-RAM written addresses."""
+        path = Path(path)
+        bitmap = bytearray((len(self.ram) + 7) // 8)
+        for address in self._written_addrs:
+            if address < len(self.ram):
+                bitmap[address >> 3] |= 1 << (address & 7)
+
+        data = b"".join((
+            _STATE_MAGIC,
+            len(self.ram).to_bytes(4, "little"),
+            bytes(bitmap),
+            bytes(self.ram),
+        ))
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_bytes(data)
+        temporary.replace(path)
 
     def read(self, addr: int) -> int:
         """Read byte from physical address (z180emu does MMU translation).

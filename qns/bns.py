@@ -431,6 +431,16 @@ class BNS:
         path.write_bytes(bytes(self.memory.ram))
         print(f"RAM dumped to {path} ({len(self.memory.ram)} bytes)")
 
+    def load_state(self, path: Path | str) -> None:
+        """Load the BNS nonvolatile RAM state."""
+        self.memory.load_state(path)
+        print(f"Loaded nonvolatile RAM state: {path}")
+
+    def save_state(self, path: Path | str) -> None:
+        """Save the BNS nonvolatile RAM state."""
+        self.memory.save_state(path)
+        print(f"Saved nonvolatile RAM state: {path}")
+
     def print_stats(self) -> None:
         """Print execution statistics."""
         print("\n=== Execution Statistics ===")
@@ -531,6 +541,8 @@ def main() -> None:
                         help="Dump all unique write addresses to CSV file (address,count)")
     parser.add_argument("--dump-ram", type=str, metavar="FILE",
                         help="Dump RAM contents to file after execution")
+    parser.add_argument("--state", type=str, metavar="FILE",
+                        help="Load nonvolatile RAM state before execution and save it afterward")
     parser.add_argument("--stats", action="store_true",
                         help="Show execution statistics at end")
 
@@ -560,6 +572,12 @@ def main() -> None:
             serial_output_channel=serial_output_channel,
         )
         bns.load_rom(args.rom_file)
+        if args.state:
+            state_path = Path(args.state)
+            if state_path.exists():
+                bns.load_state(state_path)
+            else:
+                print(f"Initializing nonvolatile RAM state: {state_path}")
 
         if args.trace:
             bns.trace_boot()
@@ -569,6 +587,9 @@ def main() -> None:
         # Post-run actions
         if args.dump_ram:
             bns.dump_ram(args.dump_ram)
+
+        if args.state:
+            bns.save_state(args.state)
 
         # Dump trace data if any tracing was enabled
         bns.dump_trace_data()

@@ -139,3 +139,76 @@ def test_cli_serial_standard_io_round_trip(tmp_path):
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     assert result.stdout == b"Z"
     assert b"Input: STDIN (serial0)" in result.stderr
+
+
+def test_cli_state_round_trip_preserves_rom_shadow_ram(tmp_path):
+    """A later process must read bytes written behind ROM by an earlier one."""
+    state_path = tmp_path / "bsp.state"
+    writer_rom = tmp_path / "state-writer.bin"
+    writer_rom.write_bytes(bytes((
+        0x3E, 0x5A,        # LD A,5Ah
+        0x32, 0x00, 0xF0,  # LD (F000h),A: shadow RAM behind ROM
+        0x18, 0xFE,        # JR to itself
+    )))
+
+    writer = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "qns.bns",
+            str(writer_rom),
+            "--cycles",
+            "5000",
+            "--input",
+            "serial0",
+            "--output",
+            "serial0",
+            "--state",
+            str(state_path),
+        ),
+        input=b"",
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert writer.returncode == 0, writer.stderr.decode(errors="replace")
+    assert state_path.exists()
+    assert b"Initializing nonvolatile RAM state" in writer.stderr
+    assert b"Saved nonvolatile RAM state" in writer.stderr
+
+    reader_rom = tmp_path / "state-reader.bin"
+    reader_rom.write_bytes(bytes((
+        0x3E, 0x64,        # LD A,64h: 8-N-1, transmit and receive enabled
+        0xED, 0x39, 0x00,  # OUT0 (CNTLA0),A
+        0x3E, 0x02,        # LD A,2: BSP's initial 9600-baud divisor
+        0xED, 0x39, 0x02,  # OUT0 (CNTLB0),A
+        0x3A, 0x00, 0xF0,  # LD A,(F000h): restored shadow RAM
+        0xED, 0x39, 0x06,  # OUT0 (TDR0),A
+        0x18, 0xFE,        # JR to itself
+    )))
+
+    reader = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "qns.bns",
+            str(reader_rom),
+            "--cycles",
+            "200000",
+            "--input",
+            "serial0",
+            "--output",
+            "serial0",
+            "--state",
+            str(state_path),
+        ),
+        input=b"",
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert reader.returncode == 0, reader.stderr.decode(errors="replace")
+    assert reader.stdout == b"\x5A"
+    assert b"Loaded nonvolatile RAM state" in reader.stderr
