@@ -406,7 +406,7 @@ class BNS:
 
         cycles_run = 0
         try:
-            while (max_cycles == 0 or cycles_run < max_cycles) and not self.cpu.halted:
+            while max_cycles == 0 or cycles_run < max_cycles:
                 # Run in chunks of 1000 cycles
                 chunk = 1000 if max_cycles == 0 else min(1000, max_cycles - cycles_run)
                 actual = self.cpu.run(chunk)

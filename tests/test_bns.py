@@ -121,6 +121,30 @@ def test_bns_rejects_unknown_hardware_model():
         BNS(model="unknown")
 
 
+def test_run_keeps_advancing_native_time_while_cpu_is_halted():
+    """HALT waits for hardware interrupts; it does not terminate emulation."""
+    bns = BNS()
+
+    class HaltedCPU:
+        halted = True
+        pc = 0x1234
+
+        def __init__(self):
+            self.chunks = []
+
+        def run(self, cycles):
+            self.chunks.append(cycles)
+            return cycles
+
+    cpu = HaltedCPU()
+    bns.cpu = cpu
+
+    bns.run(max_cycles=2000)
+
+    assert cpu.chunks == [1000, 1000]
+    assert bns.stats["cycles"] == 2000
+
+
 def test_serial_standard_streams_select_one_asci_channel():
     """Raw serial input and output must not leak across ASCI channels."""
     output = BytesIO()
