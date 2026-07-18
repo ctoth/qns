@@ -12,7 +12,7 @@ from .cpu import Z180
 from .io import MSM6242RTC, BrailleKeyboard, IOBus, Watchdog
 from .memory import Memory
 from .ssi263 import SSI263
-from .synth import SSI263Synth
+from .synth.ssi263_pcm import SSI263PCMSynth
 
 # Raw English BNS keyboard chords from BSTABLES.ASM's regular English TABLE.
 # A terminal newline represents the BNS carriage-return chord, and a terminal
@@ -120,7 +120,7 @@ class BNS:
         # Audio synthesis
         self.synth = None
         if audio:
-            self.synth = SSI263Synth()
+            self.synth = SSI263PCMSynth()
             self.ssi263.set_synth(self.synth)
 
         self._setup_io()
