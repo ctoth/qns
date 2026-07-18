@@ -6,7 +6,7 @@ from io import BytesIO
 
 import pytest
 
-from qns.bns import _ASCII_TO_BNS_KEY, BNS
+from qns.bns import _ASCII_TO_BNS_KEY, BNS, _read_stdin_character
 
 
 def test_english_stdio_characters_use_firmware_keyboard_chords():
@@ -19,6 +19,23 @@ def test_english_stdio_characters_use_firmware_keyboard_chords():
     assert _ASCII_TO_BNS_KEY[ord("\n")] == 0x8D
     assert _ASCII_TO_BNS_KEY[ord("\r")] == 0x8D
     assert _ASCII_TO_BNS_KEY[0x7F] == 0x78
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows console input")
+def test_interactive_windows_stdin_reads_one_key_without_newline(monkeypatch):
+    """Console keys must reach the BNS immediately without an extra Enter chord."""
+    import msvcrt
+
+    class InteractiveInput:
+        @staticmethod
+        def isatty():
+            return True
+
+    characters = iter(("\xe0", "ignored-extended-key", "O"))
+    monkeypatch.setattr(sys, "stdin", InteractiveInput())
+    monkeypatch.setattr(msvcrt, "getwch", lambda: next(characters))
+
+    assert _read_stdin_character() == "O"
 
 
 def test_bsp_command_loop_gate_requires_starta_bg_task_sequence():

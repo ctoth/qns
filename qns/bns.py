@@ -37,6 +37,20 @@ _ASCII_TO_BNS_KEY = bytes((
 ))
 
 
+def _read_stdin_character() -> str:
+    """Read one redirected byte or one unbuffered Windows console key."""
+    if sys.platform == "win32" and sys.stdin.isatty():
+        import msvcrt
+
+        while True:
+            character = msvcrt.getwch()
+            if character in ("\x00", "\xe0"):
+                msvcrt.getwch()
+                continue
+            return character
+    return sys.stdin.read(1)
+
+
 class BNS:
     """Braille 'N Speak emulator."""
 
@@ -395,7 +409,7 @@ class BNS:
 
             def read_stdin() -> None:
                 if self.stdin_device == "keyboard":
-                    while character := sys.stdin.read(1):
+                    while character := _read_stdin_character():
                         keyboard_input_queue.put(character)
                 else:
                     while data := sys.stdin.buffer.read(1):
