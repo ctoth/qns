@@ -42,6 +42,8 @@ typedef UINT8 (*mem_read_callback)(offs_t address);
 typedef void (*mem_write_callback)(offs_t address, UINT8 data);
 typedef UINT8 (*io_read_callback)(offs_t port);
 typedef void (*io_write_callback)(offs_t port, UINT8 data);
+typedef int (*serial_rx_callback)(int channel);
+typedef void (*serial_tx_callback)(int channel, UINT8 data);
 
 // CPU state indices
 #define Z180_PC 0x100000
@@ -78,7 +80,9 @@ qns_z180_t* qns_z180_create(
     mem_read_callback mem_read,
     mem_write_callback mem_write,
     io_read_callback io_read,
-    io_write_callback io_write
+    io_write_callback io_write,
+    serial_rx_callback serial_rx,
+    serial_tx_callback serial_tx
 );
 
 // Destroy the CPU
@@ -136,6 +140,8 @@ typedef UINT8 (*mem_read_callback)(offs_t address);
 typedef void (*mem_write_callback)(offs_t address, UINT8 data);
 typedef UINT8 (*io_read_callback)(offs_t port);
 typedef void (*io_write_callback)(offs_t port, UINT8 data);
+typedef int (*serial_rx_callback)(int channel);
+typedef void (*serial_tx_callback)(int channel, UINT8 data);
 
 // Our wrapper structure
 typedef struct qns_z180 {{
@@ -146,6 +152,9 @@ typedef struct qns_z180 {{
     mem_write_callback py_mem_write;
     io_read_callback py_io_read;
     io_write_callback py_io_write;
+    serial_rx_callback py_serial_rx;
+    serial_tx_callback py_serial_tx;
+    unsigned int asci_cycles;
 }} qns_z180_t;
 
 // Static pointer for callback routing (single instance for now)
@@ -196,13 +205,17 @@ static int irq_ack(device_t* device, int irqnum) {{
     return 0xFF;  // No vector for IM1
 }}
 
-// Serial callbacks (stubs)
 static int serial_rx(device_t* device, int channel) {{
-    return -1;  // No data
+    if (g_cpu && g_cpu->py_serial_rx) {{
+        return g_cpu->py_serial_rx(channel);
+    }}
+    return -1;
 }}
 
 static void serial_tx(device_t* device, int channel, UINT8 data) {{
-    // Discard for now
+    if (g_cpu && g_cpu->py_serial_tx) {{
+        g_cpu->py_serial_tx(channel, data);
+    }}
 }}
 
 // Create a Z180 CPU
@@ -211,7 +224,9 @@ qns_z180_t* qns_z180_create(
     mem_read_callback mem_read,
     mem_write_callback mem_write,
     io_read_callback io_read,
-    io_write_callback io_write
+    io_write_callback io_write,
+    serial_rx_callback serial_rx_cb,
+    serial_tx_callback serial_tx_cb
 ) {{
     qns_z180_t* cpu = (qns_z180_t*)calloc(1, sizeof(qns_z180_t));
     if (!cpu) return NULL;
@@ -221,6 +236,8 @@ qns_z180_t* qns_z180_create(
     cpu->py_mem_write = mem_write;
     cpu->py_io_read = io_read;
     cpu->py_io_write = io_write;
+    cpu->py_serial_rx = serial_rx_cb;
+    cpu->py_serial_tx = serial_tx_cb;
 
     // Set up address spaces with our thunks
     cpu->mem_space.read_byte = mem_read_thunk;
@@ -258,6 +275,8 @@ qns_z180_t* qns_z180_create(
     }}
 
     cpu_reset_z180(cpu->device);
+    cpu->device->z180asci->m_chan0->m_brg_timer = cpu->device->z180asci->m_chan0->m_brg_const;
+    cpu->device->z180asci->m_chan1->m_brg_timer = cpu->device->z180asci->m_chan1->m_brg_const;
     return cpu;
 }}
 
@@ -272,12 +291,21 @@ void qns_z180_destroy(qns_z180_t* cpu) {{
 void qns_z180_reset(qns_z180_t* cpu) {{
     if (cpu && cpu->device) {{
         cpu_reset_z180(cpu->device);
+        cpu->asci_cycles = 0;
+        cpu->device->z180asci->m_chan0->m_brg_timer = cpu->device->z180asci->m_chan0->m_brg_const;
+        cpu->device->z180asci->m_chan1->m_brg_timer = cpu->device->z180asci->m_chan1->m_brg_const;
     }}
 }}
 
 int qns_z180_execute(qns_z180_t* cpu, int cycles) {{
     if (cpu && cpu->device) {{
         cpu_execute_z180(cpu->device, cycles);
+        cpu->asci_cycles += cycles;
+        while (cpu->asci_cycles >= 16) {{
+            z180asci_channel_device_timer(cpu->device->z180asci->m_chan0);
+            z180asci_channel_device_timer(cpu->device->z180asci->m_chan1);
+            cpu->asci_cycles -= 16;
+        }}
         return cycles;  // z180emu doesn't return actual cycles
     }}
     return 0;

@@ -50,6 +50,8 @@ class Z180:
         mem_write: Callable[[int, int], None] | None = None,
         io_read: Callable[[int], int] | None = None,
         io_write: Callable[[int, int], None] | None = None,
+        serial_rx: Callable[[int], int] | None = None,
+        serial_tx: Callable[[int, int], None] | None = None,
     ):
         """Create a Z180 CPU.
 
@@ -59,6 +61,8 @@ class Z180:
             mem_write: Callback for memory writes (address, value) -> None
             io_read: Callback for I/O reads (port) -> value
             io_write: Callback for I/O writes (port, value) -> None
+            serial_rx: Callback returning a byte or -1 when no byte is available
+            serial_tx: Callback for transmitted (channel, byte) pairs
         """
         self.clock = clock
         self._halted = False
@@ -68,6 +72,8 @@ class Z180:
         self._mem_write = mem_write
         self._io_read = io_read
         self._io_write = io_write
+        self._serial_rx = serial_rx
+        self._serial_tx = serial_tx
 
         if CFFI_AVAILABLE:
             self._init_cffi()
@@ -101,8 +107,26 @@ class Z180:
             if self._io_write:
                 self._io_write(port, val)
 
+        @ffi.callback("int(int)")
+        def c_serial_rx(channel: int) -> int:
+            if self._serial_rx:
+                return self._serial_rx(channel)
+            return -1
+
+        @ffi.callback("void(int, UINT8)")
+        def c_serial_tx(channel: int, val: int) -> None:
+            if self._serial_tx:
+                self._serial_tx(channel, val)
+
         # Keep callbacks alive
-        self._c_callbacks = (c_mem_read, c_mem_write, c_io_read, c_io_write)
+        self._c_callbacks = (
+            c_mem_read,
+            c_mem_write,
+            c_io_read,
+            c_io_write,
+            c_serial_rx,
+            c_serial_tx,
+        )
 
         # Create the CPU
         self._cpu = lib.qns_z180_create(
@@ -111,6 +135,8 @@ class Z180:
             c_mem_write,
             c_io_read,
             c_io_write,
+            c_serial_rx,
+            c_serial_tx,
         )
         if self._cpu == ffi.NULL:
             raise RuntimeError("Failed to create Z180 CPU")
