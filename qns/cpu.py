@@ -261,6 +261,47 @@ class Z180:
             return lib.qns_z180_get_cbar(self._cpu)
         return 0xF0
 
+    def asci_debug_state(self, channel: int) -> dict[str, int | bool]:
+        """Return a read-only snapshot of one native ASCI receive path."""
+        if channel not in (0, 1):
+            raise ValueError(f"ASCI channel must be 0 or 1, got {channel}")
+        if not CFFI_AVAILABLE or not self._cpu:
+            return {
+                "status": 0,
+                "rx_bits_remaining": 0,
+                "rx_fifo_depth": 0,
+                "irq_pending": False,
+            }
+        return {
+            "status": int(lib.qns_z180_get_asci_stat(self._cpu, channel)),
+            "rx_bits_remaining": int(
+                lib.qns_z180_get_asci_rx_bits_remaining(self._cpu, channel)
+            ),
+            "rx_fifo_depth": int(lib.qns_z180_get_asci_rx_fifo_depth(self._cpu, channel)),
+            "irq_pending": bool(lib.qns_z180_get_asci_irq_pending(self._cpu, channel)),
+        }
+
+    def watch_pc(self, address: int | None) -> None:
+        """Reset and enable one native instruction-address watch, or disable it."""
+        if address is not None and not 0 <= address <= 0xFFFF:
+            raise ValueError(f"PC watch address must be 0..FFFF, got {address}")
+        if CFFI_AVAILABLE and self._cpu:
+            lib.qns_z180_watch_pc(self._cpu, -1 if address is None else address)
+
+    @property
+    def pc_watch_count(self) -> int:
+        """Return the number of instructions entered at the watched address."""
+        if CFFI_AVAILABLE and self._cpu:
+            return int(lib.qns_z180_get_pc_watch_count(self._cpu))
+        return 0
+
+    @property
+    def pc_watch_cycle(self) -> int:
+        """Return the accumulated cycle position of the most recent watch hit."""
+        if CFFI_AVAILABLE and self._cpu:
+            return int(lib.qns_z180_get_pc_watch_cycle(self._cpu))
+        return 0
+
     def __del__(self) -> None:
         """Clean up the CPU."""
         if CFFI_AVAILABLE and hasattr(self, '_cpu') and self._cpu:

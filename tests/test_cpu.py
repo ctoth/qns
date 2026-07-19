@@ -121,7 +121,13 @@ def test_asci_receive_interrupt_survives_disabled_interrupts(channel: int, value
     assert pending == []
     assert cpu.pc == loop_address
     assert memory[0x101] == 0
+    received = cpu.asci_debug_state(channel)
+    assert received["status"] & 0x80
+    assert received["rx_bits_remaining"] == 0
+    assert received["rx_fifo_depth"] == 1
+    assert received["irq_pending"] is True
 
+    cpu.watch_pc(0x200)
     memory[loop_address:loop_address + 4] = bytes((
         0xFB,       # EI
         0x00,       # EI shadow
@@ -131,6 +137,25 @@ def test_asci_receive_interrupt_survives_disabled_interrupts(channel: int, value
 
     assert memory[0x101] == 0xA5
     assert memory[0x100] == value
+    assert cpu.pc_watch_count == 1
+    assert cpu.pc_watch_cycle > 50_000
+    serviced = cpu.asci_debug_state(channel)
+    assert serviced["status"] & 0x80 == 0
+    assert serviced["rx_bits_remaining"] == 0
+    assert serviced["rx_fifo_depth"] == 0
+
+
+def test_asci_debug_state_rejects_invalid_channel():
+    """ASCI diagnostic snapshots must not silently alias invalid channels."""
+    cpu, _ = _cpu_with_program(bytes((0x76,)))
+
+    for channel in (-1, 2):
+        try:
+            cpu.asci_debug_state(channel)
+        except ValueError as error:
+            assert str(channel) in str(error)
+        else:
+            raise AssertionError(f"channel {channel} did not raise ValueError")
 
 
 def test_csio_exchange_crosses_native_callback_boundary():

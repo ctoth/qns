@@ -125,6 +125,17 @@ int qns_z180_is_halted(qns_z180_t* cpu);
 UINT8 qns_z180_get_cbr(qns_z180_t* cpu);
 UINT8 qns_z180_get_bbr(qns_z180_t* cpu);
 UINT8 qns_z180_get_cbar(qns_z180_t* cpu);
+
+// Read-only ASCI diagnostics
+UINT8 qns_z180_get_asci_stat(qns_z180_t* cpu, int channel);
+UINT8 qns_z180_get_asci_rx_bits_remaining(qns_z180_t* cpu, int channel);
+int qns_z180_get_asci_rx_fifo_depth(qns_z180_t* cpu, int channel);
+int qns_z180_get_asci_irq_pending(qns_z180_t* cpu, int channel);
+
+// Single-address instruction watch for causal firmware traces
+void qns_z180_watch_pc(qns_z180_t* cpu, int address);
+unsigned long qns_z180_get_pc_watch_count(qns_z180_t* cpu);
+unsigned long long qns_z180_get_pc_watch_cycle(qns_z180_t* cpu);
 """
 
 # C source that wraps z180emu
@@ -171,6 +182,9 @@ typedef struct qns_z180 {{
     unsigned int asci_cycles;
     unsigned long long completed_cycles;
     int execution_cycles;
+    int pc_watch_address;
+    unsigned long pc_watch_count;
+    unsigned long long pc_watch_cycle;
 }} qns_z180_t;
 
 // Static pointer for callback routing (single instance for now)
@@ -214,6 +228,11 @@ static void service_csio(qns_z180_t* cpu) {{
 // The CPU core calls this before every instruction.
 void debugger_instruction_hook(device_t *device, offs_t curpc) {{
     if (g_cpu && g_cpu->device == (struct z180_device *)device) {{
+        if (g_cpu->pc_watch_address >= 0 && curpc == (offs_t)g_cpu->pc_watch_address) {{
+            g_cpu->pc_watch_count++;
+            g_cpu->pc_watch_cycle = g_cpu->completed_cycles
+                + (unsigned int)(g_cpu->execution_cycles - cpu_get_icount_z180(device));
+        }}
         service_csio(g_cpu);
     }}
 }}
@@ -300,6 +319,7 @@ qns_z180_t* qns_z180_create(
     cpu->py_serial_tx = serial_tx_cb;
     cpu->py_csio_rx = csio_rx_cb;
     cpu->py_csio_tx = csio_tx_cb;
+    cpu->pc_watch_address = -1;
 
     // Set up address spaces with our thunks
     cpu->mem_space.read_byte = mem_read_thunk;
@@ -423,6 +443,63 @@ UINT8 qns_z180_get_bbr(qns_z180_t* cpu) {{
 
 UINT8 qns_z180_get_cbar(qns_z180_t* cpu) {{
     return (UINT8)qns_z180_get_reg(cpu, 58);  // Z180_CBAR
+}}
+
+static struct z180asci_channel* qns_z180_get_asci_channel(qns_z180_t* cpu, int channel) {{
+    if (!cpu || !cpu->device || !cpu->device->z180asci) {{
+        return NULL;
+    }}
+    if (channel == 0) {{
+        return cpu->device->z180asci->m_chan0;
+    }}
+    if (channel == 1) {{
+        return cpu->device->z180asci->m_chan1;
+    }}
+    return NULL;
+}}
+
+UINT8 qns_z180_get_asci_stat(qns_z180_t* cpu, int channel) {{
+    struct z180asci_channel* asci = qns_z180_get_asci_channel(cpu, channel);
+    return asci ? asci->m_stat : 0;
+}}
+
+UINT8 qns_z180_get_asci_rx_bits_remaining(qns_z180_t* cpu, int channel) {{
+    struct z180asci_channel* asci = qns_z180_get_asci_channel(cpu, channel);
+    return asci ? asci->rx_bits_rem : 0;
+}}
+
+int qns_z180_get_asci_rx_fifo_depth(qns_z180_t* cpu, int channel) {{
+    struct z180asci_channel* asci = qns_z180_get_asci_channel(cpu, channel);
+    int depth;
+    if (!asci) {{
+        return 0;
+    }}
+    depth = asci->m_rx_fifo_wp - asci->m_rx_fifo_rp;
+    return depth >= 0 ? depth : depth + M_RX_FIFO_SZ;
+}}
+
+int qns_z180_get_asci_irq_pending(qns_z180_t* cpu, int channel) {{
+    if (!cpu || !cpu->device) {{
+        return 0;
+    }}
+    return z180_get_asci_irq_pending(cpu->device, channel);
+}}
+
+void qns_z180_watch_pc(qns_z180_t* cpu, int address) {{
+    if (!cpu) {{
+        return;
+    }}
+    cpu->pc_watch_address = address >= 0 && address <= 0xffff ? address : -1;
+    cpu->pc_watch_count = 0;
+    cpu->pc_watch_cycle = 0;
+}}
+
+unsigned long qns_z180_get_pc_watch_count(qns_z180_t* cpu) {{
+    return cpu ? cpu->pc_watch_count : 0;
+}}
+
+unsigned long long qns_z180_get_pc_watch_cycle(qns_z180_t* cpu) {{
+    return cpu ? cpu->pc_watch_cycle : 0;
 }}
 '''.format()
 
