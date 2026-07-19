@@ -130,6 +130,10 @@ UINT8 qns_z180_get_cbar(qns_z180_t* cpu);
 UINT8 qns_z180_get_asci_stat(qns_z180_t* cpu, int channel);
 UINT8 qns_z180_get_asci_rx_bits_remaining(qns_z180_t* cpu, int channel);
 int qns_z180_get_asci_rx_fifo_depth(qns_z180_t* cpu, int channel);
+UINT8 qns_z180_get_asci_cntla(qns_z180_t* cpu, int channel);
+UINT8 qns_z180_get_asci_tx_bits_remaining(qns_z180_t* cpu, int channel);
+UINT8 qns_z180_get_asci_tx_shift_register(qns_z180_t* cpu, int channel);
+UINT8 qns_z180_get_asci_tx_data_register(qns_z180_t* cpu, int channel);
 int qns_z180_get_asci_irq_pending(qns_z180_t* cpu, int channel);
 unsigned int qns_z180_get_asci_brg_divisor(qns_z180_t* cpu, int channel);
 UINT8 qns_z180_get_asci_frame_bits(qns_z180_t* cpu, int channel);
@@ -551,6 +555,26 @@ int qns_z180_get_asci_rx_fifo_depth(qns_z180_t* cpu, int channel) {{
     }}
     depth = asci->m_rx_fifo_wp - asci->m_rx_fifo_rp;
     return depth >= 0 ? depth : depth + M_RX_FIFO_SZ;
+}}
+
+UINT8 qns_z180_get_asci_cntla(qns_z180_t* cpu, int channel) {{
+    struct z180asci_channel* asci = qns_z180_get_asci_channel(cpu, channel);
+    return asci ? asci->m_cntla : 0;
+}}
+
+UINT8 qns_z180_get_asci_tx_bits_remaining(qns_z180_t* cpu, int channel) {{
+    struct z180asci_channel* asci = qns_z180_get_asci_channel(cpu, channel);
+    return asci ? asci->tx_bits_rem : 0;
+}}
+
+UINT8 qns_z180_get_asci_tx_shift_register(qns_z180_t* cpu, int channel) {{
+    struct z180asci_channel* asci = qns_z180_get_asci_channel(cpu, channel);
+    return asci ? asci->tx_data : 0;
+}}
+
+UINT8 qns_z180_get_asci_tx_data_register(qns_z180_t* cpu, int channel) {{
+    struct z180asci_channel* asci = qns_z180_get_asci_channel(cpu, channel);
+    return asci ? asci->m_tdr : 0;
 }}
 
 int qns_z180_get_asci_irq_pending(qns_z180_t* cpu, int channel) {{

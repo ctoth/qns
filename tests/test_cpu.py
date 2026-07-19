@@ -21,17 +21,25 @@ def _cpu_with_program(program: bytes, **callbacks) -> tuple[Z180, bytearray]:
     return cpu, memory
 
 
-def test_asci_transmit_reaches_python_byte_callback():
-    """A real channel-0 frame must cross the native bridge after completion."""
+@settings(max_examples=32, deadline=None)
+@given(
+    channel=st.sampled_from((0, 1)),
+    value=st.integers(min_value=0, max_value=255),
+)
+def test_asci_transmit_reaches_python_byte_callback(channel: int, value: int):
+    """Every ASCI byte must expose its in-flight state and exact completion."""
     assert CFFI_AVAILABLE
     transmitted: list[tuple[int, int]] = []
+    cntla_port = channel
+    cntlb_port = 0x02 + channel
+    tdr_port = 0x06 + channel
     program = bytes((
         0x3E, 0x64,        # LD A,64h: 8-N-1, transmit and receive enabled
-        0xED, 0x39, 0x00,  # OUT0 (CNTLA0),A
+        0xED, 0x39, cntla_port,  # OUT0 (CNTLA),A
         0x3E, 0x02,        # LD A,2: BSP's initial 9600-baud divisor
-        0xED, 0x39, 0x02,  # OUT0 (CNTLB0),A
-        0x3E, 0x41,        # LD A,'A'
-        0xED, 0x39, 0x06,  # OUT0 (TDR0),A
+        0xED, 0x39, cntlb_port,  # OUT0 (CNTLB),A
+        0x3E, value,       # LD A,value
+        0xED, 0x39, tdr_port,  # OUT0 (TDR),A
         0x18, 0xFE,        # JR $
     ))
 
@@ -40,9 +48,19 @@ def test_asci_transmit_reaches_python_byte_callback():
 
     cpu, _ = _cpu_with_program(program, serial_tx=transmit)
 
+    cpu.run(100)
+    active = cpu.asci_debug_state(channel)
+    assert active["cntla"] == 0x64
+    assert active["tx_bits_remaining"] > 0
+    assert active["tx_shift_register"] == value
+    assert active["tx_data_register"] == value
+    assert transmitted == []
+
     cpu.run(50_000)
 
-    assert transmitted == [(0, 0x41)]
+    completed = cpu.asci_debug_state(channel)
+    assert completed["tx_bits_remaining"] == 0
+    assert transmitted == [(channel, value)]
 
 
 def test_asci_receive_consumes_python_byte_callback():

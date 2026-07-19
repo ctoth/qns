@@ -262,7 +262,7 @@ class Z180:
         return 0xF0
 
     def asci_debug_state(self, channel: int) -> dict[str, int | bool]:
-        """Return a read-only snapshot of one native ASCI receive path."""
+        """Return a read-only snapshot of one native ASCI channel."""
         if channel not in (0, 1):
             raise ValueError(f"ASCI channel must be 0 or 1, got {channel}")
         if not CFFI_AVAILABLE or not self._cpu:
@@ -270,6 +270,10 @@ class Z180:
                 "status": 0,
                 "rx_bits_remaining": 0,
                 "rx_fifo_depth": 0,
+                "cntla": 0,
+                "tx_bits_remaining": 0,
+                "tx_shift_register": 0,
+                "tx_data_register": 0,
                 "irq_pending": False,
                 "brg_divisor": 0,
                 "frame_bits": 0,
@@ -288,6 +292,16 @@ class Z180:
                 lib.qns_z180_get_asci_rx_bits_remaining(self._cpu, channel)
             ),
             "rx_fifo_depth": int(lib.qns_z180_get_asci_rx_fifo_depth(self._cpu, channel)),
+            "cntla": int(lib.qns_z180_get_asci_cntla(self._cpu, channel)),
+            "tx_bits_remaining": int(
+                lib.qns_z180_get_asci_tx_bits_remaining(self._cpu, channel)
+            ),
+            "tx_shift_register": int(
+                lib.qns_z180_get_asci_tx_shift_register(self._cpu, channel)
+            ),
+            "tx_data_register": int(
+                lib.qns_z180_get_asci_tx_data_register(self._cpu, channel)
+            ),
             "irq_pending": bool(lib.qns_z180_get_asci_irq_pending(self._cpu, channel)),
             "brg_divisor": int(lib.qns_z180_get_asci_brg_divisor(self._cpu, channel)),
             "frame_bits": int(lib.qns_z180_get_asci_frame_bits(self._cpu, channel)),
