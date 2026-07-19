@@ -313,6 +313,16 @@ def test_bs2_wires_clock_pic_to_csio_and_8255_c4_strobe():
     assert bns.parallel_ports[2] & 0x10
     assert bns.cpu._csio_rx() != -1
 
+
+def test_bsl_wires_braille_display_to_csio():
+    """The B_LITE profile must answer the firmware's attached-display poll."""
+    bns = BNS(model="bsl")
+
+    bns.cpu._csio_tx(0x81)
+
+    assert bns.cpu._csio_rx() == 0x0A
+    assert bns.cpu._csio_rx() == -1
+
     bns._io_write(0x83, 0x08)
     assert not bns.parallel_ports[2] & 0x10
 

@@ -2,7 +2,40 @@
 
 from datetime import datetime, timedelta
 
-from qns.io import MSM6242RTC, BQ2010GasGauge, BrailleKeyboard, PIC16C56Clock
+from hypothesis import given
+from hypothesis import strategies as st
+
+from qns.io import (
+    MSM6242RTC,
+    BQ2010GasGauge,
+    BrailleDisplay,
+    BrailleKeyboard,
+    PIC16C56Clock,
+)
+
+
+def test_braille_lite_display_returns_source_defined_status_values():
+    """BSL commands expose idle keys, full battery, and no charging current."""
+    display = BrailleDisplay()
+
+    for command, expected in ((0x81, 0x0A), (0x85, 238), (0x86, 0xFF)):
+        display.transmit(command)
+        assert display.receive() == expected
+        assert display.receive() == -1
+
+
+@given(cells=st.binary(min_size=1, max_size=18))
+def test_braille_lite_display_captures_command_prefixed_cells(cells: bytes):
+    """Each 0x83 command makes exactly the following byte one display cell."""
+    display = BrailleDisplay()
+    display.transmit(0x82)
+
+    for cell in cells:
+        display.transmit(0x83)
+        display.transmit(cell)
+
+    assert display.buffer[:len(cells)] == cells
+    assert display.cursor == len(cells) % display.cells
 
 
 def test_bq2010_decodes_bs2_pulses_and_returns_battery_registers():

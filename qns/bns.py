@@ -12,6 +12,7 @@ from .cpu import Z180
 from .io import (
     MSM6242RTC,
     BQ2010GasGauge,
+    BrailleDisplay,
     BrailleKeyboard,
     IOBus,
     PIC16C56Clock,
@@ -97,7 +98,7 @@ class BNS:
         Args:
             clock: CPU clock frequency in Hz (default 12.288 MHz for BSPLUS)
             audio: Enable audio output for SSI-263 speech
-            model: Hardware profile: bsp (BSPLUS) or bs2 (BSNEW)
+            model: Hardware profile: bsp (BSPLUS), bs2 (BSNEW), or bsl (B_LITE)
             trace_io: Log all I/O port reads/writes
             trace_writes: Physical address to trace writes to (None = disabled)
             trace_writes_range: (start, end) tuple for range tracing
@@ -109,7 +110,7 @@ class BNS:
             serial_output: Raw byte stream for the selected serial output channel
             serial_output_channel: ASCI channel routed to serial_output
         """
-        if model not in ("bsp", "bs2"):
+        if model not in ("bsp", "bs2", "bsl"):
             raise ValueError(f"Unsupported BNS model: {model}")
         if power_on_input and stdin_device != "keyboard":
             raise ValueError("power-on input requires keyboard stdin")
@@ -152,6 +153,8 @@ class BNS:
         self.keyboard = BrailleKeyboard(port=self.PORT_KEYBOARD, keyclr_port=self.PORT_KEYCLR)
         self.rtc = MSM6242RTC(base_port=self.PORT_RTC_START)
         self.clock_pic = PIC16C56Clock() if model == "bs2" else None
+        if model == "bsl":
+            self.display = BrailleDisplay()
         self.gas_gauge = BQ2010GasGauge() if model == "bs2" else None
         self.watchdog = Watchdog(port=self.PORT_WATCHDOG)
         self.speech_power_enabled = False
@@ -170,6 +173,7 @@ class BNS:
             self.ssi263.set_synth(self.synth)
 
         self._setup_io()
+        csio_device = self.display if model == "bsl" else self.clock_pic
 
         # Create CPU with memory/IO callbacks
         self.cpu = Z180(
@@ -180,8 +184,8 @@ class BNS:
             io_write=self._io_write,
             serial_rx=self._serial_receive,
             serial_tx=self._serial_transmit,
-            csio_rx=self.clock_pic.receive if self.clock_pic else None,
-            csio_tx=self.clock_pic.transmit if self.clock_pic else None,
+            csio_rx=csio_device.receive if csio_device else None,
+            csio_tx=csio_device.transmit if csio_device else None,
         )
 
         # Connect keyboard interrupt (INT2) to CPU
@@ -306,8 +310,8 @@ class BNS:
             self.io.register(0xA0, write_handler=self._write_bsnew_power)
             self.io.register(0xE0, write_handler=self._write_high_bank)
         else:
-            # BSPLUS decodes reads at 0x80 as watchdog service and writes as
-            # speech-power control. This speech-only model has no Braille display.
+            # BSPLUS and B_LITE decode reads at 0x80 as watchdog service and
+            # writes as speech-power control. B_LITE's display uses CSI/O.
             self.io.register(
                 self.PORT_SPEECH_POWER,
                 self.watchdog.read,
@@ -679,7 +683,7 @@ def main() -> None:
     # Basic options
     parser.add_argument("--audio", action="store_true",
                         help="Enable SSI-263 audio output")
-    parser.add_argument("--model", choices=("bsp", "bs2"), default="bsp",
+    parser.add_argument("--model", choices=("bsp", "bs2", "bsl"), default="bsp",
                         help="Select the hardware profile (default: bsp)")
     parser.add_argument("--trace", action="store_true",
                         help="Show boot trace instead of running")

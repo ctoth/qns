@@ -492,33 +492,49 @@ class BrailleKeyboard:
 
 
 class BrailleDisplay:
-    """Braille cell display output."""
+    """Braille Lite 18 display connected through the Z180 CSI/O port."""
 
-    def __init__(self, base_port: int = 0x80, cells: int = 40):
-        self.base_port = base_port
+    def __init__(
+        self,
+        cells: int = 18,
+        *,
+        status: int = 0x0A,
+        battery: int = 238,
+        current: int = 0xFF,
+    ) -> None:
         self.cells = cells
         self.buffer = bytearray(cells)
         self.cursor = 0
+        self.status = status
+        self.battery = battery
+        self.current = current
+        self._cell_follows = False
+        self._response = -1
 
-    def read(self, port: int) -> int:
-        """Read display status."""
-        offset = port - self.base_port
-        if offset == 1:  # Status port
-            return 0x00  # Ready
-        return 0xFF
+    def transmit(self, value: int) -> None:
+        """Accept one source-defined Braille Lite display command or cell."""
+        value &= 0xFF
+        if self._cell_follows:
+            self.buffer[self.cursor] = value
+            self.cursor = (self.cursor + 1) % self.cells
+            self._cell_follows = False
+        elif value == 0x81:
+            self._response = self.status
+        elif value == 0x82:
+            self.buffer[:] = b"\0" * self.cells
+            self.cursor = 0
+        elif value == 0x83:
+            self._cell_follows = True
+        elif value == 0x85:
+            self._response = self.battery
+        elif value == 0x86:
+            self._response = self.current
 
-    def write(self, port: int, value: int):
-        """Write to display."""
-        offset = port - self.base_port
-        if offset == 0:  # Data port
-            if self.cursor < self.cells:
-                self.buffer[self.cursor] = value & 0xFF
-                self.cursor += 1
-
-    def get_text(self) -> str:
-        """Convert buffer to ASCII representation."""
-        # Simple dot pattern to char (placeholder)
-        return ''.join(chr(b) if 32 <= b < 127 else '.' for b in self.buffer)
+    def receive(self) -> int:
+        """Return one pending display response, or -1 while none is pending."""
+        response = self._response
+        self._response = -1
+        return response
 
 
 class Watchdog:
