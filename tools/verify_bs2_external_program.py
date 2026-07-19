@@ -29,6 +29,25 @@ CRC_REQUEST = ord("C")
 CPM_EOF = 0x1A
 
 
+class TimestampedBytesIO(io.BytesIO):
+    """Capture serial bytes together with their emulated completion cycle."""
+
+    def __init__(self, cycle_source: Callable[[], int]) -> None:
+        super().__init__()
+        self._cycle_source = cycle_source
+        self.events: list[tuple[int, int]] = []
+
+    def write(self, data: bytes) -> int:
+        cycle = self._cycle_source()
+        self.events.extend((cycle, byte) for byte in data)
+        return super().write(data)
+
+
+def format_serial_events(events: list[tuple[int, int]]) -> str:
+    """Format cycle-stamped serial bytes compactly for verifier failures."""
+    return ",".join(f"{byte:02X}@{cycle}" for cycle, byte in events)
+
+
 def advance(bns: BNS, cycles: int = 1_000) -> None:
     """Advance the CPU and the timed SSI-263 device together."""
     bns.cpu.run(cycles)
@@ -129,11 +148,18 @@ def format_asci_state(bns: BNS, channel: int) -> str:
         f"fifo:{state['rx_fifo_depth']},irq:{int(state['irq_pending'])},"
         f"div:{state['brg_divisor']},frame:{state['frame_bits']},"
         f"rie:+{state['rie_set_count']}/-{state['rie_clear_count']}@"
-        f"{state['rie_last_pc']:04X}/{state['rie_last_cycle']}"
+        f"{state['rie_last_pc']:04X}/{state['rie_last_cycle']},"
+        f"statw:{state['stat_write_count']}:{state['stat_last_write']:02X}@"
+        f"{state['stat_last_write_pc']:04X}/{state['stat_last_write_cycle']}"
     )
 
 
-def wait_for_firmware_receive(bns: BNS, channel: int, description: str) -> str:
+def wait_for_firmware_receive(
+    bns: BNS,
+    channel: int,
+    description: str,
+    context: str = "",
+) -> str:
     """Trace one host byte through callback, frame, IRQ, and firmware ISR drain."""
     start_cycle = bns.cpu.cycle_count
     configured = bns.cpu.asci_debug_state(channel)
@@ -179,7 +205,7 @@ def wait_for_firmware_receive(bns: BNS, channel: int, description: str) -> str:
     raise RuntimeError(
         f"{description} did not cross the firmware receive path within "
         f"{trace_cycle_limit:,} cycles; events={','.join(events)} "
-        f"{format_asci_state(bns, channel)} pc={bns.cpu.pc:04X}"
+        f"{format_asci_state(bns, channel)} pc={bns.cpu.pc:04X} context=[{context}]"
     )
 
 
@@ -211,12 +237,16 @@ def wait_for_serial(
     )
 
 
-def reject_disk_probes(bns: BNS, output: io.BytesIO) -> tuple[int, list[str]]:
+def reject_disk_probes(
+    bns: BNS,
+    output: TimestampedBytesIO,
+    context: str,
+) -> tuple[int, list[str]]:
     """Reject the firmware's channel-1/channel-0 disk-drive probes."""
     traces: list[str] = []
     cursor = wait_for_serial(bns, output, 0, bytes((0x05,)), "ASCI1 disk-drive ENQ")
     queue_serial(bns, bytes((NAK,)))
-    traces.append(wait_for_firmware_receive(bns, 1, "ASCI1 NAK"))
+    traces.append(wait_for_firmware_receive(bns, 1, "ASCI1 NAK", context=context))
 
     bns.stdin_device = "serial0"
     bns.serial_output_channel = 0
@@ -299,7 +329,8 @@ def main() -> None:
     args = parser.parse_args()
 
     with redirect_stdout(io.StringIO()):
-        serial_output = io.BytesIO()
+        bns: BNS
+        serial_output = TimestampedBytesIO(lambda: bns.cpu.cycle_count)
         bns = BNS(
             model="bs2",
             stdin_device="serial1",
@@ -316,15 +347,47 @@ def main() -> None:
         )
         speech_start = len(bns.ssi263.phoneme_log)
 
-        for chord in (O_CHORD, F_KEY, T_CHORD, R_KEY):
+        chord_phases: list[str] = []
+        serial_event_cursor = 0
+        for phase, chord in (("O", O_CHORD), ("f", F_KEY)):
             deliver_chord(bns, chord)
             run_until_stable_key_wait(bns)
+            events = serial_output.events[serial_event_cursor:]
+            chord_phases.append(f"{phase}=[{format_serial_events(events)}]")
+            serial_event_cursor = len(serial_output.events)
+
+        bns.cpu.reset_asci_debug()
+        deliver_chord(bns, T_CHORD)
+        t_delivered_cycle = bns.cpu.cycle_count
+        events = serial_output.events[serial_event_cursor:]
+        chord_phases.append(f"T=[{format_serial_events(events)}]")
+        serial_event_cursor = len(serial_output.events)
+        probe_context = (
+            f"T_delivered={t_delivered_cycle},"
+            f"chord_phases=[{';'.join(chord_phases)}]"
+        )
+        serial_cursor, probe_traces = reject_disk_probes(
+            bns,
+            serial_output,
+            probe_context,
+        )
+        events = serial_output.events[serial_event_cursor:]
+        chord_phases.append(f"disk_probes=[{format_serial_events(events)}]")
+        serial_event_cursor = len(serial_output.events)
+
+        deliver_chord(bns, R_KEY)
+        run_until_stable_key_wait(bns)
+        events = serial_output.events[serial_event_cursor:]
+        chord_phases.append(f"r=[{format_serial_events(events)}]")
+        serial_event_cursor = len(serial_output.events)
         deliver_chord(bns, Y_KEY)
         run_until_speech_idle(bns)
-        bns.cpu.reset_asci_debug()
+        events = serial_output.events[serial_event_cursor:]
+        chord_phases.append(f"y=[{format_serial_events(events)}]")
+        serial_event_cursor = len(serial_output.events)
         deliver_chord(bns, E_CHORD)
-
-        serial_cursor, probe_traces = reject_disk_probes(bns, serial_output)
+        events = serial_output.events[serial_event_cursor:]
+        chord_phases.append(f"E=[{format_serial_events(events)}]")
         transfer_ymodem(bns, serial_output, serial_cursor, args.program)
         run_until_stable_key_wait(bns)
 

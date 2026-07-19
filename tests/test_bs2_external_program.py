@@ -6,7 +6,26 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tools.verify_bs2_external_program import SOH, STX, crc16_xmodem, ymodem_packet
+from tools.verify_bs2_external_program import (
+    SOH,
+    STX,
+    TimestampedBytesIO,
+    crc16_xmodem,
+    ymodem_packet,
+)
+
+
+def test_timestamped_bytes_io_records_completion_cycles():
+    """Serial evidence must preserve bytes and attribute their write cycles."""
+    cycle = [10]
+    output = TimestampedBytesIO(lambda: cycle[0])
+
+    assert output.write(b"\x05\x06") == 2
+    cycle[0] = 20
+    assert output.write(b"C") == 1
+
+    assert output.getvalue() == b"\x05\x06C"
+    assert output.events == [(10, 0x05), (10, 0x06), (20, ord("C"))]
 
 
 @settings(max_examples=100, deadline=None)
