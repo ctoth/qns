@@ -66,3 +66,23 @@ def test_wait_for_serial_reports_byte_stuck_in_disabled_transmitter(tmp_path):
 
     with pytest.raises(RuntimeError, match=r"ASCI0 TDR with TE disabled"):
         harness.wait_for_serial(0, 0, b"\x05", "disk ENQ")
+
+
+def test_run_until_reports_lazy_failure_context(tmp_path):
+    """A bounded wait must report causal state captured at timeout."""
+    rom = tmp_path / "loop.bin"
+    rom.write_bytes(bytes((0x18, 0xFE)))  # JR $
+    state = tmp_path / "bs2.state"
+    BNS(model="bs2").save_state(state)
+    harness = BS2Harness(rom, state, cycle_limit=2_000)
+    context_calls = 0
+
+    def timeout_context() -> str:
+        nonlocal context_calls
+        context_calls += 1
+        return f"marker={harness.bns.cpu.pc:04X}"
+
+    with pytest.raises(RuntimeError, match=r"loop wait.*marker=0000"):
+        harness.run_until(lambda: False, "loop wait", context=timeout_context)
+
+    assert context_calls == 1

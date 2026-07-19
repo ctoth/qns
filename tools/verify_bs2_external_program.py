@@ -152,6 +152,12 @@ def main() -> None:
         harness.run_until(
             lambda: bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657,
             "BS2 editor command loop",
+            context=lambda: (
+                f"initializer_hits={bns.cpu.pc_watch_count},"
+                f"initializer_cycle={bns.cpu.pc_watch_cycle},"
+                f"cbr={bns.cpu.cbr:02X},bbr={bns.cpu.bbr:02X},"
+                f"cbar={bns.cpu.cbar:02X}"
+            ),
         )
         boot_context = (
             f"loaded_COMBYT={loaded_combyt:02X},"
