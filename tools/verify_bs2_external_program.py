@@ -146,6 +146,8 @@ def format_asci_state(bns: BNS, channel: int) -> str:
     return (
         f"asci{channel}=stat:{state['status']:02X},bits:{state['rx_bits_remaining']},"
         f"fifo:{state['rx_fifo_depth']},irq:{int(state['irq_pending'])},"
+        f"cntla:{state['cntla']:02X},txbits:{state['tx_bits_remaining']},"
+        f"tsr:{state['tx_shift_register']:02X},tdr:{state['tx_data_register']:02X},"
         f"div:{state['brg_divisor']},frame:{state['frame_bits']},"
         f"rie:+{state['rie_set_count']}/-{state['rie_clear_count']}@"
         f"{state['rie_last_pc']:04X}/{state['rie_last_cycle']},"
