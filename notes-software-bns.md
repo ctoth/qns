@@ -1521,3 +1521,91 @@ Locate `STARTA` in the linked BSP image from its distinctive instruction sequenc
 - Blocker: none. Next action: reread the active plan and begin the first
   causally relevant unchecked BS2 power/status or external-program surface as
   one exact-convergence target.
+
+### Remaining BS2 status target selected
+
+- Commit `e5a600e` (`Record BS2 battery slice closure`) closed the mandatory
+  post-commit checkpoint as a record-only slice. The tracked worktree again
+  contains only the four preserved user-owned modifications.
+- The active plan evidence confirms BS2 serial stdio is already implemented and
+  covered by native callback and subprocess round-trip tests. Opening another
+  serial source slice would repeat completed work.
+- Authoritative `LIB/BSPORTS.LIB` defines the remaining BSNEW 8255 boundary:
+  `PPORT=0x80` is the parallel data output, `BPORT=0x81` is miscellaneous
+  status input, `CPORT=0x82` is port-C control/status, and `PIOCT=0x83` is the
+  control register. The already-implemented gas gauge owns only BPORT bit 3.
+- Current state: no new product source has been edited. The next target is the
+  remaining BSNEW 8255 parallel/status contract, not another serial shim or a
+  Braille-display profile.
+- Blocker: none. Next action: read the bounded BSNEW parallel-output/status
+  routines in `BSTXT.C`, derive the exact bit polarities and strobe semantics,
+  then add a focused failing authority only for behavior that changes the real
+  ROM's printer decision.
+
+### BSNEW parallel/status focused authority passes
+
+- `BSTXT.C::PARRDY` proves the exact ready predicate: port-C bit 7 must be high,
+  then port-B bits 0 and 1 must both be zero. `api_psend` and `psend` write the
+  byte to port A, reset C5 with control `0x0A`, and set C5 with `0x0B`; that
+  low/high strobe commits the byte.
+- Added a focused BNS authority using a byte stream. It initially failed at the
+  missing `parallel_output` constructor boundary. The implementation now
+  reports the source-defined ready status and writes exactly one port-A byte on
+  the C5 rising edge. The focused authority passes.
+- The complete current `tests/test_bns.py` run then found one stale passive-port
+  expectation: clearing the source-defined port-B error bits changes gas-gauge
+  low/high samples from fabricated `F7/FF` to `F4/FC`. The test is corrected to
+  require the combined status contract; product gas-gauge behavior is unchanged.
+- Current state: the source slice is limited to `qns/bns.py`,
+  `tests/test_bns.py`, and this handoff record. It is not yet committed.
+- Blocker: none. Next action: add a subprocess authority proving a native BSNEW
+  ROM can send one parallel byte to raw stdout through `--output parallel`,
+  implement only the necessary CLI selection, then rerun focused and full
+  authorities before attempting a real firmware printer workflow.
+
+### BSNEW parallel stdio boundary passes
+
+- Added `--output parallel` as the literal raw-stdout selection. Console logs
+  are redirected to stderr exactly as for raw serial output, and the selected
+  stream is passed directly to the existing BSNEW 8255 owner.
+- The native subprocess authority initially failed because the CLI rejected the
+  missing choice. It now passes: a native Z180 program configures mode `A2`,
+  writes byte `5A` to port A, pulses C5 with `0A/0B`, and stdout contains only
+  `Z`.
+- The complete current `tests/test_bns.py` authority passes: 17 tests in 1.90
+  seconds. Per the active plan, this is a kept implementation reduction but not
+  yet a complete real-ROM printer workflow.
+- The supplied July 1999 `bs2eng.hlp` documents `t-chord` print/transmit options
+  for the serial port but does not include the older help's parallel-port
+  keystroke wording. The linked `BSTXT.C` still contains the BSNEW parallel
+  implementation. Sending a guessed second chord would not be valid evidence.
+- Current state: the active uncommitted slice remains `qns/bns.py`,
+  `tests/test_bns.py`, and this record. User-owned changes remain untouched.
+- Blocker: none. Next action: locate the linked transmit-command dispatcher and
+  its serial/parallel selector from source or live ROM control flow, then drive
+  that exact command against `bs2eng.bns` and require captured parallel bytes
+  before closing the slice.
+
+### Correction: BS2 parallel-output target is invalid
+
+- The preceding target premise was wrong. `BE_ENG.PRJ` builds `BS2ENG` with
+  `BSNEW=1` only; it does not set `B_LITE`.
+- `BSTXT.C` compiles `api_psend`, `psend`, and the 8255 parallel route only for
+  `TNS`, `B_LITE_40`, `T_LITE`, or `(B_LITE & BSNEW)`. Its generic output path
+  compiles direct serial `send` for the BS2 configuration. `BSPROCES.ASM`
+  likewise enables the chord-selected parallel flag only for the non-BS2
+  configurations. This exactly explains why the supplied July 1999 BS2 help
+  documents serial transmission and no parallel command.
+- The focused and subprocess tests demonstrated that an invented BS2 parallel
+  output could work, but they could not establish product progress because the
+  real BS2 ROM contains no path to it. Keeping that feature would violate the
+  issue-invalidity and exact-convergence rules.
+- The entire rejected product slice was restored from Git: `qns/bns.py` and
+  `tests/test_bns.py` are back at committed state. No source change from this
+  invalid target remains.
+- Current state: only this investigation record is modified. User-owned tracked
+  changes and unrelated untracked artifacts remain untouched.
+- Blocker: none. Next action: close this correction as a record-only commit,
+  then move to the next genuine BS2 target: execute the supplied external
+  `.bns` programs through the real file-manager path and identify only proven
+  missing storage/loader boundaries.
