@@ -12,6 +12,18 @@ class PIC16C56Clock:
         self._now = now or datetime.now
         self._pending_command: int | None = None
         self._responses: deque[int] = deque()
+        current = self._now()
+        self._normal_fields = {
+            "year": current.year,
+            "month": current.month,
+            "day": current.day,
+            "hour": current.hour,
+            "minute": current.minute,
+            "second": current.second,
+            "microsecond": current.microsecond,
+        }
+        self._normal_reference = current
+        self._normal_selected = True
 
     def transmit(self, value: int) -> None:
         """Hold one CSI/O byte until the firmware raises the clock strobe."""
@@ -23,8 +35,14 @@ class PIC16C56Clock:
             return
         command = self._pending_command
         self._pending_command = None
-        if command == 4:
+        if command == 2:
+            self._normal_selected = True
+        elif command == 3:
+            self._normal_selected = False
+        elif command == 4:
             self._queue_current_datetime()
+        elif self._normal_selected:
+            self._write_normal_field(command)
 
     def receive(self) -> int:
         """Return one PIC-to-firmware byte, or -1 when none is pending."""
@@ -33,16 +51,64 @@ class PIC16C56Clock:
         return self._responses.popleft()
 
     def _queue_current_datetime(self) -> None:
-        current = self._now()
-        self._responses.append(0x20 | (current.minute & 0x1F))
-        if current.minute > 31:
+        self._advance_normal_clock()
+        current = self._normal_fields
+        self._responses.append(0x20 | (current["minute"] & 0x1F))
+        if current["minute"] > 31:
             self._responses.append(0x05)
         self._responses.extend((
-            0x40 | current.month,
-            0x60 | current.day,
-            0xA0 | current.hour,
-            0x80 | ((current.year - 1989) & 0x1F),
+            0x40 | current["month"],
+            0x60 | current["day"],
+            0xA0 | current["hour"],
+            0x80 | ((current["year"] - 1989) & 0x1F),
         ))
+
+    def _write_normal_field(self, value: int) -> None:
+        self._advance_normal_clock()
+        field = value & 0xE0
+        data = value & 0x1F
+        if value == 0x05:
+            self._normal_fields["minute"] += 32
+        elif field == 0x20:
+            self._normal_fields["minute"] = data
+        elif field == 0x40:
+            self._normal_fields["month"] = data
+        elif field == 0x60:
+            self._normal_fields["day"] = data
+        elif field == 0x80:
+            self._normal_fields["year"] = 1989 + data
+        elif field == 0xA0:
+            self._normal_fields["hour"] = data
+        self._normal_reference = self._now()
+
+    def _advance_normal_clock(self) -> None:
+        current_reference = self._now()
+        try:
+            current = datetime(
+                self._normal_fields["year"],
+                self._normal_fields["month"],
+                self._normal_fields["day"],
+                self._normal_fields["hour"],
+                self._normal_fields["minute"],
+                self._normal_fields["second"],
+                self._normal_fields["microsecond"],
+                tzinfo=current_reference.tzinfo,
+            )
+        except ValueError:
+            self._normal_reference = current_reference
+            return
+
+        current += current_reference - self._normal_reference
+        self._normal_fields.update(
+            year=current.year,
+            month=current.month,
+            day=current.day,
+            hour=current.hour,
+            minute=current.minute,
+            second=current.second,
+            microsecond=current.microsecond,
+        )
+        self._normal_reference = current_reference
 
 
 class MSM6242RTC:

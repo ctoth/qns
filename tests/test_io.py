@@ -39,6 +39,34 @@ def test_pic16c56_clock_returns_field_bytes_after_command_strobe():
     assert clock.receive() == -1
 
 
+def test_pic16c56_clock_sets_and_returns_normal_datetime_fields():
+    """Command 2 must select normal clock fields for writes and command 4."""
+    clock = PIC16C56Clock(now=lambda: datetime(2020, 7, 18, 19, 45, 0))
+
+    def send(value: int) -> None:
+        clock.transmit(value)
+        clock.strobe()
+
+    send(2)
+    send(0x2D)  # minute low five bits: 13
+    send(0x05)  # add the sixth minute bit: 45
+    send(0x4C)  # month: 12
+    send(0x7F)  # day: 31
+    send(0xA3)  # hour: 3
+    send(0x9E)  # year: 2019 (30 years after 1989)
+    send(4)
+
+    assert [clock.receive() for _ in range(6)] == [
+        0x2D,
+        0x05,
+        0x4C,
+        0x7F,
+        0xA3,
+        0x9E,
+    ]
+    assert clock.receive() == -1
+
+
 def test_msm6242_hold_allows_atomic_clock_setting_and_resume():
     """HOLD freezes the BCD bank until BSP releases its completed writes."""
     current = [datetime(2026, 7, 18, 23, 45, 56)]

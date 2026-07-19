@@ -1027,3 +1027,21 @@ Locate `STARTA` in the linked BSP image from its distinctive instruction sequenc
 - Those serial authorities were included in the just-completed 25-test run and passed. No serial implementation change or new serial source slice is justified.
 - User-owned tracked modifications and unrelated untracked artifacts remain untouched.
 - Next action: commit this plan correction as a record-only change, then establish the exact remaining BS2 clock/status/power command contract from current ROM/source evidence before editing implementation. External-program execution follows that contract work within the same active plan phase.
+
+### Normal PIC clock-setting slice begins with a failing authority
+
+- Commit `6584214` (`Correct serial stdio plan state`) contains only the preceding nine-line record correction. The next source slice started from a reconciled tracked state with only the four preserved user-owned modifications outside the slice.
+- Authoritative `C:\Users\Q\src\bns\bsp\TNSCLK.C` defines raw command `2` as selecting the normal clock-value bank, raw command `4` as returning the selected date/time, tagged values `0x20`, `0x40`, `0x60`, `0x80`, and `0xA0` as minute, month, day, year-since-1989, and hour writes, and raw `0x05` as the sixth minute bit.
+- Added one focused test in `tests/test_io.py` that selects the normal bank, writes 03:45 on December 31, 2019 through those exact protocol bytes, requests command `4`, and requires the same tagged fields back.
+- The unchanged implementation fails exactly at the intended boundary: it returns the injected host clock's July 18, 19:45, 2020 fields (`[45, 5, 71, 114, 179, 159]`) instead of the written values (`[45, 5, 76, 127, 163, 158]`).
+- Current slice scope is `tests/test_io.py`; no implementation file has yet been edited. User-owned tracked modifications and unrelated artifacts remain untouched.
+- Blocker: none. Next action: implement only normal-bank field writes and command-4 readback in `PIC16C56Clock`, rerun the focused failure, then run the full clock/BNS/CPU authority and close or revert this slice before starting alarm-bank behavior.
+
+### Normal PIC clock-setting slice passes
+
+- `PIC16C56Clock` now snapshots the injected host time as the normal clock bank, advances that bank by elapsed host time, selects it on raw command `2`, and accepts the source-defined tagged minute/month/day/year/hour writes plus raw `0x05` for the sixth minute bit.
+- Raw command `4` now serializes the maintained normal bank instead of rereading the host clock directly. Invalid intermediate date combinations during ordered month/day/year updates do not crash the device; ticking resumes once the fields form a valid date.
+- The focused test that previously failed now passes. The full current authority also passes: 26 tests across `tests/test_io.py`, `tests/test_bns.py`, and `tests/test_cpu.py` in 1.58 seconds.
+- Reread the controlling plan after the passing substantial test run. Passing tests authorize keeping this normal-clock reduction; they do not complete alarm selection/alerting, 8255 status inputs, power workflows, external programs, remaining ROM profiles, or the full audit.
+- Current slice is exactly `qns/io.py`, `tests/test_io.py`, and this mandatory handoff update. User-owned tracked modifications and unrelated untracked artifacts remain untouched.
+- Next action: inspect and commit this exact normal-clock slice. Then remain on the clock PIC target and begin the separate alarm-bank selection/storage/readback slice from authoritative `TNSCLK.C` commands `3`, `4`, and `2`.
