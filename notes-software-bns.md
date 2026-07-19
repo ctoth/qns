@@ -1018,3 +1018,12 @@ Locate `STARTA` in the linked BSP image from its distinctive instruction sequenc
 - The mandatory `notes-software-bns.md` experiment/handoff record is included in the staged ledger as required by the Git accountability rule. The staged set is exactly that record plus the four source/test files.
 - User-owned tracked modifications in `CLAUDE.md`, `qns/ssi263.py`, `qns/synth/__init__.py`, and `qns/synth/ssi263_synth.py`, and all unrelated untracked artifacts, remain unstaged and untouched.
 - Next action: restage this checkpoint update, rerun the staged whitespace/name/status gates, commit the completed clock-device slice, then begin the serial-stdio item from the controlling implementation sequence.
+
+### Serial stdio was already complete
+
+- Commit `989ad8b` (`Implement BS2 clock PIC`) closed the preceding clock-device slice with the mandatory handoff record and the exact four source/test files.
+- The assumption that serial stdio remained unimplemented was wrong. Current `qns/bns.py` already queues raw standard-input bytes for the selected `serial0` or `serial1` ASCI callback and emits only the selected output channel as raw standard output while redirecting emulator logs to standard error.
+- `tests/test_bns.py` already contains both channel-isolation coverage and a subprocess-level CLI round trip from raw stdin through native ASCI and back to raw stdout. `tests/test_cpu.py` covers native ASCI transmit and receive callbacks.
+- Those serial authorities were included in the just-completed 25-test run and passed. No serial implementation change or new serial source slice is justified.
+- User-owned tracked modifications and unrelated untracked artifacts remain untouched.
+- Next action: commit this plan correction as a record-only change, then establish the exact remaining BS2 clock/status/power command contract from current ROM/source evidence before editing implementation. External-program execution follows that contract work within the same active plan phase.
