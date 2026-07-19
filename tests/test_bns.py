@@ -131,6 +131,8 @@ def test_bs2_owns_8255_and_high_bank_ports():
     assert bns._io_read(0x83) == 0xFF
     assert bns.parallel_ports[3] == 0xA2
     assert bns.high_bank_latch == 0x08
+    assert bns.memory.high_bank_latch == 0x08
+    assert len(bns.memory.flash) == 2 * 1024 * 1024
 
 
 def test_bns_rejects_unknown_hardware_model():

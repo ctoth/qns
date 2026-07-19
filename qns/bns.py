@@ -101,7 +101,7 @@ class BNS:
 
         self.clock = clock
         self.model = model
-        self.memory = Memory()
+        self.memory = Memory(flash_size=2 * 1024 * 1024 if model == "bs2" else 0)
         self.io = IOBus()
         self.trace_interrupts = trace_interrupts
         self.stdin_device = stdin_device
@@ -320,6 +320,7 @@ class BNS:
     def _write_high_bank(self, port: int, value: int) -> None:
         """Store the BSNEW language-ROM/high-bank latch."""
         self.high_bank_latch = value
+        self.memory.set_high_bank_latch(value)
 
     def _serial_receive(self, channel: int) -> int:
         """Return the next stdin byte for the selected ASCI channel."""
