@@ -214,6 +214,7 @@ def wait_for_firmware_receive(
 def wait_for_serial(
     bns: BNS,
     output: io.BytesIO,
+    channel: int,
     cursor: int,
     expected: bytes,
     description: str,
@@ -226,6 +227,18 @@ def wait_for_serial(
         offset = data.find(expected, cursor)
         if offset >= 0:
             return offset + len(expected)
+        state = bns.cpu.asci_debug_state(channel)
+        if (
+            len(expected) == 1
+            and state["tx_data_register"] == expected[0]
+            and state["tx_bits_remaining"] == 0
+            and not state["cntla"] & 0x20
+        ):
+            raise RuntimeError(
+                f"{description} is stuck in ASCI{channel} TDR with TE disabled; "
+                f"cycle={bns.cpu.cycle_count} pc={bns.cpu.pc:04X} "
+                f"{format_asci_state(bns, channel)} context=[{context}]"
+            )
         advance(bns)
     tail = output.getvalue()[cursor:]
     phonemes = bns.ssi263.get_phonemes(include_pauses=False)
@@ -246,7 +259,7 @@ def reject_disk_probes(
 ) -> tuple[int, list[str]]:
     """Reject the firmware's channel-1/channel-0 disk-drive probes."""
     traces: list[str] = []
-    cursor = wait_for_serial(bns, output, 0, bytes((0x05,)), "ASCI1 disk-drive ENQ")
+    cursor = wait_for_serial(bns, output, 1, 0, bytes((0x05,)), "ASCI1 disk-drive ENQ")
     queue_serial(bns, bytes((NAK,)))
     traces.append(wait_for_firmware_receive(bns, 1, "ASCI1 NAK", context=context))
 
@@ -255,6 +268,7 @@ def reject_disk_probes(
     cursor = wait_for_serial(
         bns,
         output,
+        0,
         cursor,
         bytes((0x05,)),
         "ASCI0 disk-drive ENQ",
@@ -274,6 +288,7 @@ def transfer_ymodem(bns: BNS, output: io.BytesIO, cursor: int, program: Path) ->
     cursor = wait_for_serial(
         bns,
         output,
+        0,
         cursor,
         bytes((CRC_REQUEST,)),
         "initial YMODEM CRC request",
@@ -282,6 +297,7 @@ def transfer_ymodem(bns: BNS, output: io.BytesIO, cursor: int, program: Path) ->
     cursor = wait_for_serial(
         bns,
         output,
+        0,
         cursor,
         bytes((ACK, CRC_REQUEST)),
         "header ACK and data CRC request",
@@ -293,6 +309,7 @@ def transfer_ymodem(bns: BNS, output: io.BytesIO, cursor: int, program: Path) ->
         cursor = wait_for_serial(
             bns,
             output,
+            0,
             cursor,
             bytes((ACK,)),
             f"data block {block_number} ACK",
@@ -302,12 +319,13 @@ def transfer_ymodem(bns: BNS, output: io.BytesIO, cursor: int, program: Path) ->
     cursor = wait_for_serial(
         bns,
         output,
+        0,
         cursor,
         bytes((ACK, CRC_REQUEST)),
         "EOT ACK and batch CRC request",
     )
     queue_serial(bns, ymodem_packet(0, bytes(128), 128))
-    wait_for_serial(bns, output, cursor, bytes((ACK,)), "empty batch header ACK")
+    wait_for_serial(bns, output, 0, cursor, bytes((ACK,)), "empty batch header ACK")
 
 
 def run_until_program_entry(bns: BNS) -> tuple[int, int]:
