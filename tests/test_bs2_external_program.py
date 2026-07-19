@@ -8,14 +8,22 @@ from hypothesis import strategies as st
 
 from qns.bns import _ASCII_TO_BNS_KEY
 from tools.verify_bs2_external_program import (
+    DOT5_CHORD,
+    FILE_INITIALIZATION_PROMPT,
     FLASH_CONFIRMATION_PROMPT,
     FLASH_INITIALIZATION_PROMPT,
     FLASH_INITIALIZATION_Y_KEY,
+    FOLDER_INITIALIZATION_PROMPT,
     SOH,
     STX,
+    WIPEOUT_PROMPT,
     crc16_xmodem,
+    expected_program_cbar,
+    is_file_initialization_prompt,
     is_flash_confirmation_prompt,
     is_flash_initialization_prompt,
+    is_folder_initialization_prompt,
+    is_wipeout_prompt,
     ymodem_packet,
 )
 
@@ -24,6 +32,40 @@ def test_flash_initialization_uses_firmware_brlyes_chord():
     """The English ROM's BRLYES is lowercase y, not uppercase Y."""
     assert FLASH_INITIALIZATION_Y_KEY == _ASCII_TO_BNS_KEY[ord("y")]
     assert FLASH_INITIALIZATION_Y_KEY != _ASCII_TO_BNS_KEY[ord("Y")]
+
+
+def test_next_external_program_uses_dot5_chord_not_bare_dot5():
+    """FILEP C5 is raw dot 5 plus the BNS chord/space bit."""
+    assert DOT5_CHORD == 0x50
+    assert DOT5_CHORD != 0x10
+
+
+@given(program_length=st.integers(min_value=0, max_value=0xFFFF))
+def test_external_program_cbar_matches_firmware_rounding(program_length: int):
+    """The entry map follows BS.ASM's 16-bit length-plus-0x1fff calculation."""
+    header = bytearray(10)
+    header[2:6] = b"BNS\0"
+    header[8:10] = program_length.to_bytes(2, "little")
+    rounded_length = program_length + 0x1FFF
+    expected = (
+        0x11
+        if rounded_length > 0xFFFF
+        else ((rounded_length >> 8) & 0xF0) | 0x01
+    )
+    assert expected_program_cbar(bytes(header)) == expected
+
+
+def test_bsname_header_requires_entry_cbar_81():
+    """The supplied BSNAME length 0x6205 maps common area 1 at page 8."""
+    header = b"\x18\x0cBNS\0\xef\x1a\x05\x62"
+    assert expected_program_cbar(header) == 0x81
+
+
+@pytest.mark.parametrize("program", [b"", b"\0" * 10, b"\0\0BNS"])
+def test_external_program_cbar_rejects_missing_header(program: bytes):
+    """An entry-map assertion is invalid without the firmware's BNS header."""
+    with pytest.raises(ValueError, match="lacks the BNS header"):
+        expected_program_cbar(program)
 
 
 @given(prefix=st.lists(st.text(max_size=8), max_size=40))
@@ -39,6 +81,49 @@ def test_flash_initialization_prompt_rejects_partial_or_altered_speech():
     assert not is_flash_initialization_prompt(list(FLASH_INITIALIZATION_PROMPT[:-1]))
     altered = [*FLASH_INITIALIZATION_PROMPT[:-1], "M"]
     assert not is_flash_initialization_prompt(altered)
+
+
+@given(prefix=st.lists(st.text(max_size=8), max_size=40))
+def test_file_initialization_prompt_allows_arbitrary_prior_speech(
+    prefix: list[str],
+):
+    """Only the exact retained suffix identifies the cold-reset dialogue."""
+    assert is_file_initialization_prompt(prefix + list(FILE_INITIALIZATION_PROMPT))
+
+
+def test_file_initialization_prompt_rejects_flash_or_altered_speech():
+    """The file-system prompt must not be confused with the flash prompt."""
+    assert not is_file_initialization_prompt(list(FLASH_INITIALIZATION_PROMPT))
+    altered = [*FILE_INITIALIZATION_PROMPT[:-1], "M"]
+    assert not is_file_initialization_prompt(altered)
+
+
+@given(prefix=st.lists(st.text(max_size=8), max_size=40))
+def test_folder_initialization_prompt_allows_arbitrary_prior_speech(
+    prefix: list[str],
+):
+    """Only the exact retained suffix identifies the folder dialogue."""
+    assert is_folder_initialization_prompt(prefix + list(FOLDER_INITIALIZATION_PROMPT))
+
+
+def test_folder_initialization_prompt_rejects_file_or_altered_speech():
+    """The folder prompt must not be confused with the file-system prompt."""
+    assert not is_folder_initialization_prompt(list(FILE_INITIALIZATION_PROMPT))
+    altered = [*FOLDER_INITIALIZATION_PROMPT[:-1], "M"]
+    assert not is_folder_initialization_prompt(altered)
+
+
+@given(prefix=st.lists(st.text(max_size=8), max_size=40))
+def test_wipeout_prompt_allows_arbitrary_prior_speech(prefix: list[str]):
+    """Only the exact retained suffix identifies the file-area dialogue."""
+    assert is_wipeout_prompt(prefix + list(WIPEOUT_PROMPT))
+
+
+def test_wipeout_prompt_rejects_folder_or_altered_speech():
+    """The file-area prompt must not be confused with folder initialization."""
+    assert not is_wipeout_prompt(list(FOLDER_INITIALIZATION_PROMPT))
+    altered = [*WIPEOUT_PROMPT[:-1], "M"]
+    assert not is_wipeout_prompt(altered)
 
 
 @given(prefix=st.lists(st.text(max_size=8), max_size=40))

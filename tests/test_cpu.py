@@ -156,6 +156,9 @@ def test_asci_receive_interrupt_survives_disabled_interrupts(channel: int, value
     assert received["stat_last_write_cycle"] > 0
 
     cpu.watch_pc(0x200)
+    assert cpu.pc_watch_count == 0
+    assert cpu.pc_watch_cycle == 0
+    assert cpu.pc_watch_cbar == 0
     memory[loop_address:loop_address + 4] = bytes((
         0xFB,       # EI
         0x00,       # EI shadow
@@ -167,6 +170,7 @@ def test_asci_receive_interrupt_survives_disabled_interrupts(channel: int, value
     assert memory[0x100] == value
     assert cpu.pc_watch_count == 1
     assert cpu.pc_watch_cycle > 50_000
+    assert cpu.pc_watch_cbar == cpu.cbar
     serviced = cpu.asci_debug_state(channel)
     assert serviced["status"] & 0x80 == 0
     assert serviced["rx_bits_remaining"] == 0

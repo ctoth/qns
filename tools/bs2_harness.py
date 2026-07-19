@@ -8,6 +8,8 @@ from pathlib import Path
 
 from qns.bns import BNS
 
+BS2_IIB_PHYSICAL = 0x4327D
+
 
 class SerialCapture(io.BytesIO):
     """Capture serial bytes with their emulated completion cycles."""
@@ -78,16 +80,28 @@ class BS2Harness:
             self.advance()
 
     def chord(self, chord: int) -> None:
-        """Deliver one raw chord through acknowledged key-down/up edges."""
+        """Deliver one raw chord through the firmware's two ISR phases."""
         self.bns.keyboard.press(chord)
         self.run_until(
-            lambda: not self.bns.keyboard.latched,
-            f"key-down acknowledgment for {chord:02X}",
+            lambda: (
+                not self.bns.keyboard.latched
+                and self.bns.memory.read(BS2_IIB_PHYSICAL) == chord
+            ),
+            f"key-down firmware acceptance for {chord:02X}",
+            context=lambda: (
+                f"iib={self.bns.memory.read(BS2_IIB_PHYSICAL):02X}"
+            ),
         )
         self.bns.keyboard.release()
         self.run_until(
-            lambda: not self.bns.keyboard.latched,
-            f"key-up acknowledgment for {chord:02X}",
+            lambda: (
+                not self.bns.keyboard.latched
+                and self.bns.memory.read(BS2_IIB_PHYSICAL) == 0
+            ),
+            f"key-up firmware acceptance for {chord:02X}",
+            context=lambda: (
+                f"iib={self.bns.memory.read(BS2_IIB_PHYSICAL):02X}"
+            ),
         )
 
     def wait_for_key(self) -> None:

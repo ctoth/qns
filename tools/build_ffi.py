@@ -152,6 +152,7 @@ unsigned long long qns_z180_get_asci_stat_last_write_cycle(qns_z180_t* cpu, int 
 void qns_z180_watch_pc(qns_z180_t* cpu, int address);
 unsigned long qns_z180_get_pc_watch_count(qns_z180_t* cpu);
 unsigned long long qns_z180_get_pc_watch_cycle(qns_z180_t* cpu);
+UINT8 qns_z180_get_pc_watch_cbar(qns_z180_t* cpu);
 """
 
 # C source that wraps z180emu
@@ -201,6 +202,7 @@ typedef struct qns_z180 {{
     int pc_watch_address;
     unsigned long pc_watch_count;
     unsigned long long pc_watch_cycle;
+    UINT8 pc_watch_cbar;
     UINT8 asci_last_stat[2];
     unsigned long asci_rie_set_count[2];
     unsigned long asci_rie_clear_count[2];
@@ -309,6 +311,7 @@ void debugger_instruction_hook(device_t *device, offs_t curpc) {{
             g_cpu->pc_watch_count++;
             g_cpu->pc_watch_cycle = g_cpu->completed_cycles
                 + (unsigned int)(g_cpu->execution_cycles - cpu_get_icount_z180(device));
+            g_cpu->pc_watch_cbar = (UINT8)cpu_get_state_z180(device, Z180_CBAR);
         }}
         service_csio(g_cpu);
         g_cpu->last_instruction_pc = (int)curpc;
@@ -649,6 +652,7 @@ void qns_z180_watch_pc(qns_z180_t* cpu, int address) {{
     cpu->pc_watch_address = address >= 0 && address <= 0xffff ? address : -1;
     cpu->pc_watch_count = 0;
     cpu->pc_watch_cycle = 0;
+    cpu->pc_watch_cbar = 0;
 }}
 
 unsigned long qns_z180_get_pc_watch_count(qns_z180_t* cpu) {{
@@ -657,6 +661,10 @@ unsigned long qns_z180_get_pc_watch_count(qns_z180_t* cpu) {{
 
 unsigned long long qns_z180_get_pc_watch_cycle(qns_z180_t* cpu) {{
     return cpu ? cpu->pc_watch_cycle : 0;
+}}
+
+UINT8 qns_z180_get_pc_watch_cbar(qns_z180_t* cpu) {{
+    return cpu ? cpu->pc_watch_cbar : 0;
 }}
 '''.format()
 

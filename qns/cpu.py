@@ -358,6 +358,13 @@ class Z180:
             return int(lib.qns_z180_get_pc_watch_cycle(self._cpu))
         return 0
 
+    @property
+    def pc_watch_cbar(self) -> int:
+        """Return the CBAR value captured at the most recent watch hit."""
+        if CFFI_AVAILABLE and self._cpu:
+            return int(lib.qns_z180_get_pc_watch_cbar(self._cpu))
+        return 0
+
     def __del__(self) -> None:
         """Clean up the CPU."""
         if CFFI_AVAILABLE and hasattr(self, '_cpu') and self._cpu:

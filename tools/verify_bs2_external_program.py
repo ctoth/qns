@@ -18,6 +18,8 @@ R_KEY = 0x17
 Y_KEY = 0x3D
 E_CHORD = 0x51
 X_CHORD = 0x6D
+DOT5_CHORD = 0x50
+POWER_ON_INITIALIZE_CHORD = 0x4A
 
 SOH = 0x01
 STX = 0x02
@@ -49,6 +51,107 @@ FLASH_INITIALIZATION_PROMPT = (
     "T",
     "EH",
     "M",
+    "EH",
+    "N",
+    "T",
+    "ER",
+    "W",
+    "AH",
+    "E",
+    "OU",
+    "ER",
+    "EH",
+    "N",
+)
+FILE_INITIALIZATION_PROMPT = (
+    "I",
+    "N",
+    "I",
+    "SCH",
+    "AE1",
+    "L",
+    "AH",
+    "E1",
+    "Z",
+    "F",
+    "AH",
+    "E",
+    "L",
+    "S",
+    "I",
+    "S",
+    "T",
+    "EH",
+    "M",
+    "EH",
+    "N",
+    "T",
+    "ER",
+    "W",
+    "AH",
+    "E",
+    "OU",
+    "ER",
+    "EH",
+    "N",
+)
+FOLDER_INITIALIZATION_PROMPT = (
+    "I",
+    "N",
+    "I",
+    "SCH",
+    "AE1",
+    "L",
+    "AH",
+    "E1",
+    "Z",
+    "F",
+    "O",
+    "OU",
+    "L",
+    "D",
+    "ER",
+    "S",
+    "I",
+    "S",
+    "T",
+    "EH",
+    "M",
+    "EH",
+    "N",
+    "T",
+    "ER",
+    "W",
+    "AH",
+    "E",
+    "OU",
+    "ER",
+    "EH",
+    "N",
+)
+WIPEOUT_PROMPT = (
+    "D",
+    "I",
+    "L",
+    "E",
+    "T",
+    "AW",
+    "LF",
+    "D",
+    "A",
+    "E",
+    "T",
+    "UH1",
+    "I",
+    "N",
+    "F",
+    "AH",
+    "E",
+    "L",
+    "EH",
+    "R",
+    "E",
+    "UH1",
     "EH",
     "N",
     "T",
@@ -109,6 +212,24 @@ def is_flash_initialization_prompt(names: list[str]) -> bool:
     return tuple(names[-prompt_size:]) == FLASH_INITIALIZATION_PROMPT
 
 
+def is_file_initialization_prompt(names: list[str]) -> bool:
+    """Return whether retained speech ends with the exact cold-reset prompt."""
+    prompt_size = len(FILE_INITIALIZATION_PROMPT)
+    return tuple(names[-prompt_size:]) == FILE_INITIALIZATION_PROMPT
+
+
+def is_folder_initialization_prompt(names: list[str]) -> bool:
+    """Return whether retained speech ends with the exact folder prompt."""
+    prompt_size = len(FOLDER_INITIALIZATION_PROMPT)
+    return tuple(names[-prompt_size:]) == FOLDER_INITIALIZATION_PROMPT
+
+
+def is_wipeout_prompt(names: list[str]) -> bool:
+    """Return whether retained speech ends with the exact file-area prompt."""
+    prompt_size = len(WIPEOUT_PROMPT)
+    return tuple(names[-prompt_size:]) == WIPEOUT_PROMPT
+
+
 def is_flash_confirmation_prompt(names: list[str]) -> bool:
     """Return whether speech ends with the exact destructive-action confirmation."""
     prompt_size = len(FLASH_CONFIRMATION_PROMPT)
@@ -126,14 +247,48 @@ def reach_editor_command_loop(harness: BS2Harness) -> None:
         phoneme.name
         for phoneme in bns.ssi263.get_phonemes(include_pauses=False)
     ]
-    if bns.cpu.pc != FLASH_INITIALIZATION_PC or not is_flash_initialization_prompt(names):
+    file_initialization = is_file_initialization_prompt(names)
+    flash_initialization = is_flash_initialization_prompt(names)
+    folder_initialization = is_folder_initialization_prompt(names)
+    wipeout = is_wipeout_prompt(names)
+    if bns.cpu.pc != FLASH_INITIALIZATION_PC or not (
+        file_initialization or flash_initialization or folder_initialization or wipeout
+    ):
         raise RuntimeError(
             f"unexpected BS2 boot wait; pc={bns.cpu.pc:04X} "
             f"speech_tail=[{' '.join(names[-40:])}]"
         )
 
+    if folder_initialization:
+        harness.chord(FLASH_INITIALIZATION_Y_KEY)
+        reach_editor_command_loop(harness)
+        return
+
     speech_cursor = len(bns.ssi263.phoneme_log)
     harness.chord(FLASH_INITIALIZATION_Y_KEY)
+    harness.run_until(
+        lambda: is_flash_confirmation_prompt(
+            [
+                phoneme.name
+                for phoneme in bns.ssi263.get_phonemes(
+                    start=speech_cursor,
+                    include_pauses=False,
+                )
+            ]
+        ),
+        "BS2 destructive-action confirmation prompt",
+        context=lambda: (
+            "response_speech=["
+            + " ".join(
+                phoneme.name
+                for phoneme in bns.ssi263.get_phonemes(
+                    start=speech_cursor,
+                    include_pauses=False,
+                )
+            )
+            + "]"
+        ),
+    )
     harness.wait_for_key()
     if bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657:
         return
@@ -153,26 +308,14 @@ def reach_editor_command_loop(harness: BS2Harness) -> None:
             f"response_speech=[{' '.join(response_names)}]"
         )
 
-    speech_cursor = len(bns.ssi263.phoneme_log)
     harness.chord(FLASH_INITIALIZATION_Y_KEY)
-    harness.run_until(
-        lambda: bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657,
-        "BS2 editor command loop after flash initialization",
-        context=lambda: (
-            f"initializer_hits={bns.cpu.pc_watch_count},"
-            f"initializer_cycle={bns.cpu.pc_watch_cycle},"
-            f"cbr={bns.cpu.cbr:02X},bbr={bns.cpu.bbr:02X},"
-            f"cbar={bns.cpu.cbar:02X} response_speech=["
-            + " ".join(
-                phoneme.name
-                for phoneme in bns.ssi263.get_phonemes(
-                    start=speech_cursor,
-                    include_pauses=False,
-                )
-            )
-            + "]"
-        ),
-    )
+    if wipeout:
+        harness.run_until(
+            lambda: bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657,
+            "BS2 editor command loop after file-area initialization",
+        )
+    else:
+        reach_editor_command_loop(harness)
 
 
 def reject_disk_probes(
@@ -243,16 +386,36 @@ def transfer_ymodem(harness: BS2Harness, cursor: int, program: Path) -> None:
     harness.wait_for_serial(0, cursor, bytes((ACK,)), "empty batch header ACK")
 
 
-def run_until_program_entry(harness: BS2Harness) -> tuple[int, int]:
+def expected_program_cbar(program: bytes) -> int:
+    """Derive the launch CBAR exactly as BS.ASM::_execute_program does."""
+    if len(program) < 10 or program[2:6] != b"BNS\0":
+        raise ValueError("external program lacks the BNS header")
+    program_length = int.from_bytes(program[8:10], "little")
+    rounded_length = program_length + 0x1FFF
+    if rounded_length > 0xFFFF:
+        return 0x11
+    return ((rounded_length >> 8) & 0xF0) | 0x01
+
+
+def run_until_program_entry(
+    harness: BS2Harness,
+    expected_cbar: int,
+) -> tuple[int, int, int]:
     """Require the external-program launcher MMU and real entry point."""
     bns = harness.bns
     start_cycle = bns.cpu.cycle_count
     while bns.cpu.cycle_count - start_cycle < CYCLE_LIMIT:
-        harness.advance(1)
-        if bns.cpu.cbar == 0x11 and bns.cpu.pc in (0x1000, 0x100E):
-            return bns.cpu.cycle_count, bns.cpu.pc
+        harness.advance()
+        if bns.cpu.pc_watch_count and bns.cpu.pc_watch_cbar == expected_cbar:
+            return bns.cpu.pc_watch_cycle, 0x1000, bns.cpu.pc_watch_cbar
+    phonemes = bns.ssi263.get_phonemes(include_pauses=False)
+    speech_tail = " ".join(phoneme.name for phoneme in phonemes[-80:])
     raise RuntimeError(
-        f"external program entry not observed; pc={bns.cpu.pc:04X} cbar={bns.cpu.cbar:02X}"
+        f"external program entry not observed; pc={bns.cpu.pc:04X} "
+        f"cbar={bns.cpu.cbar:02X} entry_watch={bns.cpu.pc_watch_count} "
+        f"entry_cbar={bns.cpu.pc_watch_cbar:02X} "
+        f"expected_cbar={expected_cbar:02X} "
+        f"speech_tail=[{speech_tail}]"
     )
 
 
@@ -276,6 +439,21 @@ def main() -> None:
 
         loaded_combyt = bns.memory.read(0x414B0)
         bns.cpu.watch_pc(0x07F2)
+
+        # A real blank BS2 must be hard-initialized by holding I-chord while
+        # power is applied.  Keep it held until WARM0 reaches the linked
+        # COMBYT initializer, then deliver the physical key-up edge.
+        bns.keyboard.press(POWER_ON_INITIALIZE_CHORD)
+        harness.run_until(
+            lambda: bns.cpu.pc_watch_count > 0,
+            "BS2 power-on hard-reset initializer",
+            context=lambda: (
+                f"combyt={bns.memory.read(0x414B0):02X},"
+                f"cbr={bns.cpu.cbr:02X},bbr={bns.cpu.bbr:02X},"
+                f"cbar={bns.cpu.cbar:02X}"
+            ),
+        )
+        bns.keyboard.release()
 
         reach_editor_command_loop(harness)
         boot_context = (
@@ -318,14 +496,36 @@ def main() -> None:
         harness.chord(E_CHORD)
         chord_phases.append(f"E=[{serial_output.format_events(serial_event_cursor)}]")
         transfer_ymodem(harness, serial_cursor, args.program)
-        harness.wait_for_key()
+        harness.run_until(
+            lambda: bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657,
+            "BS2 editor command loop after YMODEM import",
+        )
 
+        for phase, chord in (("O-after-import", O_CHORD), ("f-after-import", F_KEY)):
+            harness.chord(chord)
+            harness.wait_for_key()
+            chord_phases.append(
+                f"{phase}=[{serial_output.format_events(serial_event_cursor)}]"
+            )
+            serial_event_cursor = len(serial_output.events)
+
+        harness.chord(DOT5_CHORD)
+        harness.wait_for_key()
+        chord_phases.append(
+            f"dot5-next-program=[{serial_output.format_events(serial_event_cursor)}]"
+        )
+
+        expected_cbar = expected_program_cbar(args.program.read_bytes())
+        bns.cpu.watch_pc(0x1000)
         harness.chord(X_CHORD)
-        entry_cycle, entry_pc = run_until_program_entry(harness)
+        entry_cycle, entry_pc, entry_cbar = run_until_program_entry(
+            harness,
+            expected_cbar,
+        )
 
     phonemes = bns.ssi263.get_phonemes(start=speech_start, include_pauses=False)
     print(f"imported: {args.program.name} ({args.program.stat().st_size} bytes)")
-    print(f"entry: cycle={entry_cycle} pc={entry_pc:04X} cbar=11")
+    print(f"entry: cycle={entry_cycle} pc={entry_pc:04X} cbar={entry_cbar:02X}")
     for trace in probe_traces:
         print(f"serial: {trace}")
     print("phonemes:", " ".join(phoneme.name for phoneme in phonemes))
