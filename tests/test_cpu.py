@@ -106,3 +106,33 @@ def test_csio_exchange_crosses_native_callback_boundary():
 
     assert transmitted == [0x81]
     assert memory[0x100] == 0x0A
+
+
+def test_slp_interrupt_wake_resumes_at_instruction_after_slp():
+    """SLP wake must execute the following RET, not skip past it."""
+    assert CFFI_AVAILABLE
+    program = bytearray(0x3A)
+    program[:18] = bytes((
+        0x31, 0x00, 0x10,  # LD SP,1000h
+        0xED, 0x56,        # IM 1
+        0xCD, 0x0E, 0x00,  # CALL sleep_then_return
+        0x3E, 0x42,        # LD A,42h
+        0x32, 0x00, 0x01,  # LD (0100h),A
+        0x76,              # HALT
+        0xFB,              # sleep_then_return: EI
+        0xED, 0x76,        # SLP
+        0xC9,              # RET
+    ))
+    program[0x38:0x3A] = bytes((0xED, 0x4D))  # IM1 handler: RETI
+    cpu, memory = _cpu_with_program(program)
+
+    for _ in range(5):
+        cpu.step()
+    assert cpu.pc == 0x0011
+
+    cpu.set_irq(Z180.IRQ0, Z180.ASSERT)
+    cpu.step()
+    cpu.set_irq(Z180.IRQ0, Z180.CLEAR)
+    cpu.run(100)
+
+    assert memory[0x100] == 0x42
