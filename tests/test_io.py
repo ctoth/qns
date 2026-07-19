@@ -153,6 +153,29 @@ def test_pic16c56_clock_matches_hour_month_and_day_alarm_wildcards():
     assert clock.receive() == 0x0A
 
 
+def test_pic16c56_clock_matches_raw_06_any_minute_alarm():
+    """Raw command 0x06 must make alarm minutes a don't-care field."""
+    current = [datetime(2020, 7, 18, 19, 44, 0)]
+    clock = PIC16C56Clock(now=lambda: current[0])
+
+    def send(value: int) -> None:
+        clock.transmit(value)
+        clock.strobe()
+
+    send(3)
+    send(0x3F)  # low five bits sent before the don't-care command
+    send(0x06)  # any minute
+    send(0x47)  # month: 7
+    send(0x72)  # day: 18
+    send(0xB3)  # hour: 19
+    send(0x9F)  # year: 2020
+
+    assert clock.receive() == 0x0A
+
+    current[0] = datetime(2020, 7, 18, 19, 45, 0)
+    assert clock.receive() == 0x0A
+
+
 def test_msm6242_hold_allows_atomic_clock_setting_and_resume():
     """HOLD freezes the BCD bank until BSP releases its completed writes."""
     current = [datetime(2026, 7, 18, 23, 45, 56)]

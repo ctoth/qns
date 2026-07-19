@@ -31,6 +31,7 @@ class PIC16C56Clock:
             "hour": 0,
             "minute": 0,
         }
+        self._alarm_minute_wildcard = False
         self._last_alarm_notification: tuple[int, int, int, int, int] | None = None
 
     def transmit(self, value: int) -> None:
@@ -85,12 +86,18 @@ class PIC16C56Clock:
             fields = self._normal_fields
         else:
             fields = self._alarm_fields
+            if value == 0x06:
+                self._alarm_minute_wildcard = True
+                self._last_alarm_notification = None
+                return
         field = value & 0xE0
         data = value & 0x1F
         if value == 0x05:
             fields["minute"] += 32
         elif field == 0x20:
             fields["minute"] = data
+            if not self._normal_selected:
+                self._alarm_minute_wildcard = False
         elif field == 0x40:
             fields["month"] = data
         elif field == 0x60:
@@ -111,7 +118,7 @@ class PIC16C56Clock:
             and 0 <= alarm["month"] <= 12
             and 0 <= alarm["day"] <= 31
             and (0 <= alarm["hour"] <= 23 or alarm["hour"] == 0x1F)
-            and 0 <= alarm["minute"] <= 59
+            and (self._alarm_minute_wildcard or 0 <= alarm["minute"] <= 59)
         ):
             return None
         current = self._normal_fields
@@ -127,7 +134,10 @@ class PIC16C56Clock:
             and (alarm["month"] == 0 or current["month"] == alarm["month"])
             and (alarm["day"] == 0 or current["day"] == alarm["day"])
             and (alarm["hour"] == 0x1F or current["hour"] == alarm["hour"])
-            and current["minute"] == alarm["minute"]
+            and (
+                self._alarm_minute_wildcard
+                or current["minute"] == alarm["minute"]
+            )
         )
         return token if matches else None
 

@@ -1092,3 +1092,20 @@ Locate `STARTA` in the linked BSP image from its distinctive instruction sequenc
 - Reread the controlling plan after the passing substantial test run. This is a kept reduction on the clock PIC target; raw `0x06` minute wildcard behavior and wildcard-year ambiguity remain unclaimed.
 - Current slice is exactly `qns/io.py`, `tests/test_io.py`, and this mandatory handoff update. User-owned tracked modifications and unrelated untracked artifacts remain untouched.
 - Next action: inspect and commit this exact wildcard slice. Then stay on the clock PIC target and add a focused failing authority for raw `0x06` selecting any-minute behavior while hour and date remain exact.
+
+### Raw 0x06 any-minute alarm slice reaches the full-suite gate
+
+- Commit `2e24b27` (`Support BS2 clock alarm wildcards`) closed the preceding hour/month/day wildcard slice with exactly `qns/io.py`, `tests/test_io.py`, and the mandatory handoff update.
+- `TIMENEW.C::send_time` sends a tagged minute value followed by raw `0x06` only when `minutes == 0xFF`, with the source comment `don't care about minutes`.
+- Added a focused test for an exact 19:00-hour/date alarm with raw `0x06`; it requires `0x0A` at both 19:44 and 19:45 as distinct full-minute tokens.
+- The unchanged implementation failed because it retained the preceding tagged minute value 31. `PIC16C56Clock` now records an alarm-only any-minute flag on raw `0x06`, clears it on a later tagged minute write, and uses it only in due matching.
+- The focused raw-`0x06` test now passes. The full clock/BNS/CPU authority has not yet been rerun for this slice.
+- Current slice is exactly `qns/io.py`, `tests/test_io.py`, and this mandatory handoff update. User-owned tracked modifications and unrelated artifacts remain untouched.
+- Blocker: none for this slice. Next action: run the full clock/BNS/CPU authority, reread the plan, and close or revert the slice. Wildcard-year data `0x0B` remains ambiguous because no PIC matcher source exists and must not be claimed as resolved by this result.
+
+### Raw 0x06 any-minute alarm slice passes
+
+- The full current authority passes: 30 tests across `tests/test_io.py`, `tests/test_bns.py`, and `tests/test_cpu.py` in 1.38 seconds.
+- Reread the controlling plan after the passing substantial test run. Raw `0x06` any-minute matching is a kept reduction; wildcard-year data `0x0B`, BSNEW 8255 passive status inputs, power workflows, and external programs remain unchecked.
+- Current slice is exactly `qns/io.py`, `tests/test_io.py`, and this mandatory handoff update. User-owned tracked modifications and unrelated untracked artifacts remain untouched.
+- Next action: inspect and commit this exact raw-`0x06` slice. Then finish the clock PIC audit by determining whether wildcard-year behavior can be resolved from any remaining shipped documentation or binary evidence; if it cannot, record that external-authority limit precisely before moving to BSNEW 8255 status inputs.
