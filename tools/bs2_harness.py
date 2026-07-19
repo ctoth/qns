@@ -107,7 +107,15 @@ class BS2Harness:
                 and len(self.bns.ssi263.phoneme_log) == candidate_phonemes
             ):
                 return
-        raise RuntimeError(f"stable key wait not reached within {self.cycle_limit:,} cycles")
+        pending_irq = self.bns.ssi263._pending_irq_cycle
+        pending_irq_text = "none" if pending_irq is None else str(pending_irq)
+        raise RuntimeError(
+            f"stable key wait not reached within {self.cycle_limit:,} cycles; "
+            f"cycle={self.bns.cpu.cycle_count} pc={self.bns.cpu.pc:04X} "
+            f"halted={int(self.bns.cpu.halted)} "
+            f"pending_speech_irq={pending_irq_text} "
+            f"phonemes={len(self.bns.ssi263.phoneme_log)}"
+        )
 
     def wait_for_speech(self) -> None:
         """Wait for speech to settle when the firmware key loop does not halt."""

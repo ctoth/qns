@@ -27,6 +27,62 @@ NAK = 0x15
 CRC_REQUEST = ord("C")
 CPM_EOF = 0x1A
 
+FLASH_INITIALIZATION_PC = 0x1BDA
+FLASH_INITIALIZATION_Y_KEY = 0x3D
+FLASH_INITIALIZATION_PROMPT = (
+    "I",
+    "N",
+    "I",
+    "SCH",
+    "AE1",
+    "L",
+    "AH",
+    "E1",
+    "Z",
+    "F",
+    "L",
+    "AE",
+    "SCH",
+    "S",
+    "I",
+    "S",
+    "T",
+    "EH",
+    "M",
+    "EH",
+    "N",
+    "T",
+    "ER",
+    "W",
+    "AH",
+    "E",
+    "OU",
+    "ER",
+    "EH",
+    "N",
+)
+FLASH_CONFIRMATION_PROMPT = (
+    "AH",
+    "ER",
+    "YI",
+    "U",
+    "U",
+    "SCH",
+    "O",
+    "ER",
+    "EH",
+    "N",
+    "T",
+    "ER",
+    "W",
+    "AH",
+    "E",
+    "OU",
+    "ER",
+    "EH",
+    "N",
+)
+
 
 def crc16_xmodem(data: bytes) -> int:
     """Return the CRC-16/XMODEM value used by the firmware."""
@@ -45,6 +101,78 @@ def ymodem_packet(block_number: int, payload: bytes, block_size: int) -> bytes:
     marker = SOH if block_size == 128 else STX
     crc = crc16_xmodem(payload)
     return bytes((marker, block_number, 0xFF - block_number)) + payload + crc.to_bytes(2, "big")
+
+
+def is_flash_initialization_prompt(names: list[str]) -> bool:
+    """Return whether retained speech ends with the exact first-boot prompt."""
+    prompt_size = len(FLASH_INITIALIZATION_PROMPT)
+    return tuple(names[-prompt_size:]) == FLASH_INITIALIZATION_PROMPT
+
+
+def is_flash_confirmation_prompt(names: list[str]) -> bool:
+    """Return whether speech ends with the exact destructive-action confirmation."""
+    prompt_size = len(FLASH_CONFIRMATION_PROMPT)
+    return tuple(names[-prompt_size:]) == FLASH_CONFIRMATION_PROMPT
+
+
+def reach_editor_command_loop(harness: BS2Harness) -> None:
+    """Complete the real first-boot dialogue and reach the editor key loop."""
+    bns = harness.bns
+    harness.wait_for_key()
+    if bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657:
+        return
+
+    names = [
+        phoneme.name
+        for phoneme in bns.ssi263.get_phonemes(include_pauses=False)
+    ]
+    if bns.cpu.pc != FLASH_INITIALIZATION_PC or not is_flash_initialization_prompt(names):
+        raise RuntimeError(
+            f"unexpected BS2 boot wait; pc={bns.cpu.pc:04X} "
+            f"speech_tail=[{' '.join(names[-40:])}]"
+        )
+
+    speech_cursor = len(bns.ssi263.phoneme_log)
+    harness.chord(FLASH_INITIALIZATION_Y_KEY)
+    harness.wait_for_key()
+    if bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657:
+        return
+
+    response_names = [
+        phoneme.name
+        for phoneme in bns.ssi263.get_phonemes(
+            start=speech_cursor,
+            include_pauses=False,
+        )
+    ]
+    if bns.cpu.pc != FLASH_INITIALIZATION_PC or not is_flash_confirmation_prompt(
+        response_names
+    ):
+        raise RuntimeError(
+            f"unexpected flash confirmation wait; pc={bns.cpu.pc:04X} "
+            f"response_speech=[{' '.join(response_names)}]"
+        )
+
+    speech_cursor = len(bns.ssi263.phoneme_log)
+    harness.chord(FLASH_INITIALIZATION_Y_KEY)
+    harness.run_until(
+        lambda: bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657,
+        "BS2 editor command loop after flash initialization",
+        context=lambda: (
+            f"initializer_hits={bns.cpu.pc_watch_count},"
+            f"initializer_cycle={bns.cpu.pc_watch_cycle},"
+            f"cbr={bns.cpu.cbr:02X},bbr={bns.cpu.bbr:02X},"
+            f"cbar={bns.cpu.cbar:02X} response_speech=["
+            + " ".join(
+                phoneme.name
+                for phoneme in bns.ssi263.get_phonemes(
+                    start=speech_cursor,
+                    include_pauses=False,
+                )
+            )
+            + "]"
+        ),
+    )
 
 
 def reject_disk_probes(
@@ -149,16 +277,7 @@ def main() -> None:
         loaded_combyt = bns.memory.read(0x414B0)
         bns.cpu.watch_pc(0x07F2)
 
-        harness.run_until(
-            lambda: bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657,
-            "BS2 editor command loop",
-            context=lambda: (
-                f"initializer_hits={bns.cpu.pc_watch_count},"
-                f"initializer_cycle={bns.cpu.pc_watch_cycle},"
-                f"cbr={bns.cpu.cbr:02X},bbr={bns.cpu.bbr:02X},"
-                f"cbar={bns.cpu.cbar:02X}"
-            ),
-        )
+        reach_editor_command_loop(harness)
         boot_context = (
             f"loaded_COMBYT={loaded_combyt:02X},"
             f"command_COMBYT={bns.memory.read(0x414B0):02X},"

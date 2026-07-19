@@ -86,3 +86,12 @@ def test_run_until_reports_lazy_failure_context(tmp_path):
         harness.run_until(lambda: False, "loop wait", context=timeout_context)
 
     assert context_calls == 1
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"cycle=4000 pc=0000 halted=0 "
+            r"pending_speech_irq=none phonemes=0"
+        ),
+    ):
+        harness.wait_for_key()

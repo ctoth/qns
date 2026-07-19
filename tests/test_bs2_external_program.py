@@ -6,12 +6,54 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from qns.bns import _ASCII_TO_BNS_KEY
 from tools.verify_bs2_external_program import (
+    FLASH_CONFIRMATION_PROMPT,
+    FLASH_INITIALIZATION_PROMPT,
+    FLASH_INITIALIZATION_Y_KEY,
     SOH,
     STX,
     crc16_xmodem,
+    is_flash_confirmation_prompt,
+    is_flash_initialization_prompt,
     ymodem_packet,
 )
+
+
+def test_flash_initialization_uses_firmware_brlyes_chord():
+    """The English ROM's BRLYES is lowercase y, not uppercase Y."""
+    assert FLASH_INITIALIZATION_Y_KEY == _ASCII_TO_BNS_KEY[ord("y")]
+    assert FLASH_INITIALIZATION_Y_KEY != _ASCII_TO_BNS_KEY[ord("Y")]
+
+
+@given(prefix=st.lists(st.text(max_size=8), max_size=40))
+def test_flash_initialization_prompt_allows_arbitrary_prior_speech(
+    prefix: list[str],
+):
+    """Only the exact retained suffix identifies the first-boot dialogue."""
+    assert is_flash_initialization_prompt(prefix + list(FLASH_INITIALIZATION_PROMPT))
+
+
+def test_flash_initialization_prompt_rejects_partial_or_altered_speech():
+    """A nearby boot utterance must not authorize an automatic response."""
+    assert not is_flash_initialization_prompt(list(FLASH_INITIALIZATION_PROMPT[:-1]))
+    altered = [*FLASH_INITIALIZATION_PROMPT[:-1], "M"]
+    assert not is_flash_initialization_prompt(altered)
+
+
+@given(prefix=st.lists(st.text(max_size=8), max_size=40))
+def test_flash_confirmation_prompt_allows_arbitrary_prior_speech(
+    prefix: list[str],
+):
+    """The second destructive-action prompt is matched as an exact suffix."""
+    assert is_flash_confirmation_prompt(prefix + list(FLASH_CONFIRMATION_PROMPT))
+
+
+def test_flash_confirmation_prompt_rejects_partial_or_altered_speech():
+    """The second BRLYES response requires the complete confirmation prompt."""
+    assert not is_flash_confirmation_prompt(list(FLASH_CONFIRMATION_PROMPT[:-1]))
+    altered = [*FLASH_CONFIRMATION_PROMPT[:-1], "M"]
+    assert not is_flash_confirmation_prompt(altered)
 
 
 @settings(max_examples=100, deadline=None)

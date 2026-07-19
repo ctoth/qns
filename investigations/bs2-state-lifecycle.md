@@ -29,17 +29,22 @@
 | Capture retained speech at pristine PC `0x1BDA` | Cold startup is blocked on a missing device transition | CPU is halted after speaking `Initialize flash system. Enter Y or N.` | Hardware/interrupt stall | Required first-boot keyboard dialogue |
 | Recognize the exact prompt and send acknowledged lowercase `y` (`0x3D`) | The first-boot dialogue accepts the same lowercase key used by later menus | Firmware returns to halted PC `0x1BDA` after the next 100,000,000-cycle bound | Lowercase response | Response rejection or initialization failure |
 | Send authoritative uppercase `Y` chord (`0x7D`) | The uppercase prompt label identifies the required case-sensitive chord | Firmware again returns to halted PC `0x1BDA` with zero initializer hits and MMU `34/1E/C6` | Simple case mismatch | Response rejection or initialization failure after acknowledged input |
+| Capture speech after acknowledged uppercase `Y` | Flash initialization emits a distinct failure message before returning to the prompt | Firmware speaks the complete identical `Initialize flash system. Enter Y or N.` sequence and returns to PC `0x1BDA` | Distinct spoken failure path | Prompt loop before or after a silent initialization failure |
+| Read `ASKSURE` and linked English `BRLYES` | The prompt accepts uppercase ASCII `Y` | Both `GETKEY` reads compare directly to `BRLYES=0x3D`, the lowercase `y` raw chord | Uppercase response; single-response workflow | Two prompt-paced lowercase `y` confirmations |
+| Match confirmation speech and send the second lowercase `y` | Both confirmations enter `flashInit` | Firmware leaves the prompt loop and runs until the following 100,000,000-cycle stable-key bound expires | Keyboard/prompt rejection | Downstream flash-initialization failure or long-running loop |
+| Add causal state to the post-confirmation stable-key timeout | Firmware remains inside flash initialization | At the bound, PC is the editor command loop `0xD657`, speech IRQ is clear, and 311 phonemes have completed; only `halted=0` prevents `wait_for_key()` success | Flash polling loop or missing device transition | Verifier uses the wrong post-initialization predicate |
+| Use the exact editor predicate after the second confirmation | First boot can reach the external-program scenario | Pristine state crosses flash initialization, O/f/T, and ASCI1 ENQ/NAK, then reaches the same ASCI0 TE-disabled failure with `COMBYT=00` and no `0x07F2` hit | Flash initialization as current blocker; stale preserved state as sole cause | Shared startup/serial initialization defect downstream of editor readiness |
 
 ## Current Best Theory
 
-Pristine flash correctly enters a firmware initialization dialogue and waits at halted PC `0x1BDA` for `Y` or `N`, but neither acknowledged lowercase `y` nor authoritative uppercase `Y` crosses the dialogue. The current evidence does not distinguish firmware response rejection, flash initialization failure, or a deliberate repeated prompt. The preserved image bypasses the dialogue because its flash is already initialized, but it contains a separate downstream inconsistency: `COMBYT` was never written on that restart path.
+Pristine flash correctly enters `ASKSURE`, accepts both lowercase `y` raw chords (`BRLYES=0x3D`), reaches the exact editor predicate, and continues through O/f/T and the complete ASCI1 probe response. It then reproduces the original ASCI0 failure: `COMBYT=00`, no PC `0x07F2` initializer hit, and ENQ stuck in TDR with TE disabled. First-boot flash initialization is solved; the remaining root cause is a shared startup/serial initialization defect, not the preserved state.
 
 ## Open Questions
 
-- Does the dialogue reject both raw responses, or does flash initialization fail and return to the same prompt?
-- What speech does firmware produce after the acknowledged uppercase `Y`, before it returns to PC `0x1BDA`?
+- Why does the real linked BS2 startup path never execute PC `0x07F2` or otherwise initialize `COMBYT` before `DTRON` uses it?
+- Is PC `0x07F2` part of a different model/configuration path, making the prior source assumption invalid for BS2ENG?
 - Can a correct initialized path write logical `COMBYT=0x64` and complete BS2ENG import/execution without patching state bytes?
 
 ## Next Action
 
-Restore the prematurely reverted verifier/test slice, retain the speech cursor before uppercase `Y`, and inspect the exact post-response speech at the next stable key wait. Use that evidence to distinguish response rejection from flash-initialization failure while staying on the same first-boot target.
+Commit the kept first-boot verifier slice. Then recover the actual linked startup path that should initialize ASCI0/`COMBYT` in BS2ENG before changing emulator or firmware-facing behavior.
