@@ -8,7 +8,7 @@ import pytest
 
 from qns.bns import (
     _ASCII_TO_BNS_KEY,
-    _BS2_COMBYT_PHYSICAL,
+    _COMBYT_PHYSICAL,
     _COMMAND_LOOP_TIMER_PHYSICAL,
     _COMMAND_LOOP_TIMER_WRITE_PC,
     _KEYBOARD_INPUT_BUFFER_PHYSICAL,
@@ -46,7 +46,7 @@ def test_interactive_windows_stdin_reads_one_key_without_newline(monkeypatch):
     assert _read_stdin_character() == "O"
 
 
-@pytest.mark.parametrize("model", ["bsp", "bs2", "bsl"])
+@pytest.mark.parametrize("model", ["bsp", "bs2", "bsl", "bl2"])
 def test_command_loop_gate_requires_linked_starta_instruction(model):
     """Early timer initialization cannot open stdin before linked STARTA."""
     bns = BNS(model=model)
@@ -60,9 +60,18 @@ def test_command_loop_gate_requires_linked_starta_instruction(model):
     assert bns._command_loop_write_count == 1
 
 
-def test_power_on_stdin_holds_i_until_firmware_initializes_combyt(monkeypatch):
-    """The documented I-chord is down before cycle one and released by WARM0."""
-    characters = iter(("I", ""))
+@pytest.mark.parametrize(
+    ("model", "character", "chord"),
+    [("bs2", "I", 0x4A), ("bl2", "b", 0x03)],
+)
+def test_power_on_stdin_holds_chord_until_profile_acceptance_boundary(
+    monkeypatch,
+    model,
+    character,
+    chord,
+):
+    """A proven profile holds its startup chord until firmware accepts it."""
+    characters = iter((character, ""))
     monkeypatch.setattr(
         "qns.bns._read_stdin_character",
         lambda: next(characters),
@@ -76,7 +85,7 @@ def test_power_on_stdin_holds_i_until_firmware_initializes_combyt(monkeypatch):
             self.target()
 
     monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
-    bns = BNS(model="bs2", stdin_device="keyboard", power_on_input=True)
+    bns = BNS(model=model, stdin_device="keyboard", power_on_input=True)
     observed = []
 
     class PowerOnCPU:
@@ -89,13 +98,16 @@ def test_power_on_stdin_holds_i_until_firmware_initializes_combyt(monkeypatch):
 
         def run(self, cycles):
             observed.append((bns.keyboard.dots, bns.keyboard._key_down))
-            bns._mem_write(_BS2_COMBYT_PHYSICAL, 0x64)
+            if model == "bs2":
+                bns._mem_write(_COMBYT_PHYSICAL, 0x64)
+            else:
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             return cycles
 
     bns.cpu = PowerOnCPU()
     bns.run(max_cycles=1_000)
 
-    assert observed == [(0x4A, True)]
+    assert observed == [(chord, True)]
     assert not bns.keyboard._key_down
 
 
@@ -109,6 +121,14 @@ def test_power_on_stdin_requires_documented_uppercase_i(monkeypatch, character):
         bns.run(max_cycles=1_000)
 
 
+def test_bl2_power_on_stdin_requires_an_initial_chord(monkeypatch):
+    monkeypatch.setattr("qns.bns._read_stdin_character", lambda: "")
+    bns = BNS(model="bl2", stdin_device="keyboard", power_on_input=True)
+
+    with pytest.raises(RuntimeError, match="initial chord"):
+        bns.run(max_cycles=1_000)
+
+
 def test_power_on_stdin_rejects_non_keyboard_channel():
     """A serial byte cannot be silently reinterpreted as a keyboard chord."""
     with pytest.raises(ValueError, match="requires keyboard stdin"):
@@ -117,8 +137,8 @@ def test_power_on_stdin_rejects_non_keyboard_channel():
 
 @pytest.mark.parametrize("model", ["bsp", "bsl"])
 def test_power_on_stdin_rejects_profiles_without_proven_reset_boundary(model):
-    """The BS2 COMBYT release event cannot be applied to another firmware."""
-    with pytest.raises(ValueError, match="supported only for BS2"):
+    """A COMBYT release event cannot be applied to an unproven firmware."""
+    with pytest.raises(ValueError, match="proven BS2 or BL2 boundary"):
         BNS(model=model, stdin_device="keyboard", power_on_input=True)
 
 
@@ -128,20 +148,23 @@ def test_keyboard_acceptance_addresses_match_each_linked_english_rom():
         "bsp": 0x4327C,
         "bs2": 0x4327D,
         "bsl": 0x433E5,
+        "bl2": 0x433E6,
     }
     assert _COMMAND_LOOP_TIMER_PHYSICAL == {
         "bsp": 0x41653,
         "bs2": 0x41654,
         "bsl": 0x41653,
+        "bl2": 0x41654,
     }
     assert _COMMAND_LOOP_TIMER_WRITE_PC == {
         "bsp": 0x0A0D,
         "bs2": 0x0A7E,
         "bsl": 0x0A97,
+        "bl2": 0x0AF5,
     }
 
 
-@pytest.mark.parametrize("model", ["bsp", "bs2", "bsl"])
+@pytest.mark.parametrize("model", ["bsp", "bs2", "bsl", "bl2"])
 def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
     """Queued input starts at a stable wait and spans both `_IIB` ISR phases."""
     characters = iter(("y", ""))
@@ -423,6 +446,24 @@ def test_bsl_wires_braille_display_to_csio():
     assert not bns.parallel_ports[2] & 0x10
 
 
+def test_bl2_combines_bsnew_devices_with_parallel_display():
+    """BL2 uses BSNEW storage/clock ports and clocks its display through C0-C2."""
+    bns = BNS(model="bl2")
+    display_controls = []
+    bns.display.write_control = display_controls.append
+
+    assert len(bns.memory.flash) == 2 * 1024 * 1024
+    assert bns.clock_pic is not None
+    assert bns.gas_gauge is not None
+
+    bns._io_write(0x83, 3)
+    assert display_controls == [3]
+
+    bns.cpu._csio_tx(4)
+    bns._io_write(0x83, 9)
+    assert bns.cpu._csio_rx() != -1
+
+
 def test_bns_rejects_unknown_hardware_model():
     with pytest.raises(ValueError, match="Unsupported BNS model: unknown"):
         BNS(model="unknown")
@@ -520,6 +561,33 @@ def test_cli_serial_standard_io_round_trip(tmp_path):
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     assert result.stdout == b"Z"
     assert b"Input: STDIN (serial0)" in result.stderr
+
+
+def test_cli_prints_retained_bl2_display_to_standard_output(tmp_path):
+    """The built-in display is observable without a hardware adapter."""
+    idle_rom = tmp_path / "idle.rom"
+    idle_rom.write_bytes(bytes((0x18, 0xFE)))
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "qns.bns",
+            str(idle_rom),
+            "--model",
+            "bl2",
+            "--cycles",
+            "1000",
+            "--display",
+            "codes",
+        ),
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert "Display codes: " + " ".join(["00"] * 18) in result.stdout.decode()
 
 
 def test_cli_state_round_trip_preserves_rom_shadow_ram(tmp_path):

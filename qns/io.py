@@ -537,6 +537,63 @@ class BrailleDisplay:
         return response
 
 
+class ParallelBrailleDisplay:
+    """Braille Lite display shifted through 8255 port-C control bits."""
+
+    def __init__(self, cells: int) -> None:
+        if cells not in (18, 40):
+            raise ValueError(f"Unsupported parallel display width: {cells}")
+        self.cells = cells
+        self.buffer = bytearray(cells)
+        self._port_c = 0
+        self._shift_byte = 0
+        self._shift_bits = 0
+        self._shifted_bytes: list[int] = []
+
+    def write_control(self, value: int) -> None:
+        """Apply one 8255 mode-set or bit-set/reset control word."""
+        value &= 0xFF
+        if value & 0x80:
+            self._port_c = 0
+            self._shift_byte = 0
+            self._shift_bits = 0
+            self._shifted_bytes.clear()
+            return
+
+        bit = (value >> 1) & 0x07
+        mask = 1 << bit
+        was_set = bool(self._port_c & mask)
+        if value & 0x01:
+            self._port_c |= mask
+        else:
+            self._port_c &= ~mask
+
+        if bit == 1 and value & 0x01 and not was_set:
+            self._shift_byte |= (self._port_c & 0x01) << self._shift_bits
+            self._shift_bits += 1
+            if self._shift_bits == 8:
+                self._shifted_bytes.append(self._shift_byte)
+                self._shift_byte = 0
+                self._shift_bits = 0
+        elif bit == 2 and value & 0x01 and not was_set:
+            self._latch_frame()
+
+    def _latch_frame(self) -> None:
+        """Expose the cells visible after the firmware raises display strobe."""
+        physical_cells = 24 if self.cells == 18 else 40
+        if len(self._shifted_bytes) < physical_cells:
+            return
+        frame = self._shifted_bytes[-physical_cells:]
+        if self.cells == 18:
+            frame = [
+                value
+                for index, value in enumerate(frame)
+                if index not in (6, 7, 14, 15, 22, 23)
+            ]
+        self.buffer[:] = bytes(reversed(frame))
+        self._shifted_bytes.clear()
+
+
 class Watchdog:
     """Watchdog timer."""
 

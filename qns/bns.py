@@ -15,6 +15,7 @@ from .io import (
     BrailleDisplay,
     BrailleKeyboard,
     IOBus,
+    ParallelBrailleDisplay,
     PIC16C56Clock,
     Watchdog,
 )
@@ -44,22 +45,25 @@ _ASCII_TO_BNS_KEY = bytes((
     0x2D, 0x3D, 0x35, 0x2A, 0x33, 0x3B, 0x18, 0x78,
 ))
 
-_BS2_COMBYT_PHYSICAL = 0x414B0
+_COMBYT_PHYSICAL = 0x414B0
 _BS2_POWER_ON_INITIALIZE_CHORD = 0x4A
 _KEYBOARD_INPUT_BUFFER_PHYSICAL = {
     "bsp": 0x4327C,
     "bs2": 0x4327D,
     "bsl": 0x433E5,
+    "bl2": 0x433E6,
 }
 _COMMAND_LOOP_TIMER_PHYSICAL = {
     "bsp": 0x41653,
     "bs2": 0x41654,
     "bsl": 0x41653,
+    "bl2": 0x41654,
 }
 _COMMAND_LOOP_TIMER_WRITE_PC = {
     "bsp": 0x0A0D,
     "bs2": 0x0A7E,
     "bsl": 0x0A97,
+    "bl2": 0x0AF5,
 }
 
 
@@ -112,7 +116,7 @@ class BNS:
         Args:
             clock: CPU clock frequency in Hz (default 12.288 MHz for BSPLUS)
             audio: Enable audio output for SSI-263 speech
-            model: Hardware profile: bsp (BSPLUS), bs2 (BSNEW), or bsl (B_LITE)
+            model: Hardware profile: bsp, bs2, bsl, or bl2
             trace_io: Log all I/O port reads/writes
             trace_writes: Physical address to trace writes to (None = disabled)
             trace_writes_range: (start, end) tuple for range tracing
@@ -124,16 +128,18 @@ class BNS:
             serial_output: Raw byte stream for the selected serial output channel
             serial_output_channel: ASCI channel routed to serial_output
         """
-        if model not in ("bsp", "bs2", "bsl"):
+        if model not in ("bsp", "bs2", "bsl", "bl2"):
             raise ValueError(f"Unsupported BNS model: {model}")
         if power_on_input and stdin_device != "keyboard":
             raise ValueError("power-on input requires keyboard stdin")
-        if power_on_input and model != "bs2":
-            raise ValueError("power-on input is currently supported only for BS2")
+        if power_on_input and model not in ("bs2", "bl2"):
+            raise ValueError("power-on input requires a proven BS2 or BL2 boundary")
 
         self.clock = clock
         self.model = model
-        self.memory = Memory(flash_size=2 * 1024 * 1024 if model == "bs2" else 0)
+        self.memory = Memory(
+            flash_size=2 * 1024 * 1024 if model in ("bs2", "bl2") else 0
+        )
         self.io = IOBus()
         self.trace_interrupts = trace_interrupts
         self.stdin_device = stdin_device
@@ -159,7 +165,7 @@ class BNS:
         self.write_counts = {}  # Address -> occurrence count
         self.traced_writes: list[tuple[int, int, int, int]] = []
         self._command_loop_write_count = 0
-        self._bs2_combyt_writes = 0
+        self._combyt_writes = 0
 
         # Statistics
         self.stats = {
@@ -172,10 +178,12 @@ class BNS:
         self.ssi263 = SSI263(base_port=self.PORT_SSI263, clock=clock)
         self.keyboard = BrailleKeyboard(port=self.PORT_KEYBOARD, keyclr_port=self.PORT_KEYCLR)
         self.rtc = MSM6242RTC(base_port=self.PORT_RTC_START)
-        self.clock_pic = PIC16C56Clock() if model == "bs2" else None
+        self.clock_pic = PIC16C56Clock() if model in ("bs2", "bl2") else None
         if model == "bsl":
             self.display = BrailleDisplay()
-        self.gas_gauge = BQ2010GasGauge() if model == "bs2" else None
+        elif model == "bl2":
+            self.display = ParallelBrailleDisplay(cells=18)
+        self.gas_gauge = BQ2010GasGauge() if model in ("bs2", "bl2") else None
         self.watchdog = Watchdog(port=self.PORT_WATCHDOG)
         self.speech_power_enabled = False
         self.rs232_power_enabled = False
@@ -237,8 +245,8 @@ class BNS:
         """Memory write callback for CPU."""
         self.stats['writes'] += 1
 
-        if addr == _BS2_COMBYT_PHYSICAL:
-            self._bs2_combyt_writes += 1
+        if addr == _COMBYT_PHYSICAL:
+            self._combyt_writes += 1
 
         # Count only the linked STARTA instruction that opens another command-loop
         # epoch.  The same timer is also cleared during early RAM initialization.
@@ -319,7 +327,7 @@ class BNS:
             self.rtc.write,
         )
 
-        if self.model == "bs2":
+        if self.model in ("bs2", "bl2"):
             # BSNEW shares 0x80 with watchdog reads and 8255 port-A writes.
             self.io.register(0x80, self.watchdog.read, self._write_parallel_port)
             for port in range(0x81, 0x83):
@@ -371,6 +379,8 @@ class BNS:
         self.parallel_ports[register] = value
         if register != 3:
             return
+        if self.model == "bl2":
+            self.display.write_control(value)
         if value & 0x80:
             self.parallel_ports[2] = 0
             return
@@ -486,7 +496,7 @@ class BNS:
         input_phase: str | None = None
         input_chord: int | None = None
         key_wait_candidate: tuple[int, int] | None = None
-        power_on_combyt_writes = self._bs2_combyt_writes
+        power_on_combyt_writes = self._combyt_writes
         input_command_loop_writes = self._command_loop_write_count
         if self.stdin_device is not None:
             if self.stdin_device == "keyboard":
@@ -494,17 +504,24 @@ class BNS:
                 if self.power_on_input:
                     power_on_character = _read_stdin_character()
                     if not power_on_character:
-                        raise RuntimeError("power-on input ended before uppercase I")
+                        if self.model == "bs2":
+                            raise RuntimeError(
+                                "power-on input ended before uppercase I"
+                            )
+                        raise RuntimeError("power-on input ended before the initial chord")
                     codepoint = ord(power_on_character)
+                    if codepoint >= len(_ASCII_TO_BNS_KEY):
+                        raise RuntimeError(
+                            f"unsupported power-on character: U+{codepoint:04X}"
+                        )
+                    input_chord = _ASCII_TO_BNS_KEY[codepoint]
                     if (
-                        codepoint >= len(_ASCII_TO_BNS_KEY)
-                        or _ASCII_TO_BNS_KEY[codepoint]
-                        != _BS2_POWER_ON_INITIALIZE_CHORD
+                        self.model == "bs2"
+                        and input_chord != _BS2_POWER_ON_INITIALIZE_CHORD
                     ):
                         raise RuntimeError(
                             "power-on input must begin with uppercase I"
                         )
-                    input_chord = _BS2_POWER_ON_INITIALIZE_CHORD
                     self.keyboard.press(input_chord)
                     input_phase = "power-on"
 
@@ -549,7 +566,13 @@ class BNS:
 
                 if (
                     input_phase == "power-on"
-                    and self._bs2_combyt_writes > power_on_combyt_writes
+                    and (
+                        (
+                            self.model == "bs2"
+                            and self._combyt_writes > power_on_combyt_writes
+                        )
+                        or (self.model == "bl2" and not self.keyboard.latched)
+                    )
                 ):
                     self.keyboard.release()
                     input_phase = None
@@ -710,7 +733,7 @@ def main() -> None:
     # Basic options
     parser.add_argument("--audio", action="store_true",
                         help="Enable SSI-263 audio output")
-    parser.add_argument("--model", choices=("bsp", "bs2", "bsl"), default="bsp",
+    parser.add_argument("--model", choices=("bsp", "bs2", "bsl", "bl2"), default="bsp",
                         help="Select the hardware profile (default: bsp)")
     parser.add_argument("--trace", action="store_true",
                         help="Show boot trace instead of running")
@@ -720,7 +743,10 @@ def main() -> None:
     parser.add_argument(
         "--power-on-input",
         action="store_true",
-        help="Read and hold an initial uppercase I from keyboard stdin during power-on",
+        help=(
+            "Read and hold the first keyboard chord during power-on "
+            "(BS2 requires uppercase I)"
+        ),
     )
     parser.add_argument("--output", choices=("console", "serial0", "serial1"),
                         default="console",
@@ -729,6 +755,11 @@ def main() -> None:
         "--speech",
         choices=("codes", "names", "ipa", "examples"),
         help="Print retained speech as codes, phoneme names, IPA, or datasheet example words",
+    )
+    parser.add_argument(
+        "--display",
+        choices=("codes", "unicode"),
+        help="Print the final retained Braille display through standard output",
     )
 
     # Debugging options
@@ -802,6 +833,17 @@ def main() -> None:
                 field = {"names": "name", "ipa": "ipa", "examples": "example"}[args.speech]
                 speech = " ".join(getattr(phoneme, field) for phoneme in phonemes)
             print(f"Speech {args.speech}: {speech}")
+
+        if args.display:
+            if not hasattr(bns, "display"):
+                raise RuntimeError(
+                    f"{args.model} has no built-in Braille display"
+                )
+            if args.display == "codes":
+                display = " ".join(f"{cell:02X}" for cell in bns.display.buffer)
+            else:
+                display = "".join(chr(0x2800 | cell) for cell in bns.display.buffer)
+            print(f"Display {args.display}: {display}")
 
         # Post-run actions
         if args.dump_ram:

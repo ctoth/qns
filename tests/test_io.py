@@ -10,8 +10,19 @@ from qns.io import (
     BQ2010GasGauge,
     BrailleDisplay,
     BrailleKeyboard,
+    ParallelBrailleDisplay,
     PIC16C56Clock,
 )
+
+
+def _shift_parallel_display_byte(
+    display: ParallelBrailleDisplay,
+    value: int,
+) -> None:
+    for bit in range(8):
+        display.write_control(1 if value & (1 << bit) else 0)
+        display.write_control(2)
+        display.write_control(3)
 
 
 def test_braille_lite_display_returns_source_defined_status_values():
@@ -36,6 +47,36 @@ def test_braille_lite_display_captures_command_prefixed_cells(cells: bytes):
 
     assert display.buffer[:len(cells)] == cells
     assert display.cursor == len(cells) % display.cells
+
+
+@given(cells=st.binary(min_size=40, max_size=40))
+def test_parallel_40_cell_display_latches_source_order(cells: bytes):
+    """BL4 shifts cells right-to-left and exposes them on the C2 strobe."""
+    display = ParallelBrailleDisplay(cells=40)
+    display.write_control(0xA2)
+
+    for cell in reversed(cells):
+        _shift_parallel_display_byte(display, cell)
+    display.write_control(5)
+
+    assert display.buffer == cells
+
+
+@given(cells=st.binary(min_size=18, max_size=18))
+def test_parallel_18_cell_display_removes_source_spacers(cells: bytes):
+    """BL2's 24-cell chain exposes its 18 data cells in logical order."""
+    display = ParallelBrailleDisplay(cells=18)
+    physical_frame: list[int] = []
+    reversed_cells = bytes(reversed(cells))
+    for offset in range(0, 18, 6):
+        physical_frame.extend(reversed_cells[offset:offset + 6])
+        physical_frame.extend((0, 0))
+
+    for cell in physical_frame:
+        _shift_parallel_display_byte(display, cell)
+    display.write_control(5)
+
+    assert display.buffer == cells
 
 
 def test_bq2010_decodes_bs2_pulses_and_returns_battery_registers():
