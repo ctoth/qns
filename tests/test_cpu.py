@@ -1,5 +1,8 @@
 """Tests for native Z180 peripheral callbacks."""
 
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
 from qns.cpu import CFFI_AVAILABLE, Z180
 
 
@@ -68,6 +71,66 @@ def test_asci_receive_consumes_python_byte_callback():
     cpu.run(1_000)
 
     assert memory[0x100] == 0x5A
+
+
+@settings(max_examples=32, deadline=None)
+@given(channel=st.sampled_from((0, 1)), value=st.integers(min_value=0, max_value=255))
+def test_asci_receive_interrupt_survives_disabled_interrupts(channel: int, value: int):
+    """ASCI data received under DI must dispatch its interrupt after EI."""
+    assert CFFI_AVAILABLE
+    pending = [value]
+    loop_address = 29
+    vector_address = 0x4E + 2 * channel
+    cntla_port = channel
+    cntlb_port = 0x02 + channel
+    stat_port = 0x04 + channel
+    rdr_port = 0x08 + channel
+    program = bytearray(0x20D)
+    program[:31] = bytes((
+        0x31, 0x00, 0x10,       # LD SP,1000h
+        0x3E, 0x00,             # LD A,0
+        0xED, 0x47,             # LD I,A
+        0xED, 0x5E,             # IM 2
+        0x3E, 0x40,             # LD A,40h
+        0xED, 0x39, 0x33,       # OUT0 (IL),A
+        0x3E, 0x64,             # LD A,64h: 8-N-1, transmit and receive enabled
+        0xED, 0x39, cntla_port, # OUT0 (CNTLA),A
+        0x3E, 0x02,             # LD A,2: BSP's initial 9600-baud divisor
+        0xED, 0x39, cntlb_port, # OUT0 (CNTLB),A
+        0x3E, 0x08,             # LD A,RIE
+        0xED, 0x39, stat_port,  # OUT0 (STAT),A
+        0x18, 0xFE,             # JR $ while IFF1 is disabled
+    ))
+    program[vector_address:vector_address + 2] = bytes((0x00, 0x02))
+    program[0x200:0x20D] = bytes((
+        0xED, 0x38, rdr_port,   # IN0 A,(RDR)
+        0x32, 0x00, 0x01,       # LD (0100h),A
+        0x3E, 0xA5,             # LD A,A5h
+        0x32, 0x01, 0x01,       # LD (0101h),A
+        0xED, 0x4D,             # RETI
+    ))
+
+    def receive(requested_channel: int) -> int:
+        if requested_channel != channel or not pending:
+            return -1
+        return pending.pop()
+
+    cpu, memory = _cpu_with_program(program, serial_rx=receive)
+
+    cpu.run(50_000)
+    assert pending == []
+    assert cpu.pc == loop_address
+    assert memory[0x101] == 0
+
+    memory[loop_address:loop_address + 4] = bytes((
+        0xFB,       # EI
+        0x00,       # EI shadow
+        0x18, 0xFE, # JR $
+    ))
+    cpu.run(10_000)
+
+    assert memory[0x101] == 0xA5
+    assert memory[0x100] == value
 
 
 def test_csio_exchange_crosses_native_callback_boundary():
