@@ -1109,3 +1109,14 @@ Locate `STARTA` in the linked BSP image from its distinctive instruction sequenc
 - Reread the controlling plan after the passing substantial test run. Raw `0x06` any-minute matching is a kept reduction; wildcard-year data `0x0B`, BSNEW 8255 passive status inputs, power workflows, and external programs remain unchecked.
 - Current slice is exactly `qns/io.py`, `tests/test_io.py`, and this mandatory handoff update. User-owned tracked modifications and unrelated untracked artifacts remain untouched.
 - Next action: inspect and commit this exact raw-`0x06` slice. Then finish the clock PIC audit by determining whether wildcard-year behavior can be resolved from any remaining shipped documentation or binary evidence; if it cannot, record that external-authority limit precisely before moving to BSNEW 8255 status inputs.
+
+### Clock PIC wildcard-year audit reaches an external-authority limit
+
+- Commit `8230229` (`Support BS2 any-minute alarms`) closed the raw-`0x06` slice with exactly `qns/io.py`, `tests/test_io.py`, and the mandatory handoff update.
+- Shipped `roms\NFB99\BS2ENG\bs2eng.hlp` says `x` is the alarm wildcard character for the `hhmm` time and `mmddyy` date entry. Its explicit example `xx15` means 15 minutes after every hour and agrees with implemented hour wildcard `0x1F` plus exact minute 15.
+- The shipped help does not state PIC byte encodings. A complete candidate-file search found no PIC 16C56 firmware, HEX, ROM, simulator, or separate alarm matcher in the supplied firmware source or ROM assets.
+- `TIMENEW.C::set_alarm` converts wildcard year `xx` to numeric year `0`, and `send_date` encodes any year below 89 as `year + 11`; wildcard year therefore crosses the observed PIC boundary as tagged year data `0x0B`, exactly the same byte used for calendar year 2000.
+- `include\BSAPI.H` says alarm year 89 disables an alarm, but `BSAPI.C::api_tns_alarm` is compiled only for `TNS | B_LITE_40 || T_LITE`, not `BSNEW`, so it cannot disambiguate the BS2 PIC's year-2000/wildcard collision.
+- The available host firmware and shipped documentation therefore cannot prove whether the physical PIC treated year data `0x0B` as every year, year 2000, or by some hidden state. Implementing either meaning as exact BS2 behavior would be invention. Wildcard-year matching remains externally blocked and unclaimed; all directly observable normal clock, alarm storage/readback, exact alarm, hour/month/day wildcard, and raw-`0x06` minute wildcard surfaces are implemented and tested.
+- Current QNS source state has no active implementation slice; this handoff audit update is the only tracked project change beyond the four preserved user-owned modifications.
+- Next action: commit this record-only external-authority finding, then move to the next BSNEW target allowed by exact-convergence: establish the exact passive 8255 port-A/port-B input contract from BSNEW source definitions and live ROM read consumers before editing implementation.
