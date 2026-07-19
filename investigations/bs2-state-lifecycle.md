@@ -25,17 +25,19 @@
 | Exact external-program verifier after harness cleanup | Refactor changed the lifecycle behavior | Same ASCI1 success and ASCI0 TE-disabled failure at the same cycle and PC | Harness refactor regression | Pre-existing lifecycle defect |
 | Inspect state serializer and exact `COMBYT` bitmap/raw bytes | State serialization omitted a written `COMBYT` value | Serializer restores all bytes and metadata; `COMBYT` is unwritten and raw zero in the file | Explicitly persisted zero; CPU-snapshot loss | Inconsistent warm/cold lifecycle state |
 | Run exact verifier with a newly created blank state | Blank and preserved states select the same broken path | Blank state reaches the 100,000,000-cycle boot bound at PC `0x1BDA`; preserved state reaches command loop and fails at ASCI0 in about seven seconds | One universal reset path | State-dependent lifecycle branch |
+| Run exact verifier with a pristine one-instruction state | The previous blank-state result represents cold startup | A state saved after only reset-vector `DI` also reaches PC `0x1BDA`, with zero `0x07F2` hits and MMU `34/1E/C6` | Prior million-cycle save as cause; preserved image causing initializer skip | A genuine cold-start stall before editor readiness |
+| Capture retained speech at pristine PC `0x1BDA` | Cold startup is blocked on a missing device transition | CPU is halted after speaking `Initialize flash system. Enter Y or N.` | Hardware/interrupt stall | Required first-boot keyboard dialogue |
 
 ## Current Best Theory
 
-Theory 1 now has the strongest evidence. The state selects a startup path that skips the cold initializer even though required shadow workspace `COMBYT` was never written. Theory 2's CPU-snapshot premise is ruled out because QNS state files intentionally contain only nonvolatile memory, and their RAM/bitmap restoration is byte-exact. Theory 3 remains possible only if the emulator's reset or hardware-memory model differs from the real BS2 lifecycle.
+The lifecycle behavior is now explained: pristine flash correctly enters a firmware initialization dialogue and waits at halted PC `0x1BDA` for `Y` or `N`. The verifier incorrectly treated that interactive first-boot state as a boot timeout. The preserved image bypasses this dialogue because its flash is already initialized, but it contains a separate downstream inconsistency: `COMBYT` was never written on that restart path.
 
 ## Open Questions
 
-- Which ROM condition selects the cold initializer at PC `0x07F2` versus the observed warm path?
-- Which state byte or flash condition makes the current image satisfy that branch?
-- Does a genuinely blank state reach `0x07F2`, write `COMBYT=0x64`, and configure ASCI0 correctly?
+- After prompt-paced lowercase `y`, does pristine startup initialize flash, execute PC `0x07F2`, and reach the editor command loop?
+- Does that initialized path write the logical `COMBYT=0x64` into the physical bank later used by `DTRON`?
+- Can the exact BS2ENG import/execution scenario complete from this real initialized path without patching state bytes?
 
 ## Next Action
 
-Rerun only the blank-state verifier with the new timeout context. Use its initializer hit count/cycle and final MMU registers to determine whether PC `0x07F2` ran before the boot path stalled.
+Teach the verifier scenario to handle the exact first-boot prompt with acknowledged lowercase `y`, then rerun against the untouched pristine state and inspect initializer/COMBYT/ASCI behavior.
