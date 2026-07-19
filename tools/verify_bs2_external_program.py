@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import argparse
 import io
-from collections.abc import Callable
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from qns.bns import BNS
+from tools.bs2_harness import BS2Harness
 
 CYCLE_LIMIT = 100_000_000
 
@@ -27,92 +26,6 @@ ACK = 0x06
 NAK = 0x15
 CRC_REQUEST = ord("C")
 CPM_EOF = 0x1A
-
-
-class TimestampedBytesIO(io.BytesIO):
-    """Capture serial bytes together with their emulated completion cycle."""
-
-    def __init__(self, cycle_source: Callable[[], int]) -> None:
-        super().__init__()
-        self._cycle_source = cycle_source
-        self.events: list[tuple[int, int]] = []
-
-    def write(self, data: bytes) -> int:
-        cycle = self._cycle_source()
-        self.events.extend((cycle, byte) for byte in data)
-        return super().write(data)
-
-
-def format_serial_events(events: list[tuple[int, int]]) -> str:
-    """Format cycle-stamped serial bytes compactly for verifier failures."""
-    return ",".join(f"{byte:02X}@{cycle}" for cycle, byte in events)
-
-
-def advance(bns: BNS, cycles: int = 1_000) -> None:
-    """Advance the CPU and the timed SSI-263 device together."""
-    bns.cpu.run(cycles)
-    current_cycle = bns.cpu.cycle_count
-    bns.ssi263.set_cycle_count(current_cycle)
-    bns.ssi263.check_pending_irq(current_cycle)
-
-
-def run_until(bns: BNS, predicate: Callable[[], bool], description: str) -> None:
-    """Run until a condition is true or the bounded verifier fails."""
-    start_cycle = bns.cpu.cycle_count
-    while not predicate():
-        if bns.cpu.cycle_count - start_cycle >= CYCLE_LIMIT:
-            raise RuntimeError(
-                f"{description} not reached within {CYCLE_LIMIT:,} cycles; "
-                f"cycle={bns.cpu.cycle_count} pc={bns.cpu.pc:04X}"
-            )
-        advance(bns)
-
-
-def deliver_chord(bns: BNS, chord: int) -> None:
-    """Deliver one raw chord through acknowledged key-down and key-up edges."""
-    bns.keyboard.press(chord)
-    run_until(bns, lambda: not bns.keyboard.latched, f"key-down acknowledgment for {chord:02X}")
-    bns.keyboard.release()
-    run_until(bns, lambda: not bns.keyboard.latched, f"key-up acknowledgment for {chord:02X}")
-
-
-def run_until_stable_key_wait(bns: BNS) -> None:
-    """Wait until firmware is halted with no pending speech work."""
-    start_cycle = bns.cpu.cycle_count
-    while bns.cpu.cycle_count - start_cycle < CYCLE_LIMIT:
-        advance(bns)
-        if bns.ssi263._pending_irq_cycle is not None or not bns.cpu.halted:
-            continue
-
-        candidate_pc = bns.cpu.pc
-        candidate_phonemes = len(bns.ssi263.phoneme_log)
-        advance(bns)
-        if (
-            bns.ssi263._pending_irq_cycle is None
-            and bns.cpu.halted
-            and bns.cpu.pc == candidate_pc
-            and len(bns.ssi263.phoneme_log) == candidate_phonemes
-        ):
-            return
-    raise RuntimeError(f"stable key wait not reached within {CYCLE_LIMIT:,} cycles")
-
-
-def run_until_speech_idle(bns: BNS) -> None:
-    """Wait for a prompt to finish even when its key loop does not HALT."""
-    start_cycle = bns.cpu.cycle_count
-    while bns.cpu.cycle_count - start_cycle < CYCLE_LIMIT:
-        advance(bns)
-        if bns.ssi263._pending_irq_cycle is not None:
-            continue
-
-        candidate_phonemes = len(bns.ssi263.phoneme_log)
-        advance(bns, 100_000)
-        if (
-            bns.ssi263._pending_irq_cycle is None
-            and len(bns.ssi263.phoneme_log) == candidate_phonemes
-        ):
-            return
-    raise RuntimeError(f"speech did not settle within {CYCLE_LIMIT:,} cycles")
 
 
 def crc16_xmodem(data: bytes) -> int:
@@ -134,173 +47,47 @@ def ymodem_packet(block_number: int, payload: bytes, block_size: int) -> bytes:
     return bytes((marker, block_number, 0xFF - block_number)) + payload + crc.to_bytes(2, "big")
 
 
-def queue_serial(bns: BNS, data: bytes) -> None:
-    """Make host bytes available to the selected ASCI receive callback."""
-    for byte in data:
-        bns._serial_input_queue.put(byte)
-
-
-def format_asci_state(bns: BNS, channel: int) -> str:
-    """Format one side-effect-free native ASCI diagnostic snapshot."""
-    state = bns.cpu.asci_debug_state(channel)
-    return (
-        f"asci{channel}=stat:{state['status']:02X},bits:{state['rx_bits_remaining']},"
-        f"fifo:{state['rx_fifo_depth']},irq:{int(state['irq_pending'])},"
-        f"cntla:{state['cntla']:02X},txbits:{state['tx_bits_remaining']},"
-        f"tsr:{state['tx_shift_register']:02X},tdr:{state['tx_data_register']:02X},"
-        f"div:{state['brg_divisor']},frame:{state['frame_bits']},"
-        f"rie:+{state['rie_set_count']}/-{state['rie_clear_count']}@"
-        f"{state['rie_last_pc']:04X}/{state['rie_last_cycle']},"
-        f"statw:{state['stat_write_count']}:{state['stat_last_write']:02X}@"
-        f"{state['stat_last_write_pc']:04X}/{state['stat_last_write_cycle']}"
-    )
-
-
-def wait_for_firmware_receive(
-    bns: BNS,
-    channel: int,
-    description: str,
-    context: str = "",
-) -> str:
-    """Trace one host byte through callback, frame, IRQ, and firmware ISR drain."""
-    start_cycle = bns.cpu.cycle_count
-    configured = bns.cpu.asci_debug_state(channel)
-    frame_cycle_bound = (
-        16 * int(configured["brg_divisor"]) * (int(configured["frame_bits"]) + 2)
-    )
-    trace_cycle_limit = max(100_000, frame_cycle_bound)
-    events: list[str] = []
-    callback_seen = False
-    shift_seen = False
-    frame_seen = False
-    irq_seen = False
-
-    while bns.cpu.cycle_count - start_cycle < trace_cycle_limit:
-        state = bns.cpu.asci_debug_state(channel)
-        cycle = bns.cpu.cycle_count
-        pc = bns.cpu.pc
-
-        if not callback_seen and bns._serial_input_queue.empty():
-            callback_seen = True
-            events.append(f"callback@{cycle}/pc={pc:04X}")
-        if callback_seen and not shift_seen and state["rx_bits_remaining"]:
-            shift_seen = True
-            events.append(
-                f"shift@{cycle}/pc={pc:04X}/bits={state['rx_bits_remaining']}"
-            )
-        if shift_seen and not frame_seen and (
-            state["status"] & 0x80 or state["rx_fifo_depth"]
-        ):
-            frame_seen = True
-            events.append(
-                f"frame@{cycle}/pc={pc:04X}/fifo={state['rx_fifo_depth']}"
-            )
-        if frame_seen and not irq_seen and state["irq_pending"]:
-            irq_seen = True
-            events.append(f"irq@{cycle}/pc={pc:04X}")
-        if frame_seen and not (state["status"] & 0x80) and not state["rx_fifo_depth"]:
-            events.append(f"drain@{cycle}/pc={pc:04X}")
-            return f"{description}:" + ",".join(events)
-
-        advance(bns, 1)
-
-    raise RuntimeError(
-        f"{description} did not cross the firmware receive path within "
-        f"{trace_cycle_limit:,} cycles; events={','.join(events)} "
-        f"{format_asci_state(bns, channel)} pc={bns.cpu.pc:04X} context=[{context}]"
-    )
-
-
-def wait_for_serial(
-    bns: BNS,
-    output: io.BytesIO,
-    channel: int,
-    cursor: int,
-    expected: bytes,
-    description: str,
-    context: str = "",
-) -> int:
-    """Wait for an exact protocol response and return the new output cursor."""
-    start_cycle = bns.cpu.cycle_count
-    while bns.cpu.cycle_count - start_cycle < CYCLE_LIMIT:
-        data = output.getvalue()
-        offset = data.find(expected, cursor)
-        if offset >= 0:
-            return offset + len(expected)
-        state = bns.cpu.asci_debug_state(channel)
-        if (
-            len(expected) == 1
-            and state["tx_data_register"] == expected[0]
-            and state["tx_bits_remaining"] == 0
-            and not state["cntla"] & 0x20
-        ):
-            raise RuntimeError(
-                f"{description} is stuck in ASCI{channel} TDR with TE disabled; "
-                f"cycle={bns.cpu.cycle_count} pc={bns.cpu.pc:04X} "
-                f"{format_asci_state(bns, channel)} context=[{context}]"
-            )
-        advance(bns)
-    tail = output.getvalue()[cursor:]
-    phonemes = bns.ssi263.get_phonemes(include_pauses=False)
-    speech_tail = " ".join(phoneme.name for phoneme in phonemes[-80:])
-    raise RuntimeError(
-        f"{description} not received within {CYCLE_LIMIT:,} cycles; "
-        f"pc={bns.cpu.pc:04X} cbr={bns.cpu.cbr:02X} bbr={bns.cpu.bbr:02X} "
-        f"cbar={bns.cpu.cbar:02X} serial_tail={tail[-32:].hex(' ')} "
-        f"{format_asci_state(bns, 0)} {format_asci_state(bns, 1)} "
-        f"context=[{context}] speech_tail=[{speech_tail}]"
-    )
-
-
 def reject_disk_probes(
-    bns: BNS,
-    output: TimestampedBytesIO,
+    harness: BS2Harness,
     context: str,
 ) -> tuple[int, list[str]]:
     """Reject the firmware's channel-1/channel-0 disk-drive probes."""
+    bns = harness.bns
     traces: list[str] = []
-    cursor = wait_for_serial(bns, output, 1, 0, bytes((0x05,)), "ASCI1 disk-drive ENQ")
-    queue_serial(bns, bytes((NAK,)))
-    traces.append(wait_for_firmware_receive(bns, 1, "ASCI1 NAK", context=context))
+    cursor = harness.wait_for_serial(1, 0, bytes((0x05,)), "ASCI1 disk-drive ENQ")
+    harness.queue_serial(bytes((NAK,)))
+    traces.append(harness.wait_for_receive(1, "ASCI1 NAK", context=context))
 
-    bns.stdin_device = "serial0"
-    bns.serial_output_channel = 0
+    harness.select_serial(0)
     combyt_trace = ",".join(
-        f"{value:02X}@{cycle}/pc={pc:04X}"
-        for cycle, pc, _address, value in bns.traced_writes
+        f"{value:02X}@{cycle}/pc={pc:04X}" for cycle, pc, _address, value in bns.traced_writes
     )
-    cursor = wait_for_serial(
-        bns,
-        output,
+    cursor = harness.wait_for_serial(
         0,
         cursor,
         bytes((0x05,)),
         "ASCI0 disk-drive ENQ",
         context=f"{context}; {'; '.join(traces)}; COMBYT=[{combyt_trace}]",
     )
-    queue_serial(bns, bytes((NAK,)))
-    traces.append(wait_for_firmware_receive(bns, 0, "ASCI0 NAK"))
+    harness.queue_serial(bytes((NAK,)))
+    traces.append(harness.wait_for_receive(0, "ASCI0 NAK"))
     return cursor, traces
 
 
-def transfer_ymodem(bns: BNS, output: io.BytesIO, cursor: int, program: Path) -> None:
+def transfer_ymodem(harness: BS2Harness, cursor: int, program: Path) -> None:
     """Send one file and an empty batch terminator to the firmware receiver."""
     program_data = program.read_bytes()
     header = program.name.encode("ascii") + b"\0" + str(len(program_data)).encode("ascii") + b"\0"
     header = header.ljust(128, b"\0")
 
-    cursor = wait_for_serial(
-        bns,
-        output,
+    cursor = harness.wait_for_serial(
         0,
         cursor,
         bytes((CRC_REQUEST,)),
         "initial YMODEM CRC request",
     )
-    queue_serial(bns, ymodem_packet(0, header, 128))
-    cursor = wait_for_serial(
-        bns,
-        output,
+    harness.queue_serial(ymodem_packet(0, header, 128))
+    cursor = harness.wait_for_serial(
         0,
         cursor,
         bytes((ACK, CRC_REQUEST)),
@@ -308,40 +95,36 @@ def transfer_ymodem(bns: BNS, output: io.BytesIO, cursor: int, program: Path) ->
     )
 
     for block_number, offset in enumerate(range(0, len(program_data), 1_024), start=1):
-        payload = program_data[offset:offset + 1_024].ljust(1_024, bytes((CPM_EOF,)))
-        queue_serial(bns, ymodem_packet(block_number & 0xFF, payload, 1_024))
-        cursor = wait_for_serial(
-            bns,
-            output,
+        payload = program_data[offset : offset + 1_024].ljust(1_024, bytes((CPM_EOF,)))
+        harness.queue_serial(ymodem_packet(block_number & 0xFF, payload, 1_024))
+        cursor = harness.wait_for_serial(
             0,
             cursor,
             bytes((ACK,)),
             f"data block {block_number} ACK",
         )
 
-    queue_serial(bns, bytes((EOT,)))
-    cursor = wait_for_serial(
-        bns,
-        output,
+    harness.queue_serial(bytes((EOT,)))
+    cursor = harness.wait_for_serial(
         0,
         cursor,
         bytes((ACK, CRC_REQUEST)),
         "EOT ACK and batch CRC request",
     )
-    queue_serial(bns, ymodem_packet(0, bytes(128), 128))
-    wait_for_serial(bns, output, 0, cursor, bytes((ACK,)), "empty batch header ACK")
+    harness.queue_serial(ymodem_packet(0, bytes(128), 128))
+    harness.wait_for_serial(0, cursor, bytes((ACK,)), "empty batch header ACK")
 
 
-def run_until_program_entry(bns: BNS) -> tuple[int, int]:
+def run_until_program_entry(harness: BS2Harness) -> tuple[int, int]:
     """Require the external-program launcher MMU and real entry point."""
+    bns = harness.bns
     start_cycle = bns.cpu.cycle_count
     while bns.cpu.cycle_count - start_cycle < CYCLE_LIMIT:
-        advance(bns, 1)
+        harness.advance(1)
         if bns.cpu.cbar == 0x11 and bns.cpu.pc in (0x1000, 0x100E):
             return bns.cpu.cycle_count, bns.cpu.pc
     raise RuntimeError(
-        f"external program entry not observed; pc={bns.cpu.pc:04X} "
-        f"cbar={bns.cpu.cbar:02X}"
+        f"external program entry not observed; pc={bns.cpu.pc:04X} cbar={bns.cpu.cbar:02X}"
     )
 
 
@@ -353,23 +136,20 @@ def main() -> None:
     args = parser.parse_args()
 
     with redirect_stdout(io.StringIO()):
-        bns: BNS
-        serial_output = TimestampedBytesIO(lambda: bns.cpu.cycle_count)
-        bns = BNS(
-            model="bs2",
+        harness = BS2Harness(
+            args.rom,
+            args.state,
+            cycle_limit=CYCLE_LIMIT,
+            serial_channel=1,
             trace_writes=0x414B0,
-            stdin_device="serial1",
-            serial_output=serial_output,
-            serial_output_channel=1,
         )
-        bns.load_rom(args.rom)
-        bns.load_state(args.state)
+        bns = harness.bns
+        serial_output = harness.serial
 
         loaded_combyt = bns.memory.read(0x414B0)
         bns.cpu.watch_pc(0x07F2)
 
-        run_until(
-            bns,
+        harness.run_until(
             lambda: bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657,
             "BS2 editor command loop",
         )
@@ -384,49 +164,39 @@ def main() -> None:
         chord_phases: list[str] = []
         serial_event_cursor = 0
         for phase, chord in (("O", O_CHORD), ("f", F_KEY)):
-            deliver_chord(bns, chord)
-            run_until_stable_key_wait(bns)
-            events = serial_output.events[serial_event_cursor:]
-            chord_phases.append(f"{phase}=[{format_serial_events(events)}]")
+            harness.chord(chord)
+            harness.wait_for_key()
+            chord_phases.append(f"{phase}=[{serial_output.format_events(serial_event_cursor)}]")
             serial_event_cursor = len(serial_output.events)
 
         bns.cpu.reset_asci_debug()
-        deliver_chord(bns, T_CHORD)
+        harness.chord(T_CHORD)
         t_delivered_cycle = bns.cpu.cycle_count
-        events = serial_output.events[serial_event_cursor:]
-        chord_phases.append(f"T=[{format_serial_events(events)}]")
+        chord_phases.append(f"T=[{serial_output.format_events(serial_event_cursor)}]")
         serial_event_cursor = len(serial_output.events)
         probe_context = (
             f"{boot_context},T_delivered={t_delivered_cycle},"
             f"chord_phases=[{';'.join(chord_phases)}]"
         )
-        serial_cursor, probe_traces = reject_disk_probes(
-            bns,
-            serial_output,
-            probe_context,
-        )
-        events = serial_output.events[serial_event_cursor:]
-        chord_phases.append(f"disk_probes=[{format_serial_events(events)}]")
+        serial_cursor, probe_traces = reject_disk_probes(harness, probe_context)
+        chord_phases.append(f"disk_probes=[{serial_output.format_events(serial_event_cursor)}]")
         serial_event_cursor = len(serial_output.events)
 
-        deliver_chord(bns, R_KEY)
-        run_until_stable_key_wait(bns)
-        events = serial_output.events[serial_event_cursor:]
-        chord_phases.append(f"r=[{format_serial_events(events)}]")
+        harness.chord(R_KEY)
+        harness.wait_for_key()
+        chord_phases.append(f"r=[{serial_output.format_events(serial_event_cursor)}]")
         serial_event_cursor = len(serial_output.events)
-        deliver_chord(bns, Y_KEY)
-        run_until_speech_idle(bns)
-        events = serial_output.events[serial_event_cursor:]
-        chord_phases.append(f"y=[{format_serial_events(events)}]")
+        harness.chord(Y_KEY)
+        harness.wait_for_speech()
+        chord_phases.append(f"y=[{serial_output.format_events(serial_event_cursor)}]")
         serial_event_cursor = len(serial_output.events)
-        deliver_chord(bns, E_CHORD)
-        events = serial_output.events[serial_event_cursor:]
-        chord_phases.append(f"E=[{format_serial_events(events)}]")
-        transfer_ymodem(bns, serial_output, serial_cursor, args.program)
-        run_until_stable_key_wait(bns)
+        harness.chord(E_CHORD)
+        chord_phases.append(f"E=[{serial_output.format_events(serial_event_cursor)}]")
+        transfer_ymodem(harness, serial_cursor, args.program)
+        harness.wait_for_key()
 
-        deliver_chord(bns, X_CHORD)
-        entry_cycle, entry_pc = run_until_program_entry(bns)
+        harness.chord(X_CHORD)
+        entry_cycle, entry_pc = run_until_program_entry(harness)
 
     phonemes = bns.ssi263.get_phonemes(start=speech_start, include_pauses=False)
     print(f"imported: {args.program.name} ({args.program.stat().st_size} bytes)")

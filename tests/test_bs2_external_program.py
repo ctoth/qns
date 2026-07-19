@@ -1,51 +1,17 @@
 """Property authorities for the real-ROM BS2 external-program verifier."""
 
 import binascii
-import io
-from types import SimpleNamespace
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from qns.cpu import Z180
 from tools.verify_bs2_external_program import (
     SOH,
     STX,
-    TimestampedBytesIO,
     crc16_xmodem,
-    wait_for_serial,
     ymodem_packet,
 )
-
-
-def test_timestamped_bytes_io_records_completion_cycles():
-    """Serial evidence must preserve bytes and attribute their write cycles."""
-    cycle = [10]
-    output = TimestampedBytesIO(lambda: cycle[0])
-
-    assert output.write(b"\x05\x06") == 2
-    cycle[0] = 20
-    assert output.write(b"C") == 1
-
-    assert output.getvalue() == b"\x05\x06C"
-    assert output.events == [(10, 0x05), (10, 0x06), (20, ord("C"))]
-
-
-def test_wait_for_serial_reports_byte_stuck_in_disabled_transmitter():
-    """An impossible pending byte must fail at its causal ASCI state."""
-    memory = bytearray(1 << 20)
-    memory[:7] = bytes((
-        0x3E, 0x05,        # LD A,ENQ
-        0xED, 0x39, 0x06,  # OUT0 (TDR0),A while reset CNTLA has TE clear
-        0x18, 0xFE,        # JR $
-    ))
-    cpu = Z180(mem_read=memory.__getitem__)
-    cpu.run(100)
-    bns = SimpleNamespace(cpu=cpu)
-
-    with pytest.raises(RuntimeError, match=r"ASCI0 TDR with TE disabled"):
-        wait_for_serial(bns, io.BytesIO(), 0, 0, b"\x05", "disk ENQ")
 
 
 @settings(max_examples=100, deadline=None)
