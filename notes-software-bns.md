@@ -1055,3 +1055,23 @@ Locate `STARTA` in the linked BSP image from its distinctive instruction sequenc
 - Reread the controlling plan after the passing substantial test run. Alarm storage/readback is a kept reduction, but actual due-alarm `0x0A` delivery and wake behavior remain unchecked on this same clock PIC target.
 - Current slice is exactly `qns/io.py`, `tests/test_io.py`, and this mandatory handoff update. User-owned tracked modifications and unrelated untracked artifacts remain untouched.
 - Blocker: none. Next action: inspect and commit this exact alarm-bank slice, then establish a focused failing authority for a due selected alarm producing the source-defined raw `0x0A` PIC-to-firmware notification without repeated delivery.
+
+### Due-alarm matching research checkpoint
+
+- Commit `07fe292` (`Implement BS2 alarm clock storage`) closed the preceding alarm-bank slice with exactly `qns/io.py`, `tests/test_io.py`, and the mandatory handoff update.
+- `TNSCLK.C` establishes raw `0x0A` as the PIC-to-firmware alarm notification that sets `clock_alarm`; the clock PIC can power/wake the unit for an alarm.
+- `TIMENEW.C::set_alarm` parses `x` in either hour digit as the `DONTCARE` hour value. It parses `x` in either month, day, or year digit pair as numeric zero for that field. Empty alarm-date input copies today's resolved date.
+- Minute wildcard handling is indirect: `send_time` first transmits tagged minute low bits, then sends raw `0x06` when `minutes == 0xff`; raw `0x05` remains the add-32 command. The top-level `TNSCLK.C` protocol comment does not document raw `0x06`.
+- The initial include-only search did not find `DONTCARE`; the subsequent complete firmware-source search found the exact definition at `TIMENEW.C:34`: `#define DONTCARE 0X1F`. No separate PIC firmware, simulator, or alarm matcher exists in the local source tree.
+- Current tracked source state has no active QNS implementation slice beyond this handoff update; the four user-owned tracked modifications and unrelated artifacts remain untouched.
+- Blocker: exact hour-wildcard value and PIC due-match semantics remain to be located in the authoritative source/build definitions. Next action: search the complete local firmware source for the `DONTCARE` definition and any PIC firmware, protocol note, simulator, or alarm-match implementation; only then define the failing due-alarm authority.
+
+### Exact due-alarm notification passes
+
+- With no PIC matcher source available, this slice was bounded to the exact observable non-wildcard contract: when a fully specified alarm matches the maintained normal clock, `receive()` returns raw `0x0A`, which `TNSCLK.C::pic_to_tns` consumes as the alarm notification.
+- Added a focused test for 03:45 on December 31, 2019. The unchanged implementation returned `-1` at the due minute. `PIC16C56Clock` now compares fully specified alarm fields to the maintained normal clock and emits `0x0A` once per unique year/month/day/hour/minute token.
+- Invalid, unset, or wildcard-shaped alarm fields do not match in this slice. Reconfiguring alarm fields clears the prior notification token. Queued command responses retain priority over an asynchronous due-alarm notification.
+- The focused exact-alarm test now passes. The full current authority also passes: 28 tests across `tests/test_io.py`, `tests/test_bns.py`, and `tests/test_cpu.py` in 1.53 seconds.
+- Reread the controlling plan after the passing substantial test run. This is a kept exact-alarm reduction; wildcard matching remains unclaimed and must be handled separately before declaring the clock PIC target complete.
+- Current slice is exactly `qns/io.py`, `tests/test_io.py`, and this mandatory handoff update. User-owned tracked modifications and unrelated untracked artifacts remain untouched.
+- Next action: inspect and commit this exact due-alarm slice. Then continue the same clock target by deriving the minute/hour/date wildcard behavior from the firmware's exact outbound encodings, explicitly marking any PIC-side inference where the unavailable hardware firmware prevents direct proof.

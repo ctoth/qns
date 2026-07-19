@@ -31,6 +31,7 @@ class PIC16C56Clock:
             "hour": 0,
             "minute": 0,
         }
+        self._last_alarm_notification: tuple[int, int, int, int, int] | None = None
 
     def transmit(self, value: int) -> None:
         """Hold one CSI/O byte until the firmware raises the clock strobe."""
@@ -53,9 +54,14 @@ class PIC16C56Clock:
 
     def receive(self) -> int:
         """Return one PIC-to-firmware byte, or -1 when none is pending."""
-        if not self._responses:
+        if self._responses:
+            return self._responses.popleft()
+        self._advance_normal_clock()
+        alarm_token = self._current_exact_alarm_token()
+        if alarm_token is None or alarm_token == self._last_alarm_notification:
             return -1
-        return self._responses.popleft()
+        self._last_alarm_notification = alarm_token
+        return 0x0A
 
     def _queue_current_datetime(self) -> None:
         if self._normal_selected:
@@ -95,6 +101,35 @@ class PIC16C56Clock:
             fields["hour"] = data
         if self._normal_selected:
             self._normal_reference = self._now()
+        else:
+            self._last_alarm_notification = None
+
+    def _current_exact_alarm_token(self) -> tuple[int, int, int, int, int] | None:
+        alarm = self._alarm_fields
+        if not (
+            1989 < alarm["year"] <= 2020
+            and 1 <= alarm["month"] <= 12
+            and 1 <= alarm["day"] <= 31
+            and 0 <= alarm["hour"] <= 23
+            and 0 <= alarm["minute"] <= 59
+        ):
+            return None
+        current = self._normal_fields
+        token = (
+            current["year"],
+            current["month"],
+            current["day"],
+            current["hour"],
+            current["minute"],
+        )
+        expected = (
+            alarm["year"],
+            alarm["month"],
+            alarm["day"],
+            alarm["hour"],
+            alarm["minute"],
+        )
+        return token if token == expected else None
 
     def _advance_normal_clock(self) -> None:
         current_reference = self._now()

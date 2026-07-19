@@ -103,6 +103,30 @@ def test_pic16c56_clock_keeps_alarm_fields_separate_from_normal_time():
     ]
 
 
+def test_pic16c56_clock_reports_due_exact_alarm_once_per_minute():
+    """A due exact alarm must produce the PIC's raw 0x0A notification once."""
+    current = [datetime(2019, 12, 31, 3, 44, 0)]
+    clock = PIC16C56Clock(now=lambda: current[0])
+
+    def send(value: int) -> None:
+        clock.transmit(value)
+        clock.strobe()
+
+    send(3)
+    send(0x2D)  # minute low five bits: 13
+    send(0x05)  # add the sixth minute bit: 45
+    send(0x4C)  # month: 12
+    send(0x7F)  # day: 31
+    send(0xA3)  # hour: 3
+    send(0x9E)  # year: 2019
+
+    assert clock.receive() == -1
+
+    current[0] = datetime(2019, 12, 31, 3, 45, 0)
+    assert clock.receive() == 0x0A
+    assert clock.receive() == -1
+
+
 def test_msm6242_hold_allows_atomic_clock_setting_and_resume():
     """HOLD freezes the BCD bank until BSP releases its completed writes."""
     current = [datetime(2026, 7, 18, 23, 45, 56)]
