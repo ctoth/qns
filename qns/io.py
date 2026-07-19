@@ -57,7 +57,7 @@ class PIC16C56Clock:
         if self._responses:
             return self._responses.popleft()
         self._advance_normal_clock()
-        alarm_token = self._current_exact_alarm_token()
+        alarm_token = self._current_alarm_token()
         if alarm_token is None or alarm_token == self._last_alarm_notification:
             return -1
         self._last_alarm_notification = alarm_token
@@ -104,13 +104,13 @@ class PIC16C56Clock:
         else:
             self._last_alarm_notification = None
 
-    def _current_exact_alarm_token(self) -> tuple[int, int, int, int, int] | None:
+    def _current_alarm_token(self) -> tuple[int, int, int, int, int] | None:
         alarm = self._alarm_fields
         if not (
             1989 < alarm["year"] <= 2020
-            and 1 <= alarm["month"] <= 12
-            and 1 <= alarm["day"] <= 31
-            and 0 <= alarm["hour"] <= 23
+            and 0 <= alarm["month"] <= 12
+            and 0 <= alarm["day"] <= 31
+            and (0 <= alarm["hour"] <= 23 or alarm["hour"] == 0x1F)
             and 0 <= alarm["minute"] <= 59
         ):
             return None
@@ -122,14 +122,14 @@ class PIC16C56Clock:
             current["hour"],
             current["minute"],
         )
-        expected = (
-            alarm["year"],
-            alarm["month"],
-            alarm["day"],
-            alarm["hour"],
-            alarm["minute"],
+        matches = (
+            current["year"] == alarm["year"]
+            and (alarm["month"] == 0 or current["month"] == alarm["month"])
+            and (alarm["day"] == 0 or current["day"] == alarm["day"])
+            and (alarm["hour"] == 0x1F or current["hour"] == alarm["hour"])
+            and current["minute"] == alarm["minute"]
         )
-        return token if token == expected else None
+        return token if matches else None
 
     def _advance_normal_clock(self) -> None:
         current_reference = self._now()

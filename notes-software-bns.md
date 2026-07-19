@@ -1075,3 +1075,20 @@ Locate `STARTA` in the linked BSP image from its distinctive instruction sequenc
 - Reread the controlling plan after the passing substantial test run. This is a kept exact-alarm reduction; wildcard matching remains unclaimed and must be handled separately before declaring the clock PIC target complete.
 - Current slice is exactly `qns/io.py`, `tests/test_io.py`, and this mandatory handoff update. User-owned tracked modifications and unrelated untracked artifacts remain untouched.
 - Next action: inspect and commit this exact due-alarm slice. Then continue the same clock target by deriving the minute/hour/date wildcard behavior from the firmware's exact outbound encodings, explicitly marking any PIC-side inference where the unavailable hardware firmware prevents direct proof.
+
+### Hour/month/day alarm-wildcard slice in progress
+
+- Commit `982513b` (`Deliver BS2 clock alarm notifications`) closed the exact due-alarm slice with exactly `qns/io.py`, `tests/test_io.py`, and the mandatory handoff update.
+- Exact firmware-side encodings establish hour `DONTCARE` as `0x1F` in the tagged hour field and month/day wildcard values as numeric zero in their tagged fields. This slice retains exact minute and exact year matching.
+- Added a focused test that configures minute 45, any hour, any month, any day, and year 2020. It requires raw `0x0A` at 19:45 on July 18 and again at 08:45 on August 19, with the full current minute token providing deduplication.
+- The unchanged matcher failed at the first due time because it rejected all wildcard-shaped fields. `qns/io.py` has now been edited so hour `0x1F` and month/day zero match any current value while minute/year remain exact.
+- The implementation edit has not yet been tested. Current slice is exactly `qns/io.py`, `tests/test_io.py`, and this mandatory handoff update. User-owned tracked modifications and unrelated artifacts remain untouched.
+- Blocker: none. Next action: run the focused wildcard test. If it passes, run the full clock/BNS/CPU authority, reread the plan, and close or revert this slice before investigating raw `0x06` minute wildcard behavior.
+
+### Hour/month/day alarm wildcards pass
+
+- The focused wildcard test now passes at 19:45 on July 18 and again at 08:45 on August 19 for the same any-hour/any-month/any-day alarm.
+- The full current authority also passes: 29 tests across `tests/test_io.py`, `tests/test_bns.py`, and `tests/test_cpu.py` in 1.51 seconds.
+- Reread the controlling plan after the passing substantial test run. This is a kept reduction on the clock PIC target; raw `0x06` minute wildcard behavior and wildcard-year ambiguity remain unclaimed.
+- Current slice is exactly `qns/io.py`, `tests/test_io.py`, and this mandatory handoff update. User-owned tracked modifications and unrelated untracked artifacts remain untouched.
+- Next action: inspect and commit this exact wildcard slice. Then stay on the clock PIC target and add a focused failing authority for raw `0x06` selecting any-minute behavior while hour and date remain exact.

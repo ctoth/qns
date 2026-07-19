@@ -127,6 +127,32 @@ def test_pic16c56_clock_reports_due_exact_alarm_once_per_minute():
     assert clock.receive() == -1
 
 
+def test_pic16c56_clock_matches_hour_month_and_day_alarm_wildcards():
+    """Firmware wildcard field values must match any hour, month, or day."""
+    current = [datetime(2020, 7, 18, 19, 44, 0)]
+    clock = PIC16C56Clock(now=lambda: current[0])
+
+    def send(value: int) -> None:
+        clock.transmit(value)
+        clock.strobe()
+
+    send(3)
+    send(0x2D)  # minute low five bits: 13
+    send(0x05)  # add the sixth minute bit: 45
+    send(0x40)  # any month
+    send(0x60)  # any day
+    send(0xBF)  # any hour (DONTCARE == 0x1F)
+    send(0x9F)  # year: 2020
+
+    assert clock.receive() == -1
+
+    current[0] = datetime(2020, 7, 18, 19, 45, 0)
+    assert clock.receive() == 0x0A
+
+    current[0] = datetime(2020, 8, 19, 8, 45, 0)
+    assert clock.receive() == 0x0A
+
+
 def test_msm6242_hold_allows_atomic_clock_setting_and_resume():
     """HOLD freezes the BCD bank until BSP releases its completed writes."""
     current = [datetime(2026, 7, 18, 23, 45, 56)]
