@@ -271,6 +271,8 @@ class Z180:
                 "rx_bits_remaining": 0,
                 "rx_fifo_depth": 0,
                 "irq_pending": False,
+                "brg_divisor": 0,
+                "frame_bits": 0,
             }
         return {
             "status": int(lib.qns_z180_get_asci_stat(self._cpu, channel)),
@@ -279,6 +281,8 @@ class Z180:
             ),
             "rx_fifo_depth": int(lib.qns_z180_get_asci_rx_fifo_depth(self._cpu, channel)),
             "irq_pending": bool(lib.qns_z180_get_asci_irq_pending(self._cpu, channel)),
+            "brg_divisor": int(lib.qns_z180_get_asci_brg_divisor(self._cpu, channel)),
+            "frame_bits": int(lib.qns_z180_get_asci_frame_bits(self._cpu, channel)),
         }
 
     def watch_pc(self, address: int | None) -> None:

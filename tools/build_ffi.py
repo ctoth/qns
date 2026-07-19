@@ -131,6 +131,8 @@ UINT8 qns_z180_get_asci_stat(qns_z180_t* cpu, int channel);
 UINT8 qns_z180_get_asci_rx_bits_remaining(qns_z180_t* cpu, int channel);
 int qns_z180_get_asci_rx_fifo_depth(qns_z180_t* cpu, int channel);
 int qns_z180_get_asci_irq_pending(qns_z180_t* cpu, int channel);
+unsigned int qns_z180_get_asci_brg_divisor(qns_z180_t* cpu, int channel);
+UINT8 qns_z180_get_asci_frame_bits(qns_z180_t* cpu, int channel);
 
 // Single-address instruction watch for causal firmware traces
 void qns_z180_watch_pc(qns_z180_t* cpu, int address);
@@ -483,6 +485,16 @@ int qns_z180_get_asci_irq_pending(qns_z180_t* cpu, int channel) {{
         return 0;
     }}
     return z180_get_asci_irq_pending(cpu->device, channel);
+}}
+
+unsigned int qns_z180_get_asci_brg_divisor(qns_z180_t* cpu, int channel) {{
+    struct z180asci_channel* asci = qns_z180_get_asci_channel(cpu, channel);
+    return asci ? asci->m_brg_const : 0;
+}}
+
+UINT8 qns_z180_get_asci_frame_bits(qns_z180_t* cpu, int channel) {{
+    struct z180asci_channel* asci = qns_z180_get_asci_channel(cpu, channel);
+    return asci ? asci->m_bit_count : 0;
 }}
 
 void qns_z180_watch_pc(qns_z180_t* cpu, int address) {{
