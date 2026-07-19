@@ -27,17 +27,19 @@
 | Run exact verifier with a newly created blank state | Blank and preserved states select the same broken path | Blank state reaches the 100,000,000-cycle boot bound at PC `0x1BDA`; preserved state reaches command loop and fails at ASCI0 in about seven seconds | One universal reset path | State-dependent lifecycle branch |
 | Run exact verifier with a pristine one-instruction state | The previous blank-state result represents cold startup | A state saved after only reset-vector `DI` also reaches PC `0x1BDA`, with zero `0x07F2` hits and MMU `34/1E/C6` | Prior million-cycle save as cause; preserved image causing initializer skip | A genuine cold-start stall before editor readiness |
 | Capture retained speech at pristine PC `0x1BDA` | Cold startup is blocked on a missing device transition | CPU is halted after speaking `Initialize flash system. Enter Y or N.` | Hardware/interrupt stall | Required first-boot keyboard dialogue |
+| Recognize the exact prompt and send acknowledged lowercase `y` (`0x3D`) | The first-boot dialogue accepts the same lowercase key used by later menus | Firmware returns to halted PC `0x1BDA` after the next 100,000,000-cycle bound | Lowercase response | Response rejection or initialization failure |
+| Send authoritative uppercase `Y` chord (`0x7D`) | The uppercase prompt label identifies the required case-sensitive chord | Firmware again returns to halted PC `0x1BDA` with zero initializer hits and MMU `34/1E/C6` | Simple case mismatch | Response rejection or initialization failure after acknowledged input |
 
 ## Current Best Theory
 
-The lifecycle behavior is now explained: pristine flash correctly enters a firmware initialization dialogue and waits at halted PC `0x1BDA` for `Y` or `N`. The verifier incorrectly treated that interactive first-boot state as a boot timeout. The preserved image bypasses this dialogue because its flash is already initialized, but it contains a separate downstream inconsistency: `COMBYT` was never written on that restart path.
+Pristine flash correctly enters a firmware initialization dialogue and waits at halted PC `0x1BDA` for `Y` or `N`, but neither acknowledged lowercase `y` nor authoritative uppercase `Y` crosses the dialogue. The current evidence does not distinguish firmware response rejection, flash initialization failure, or a deliberate repeated prompt. The preserved image bypasses the dialogue because its flash is already initialized, but it contains a separate downstream inconsistency: `COMBYT` was never written on that restart path.
 
 ## Open Questions
 
-- After prompt-paced lowercase `y`, does pristine startup initialize flash, execute PC `0x07F2`, and reach the editor command loop?
-- Does that initialized path write the logical `COMBYT=0x64` into the physical bank later used by `DTRON`?
-- Can the exact BS2ENG import/execution scenario complete from this real initialized path without patching state bytes?
+- Does the dialogue reject both raw responses, or does flash initialization fail and return to the same prompt?
+- What speech does firmware produce after the acknowledged uppercase `Y`, before it returns to PC `0x1BDA`?
+- Can a correct initialized path write logical `COMBYT=0x64` and complete BS2ENG import/execution without patching state bytes?
 
 ## Next Action
 
-Teach the verifier scenario to handle the exact first-boot prompt with acknowledged lowercase `y`, then rerun against the untouched pristine state and inspect initializer/COMBYT/ASCI behavior.
+Restore the prematurely reverted verifier/test slice, retain the speech cursor before uppercase `Y`, and inspect the exact post-response speech at the next stable key wait. Use that evidence to distinguish response rejection from flash-initialization failure while staying on the same first-boot target.
