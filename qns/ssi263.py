@@ -13,76 +13,87 @@ Register map:
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
 
-# Complete SSI-263 phoneme table (64 phonemes)
+# SSI-263 (SC-02) phoneme table from datasheet (64 phonemes)
 # Format: code -> (name, example_word, IPA approximation)
 PHONEMES: dict[int, tuple[str, str, str]] = {
     0x00: ("PA", "pause", ""),
-    0x01: ("E", "bEEt", "i:"),
-    0x02: ("E1", "bIt", "ɪ"),
-    0x03: ("Y", "Yet", "j"),
-    0x04: ("YI", "bAby", "i"),
-    0x05: ("AY", "bAlt", "eɪ"),
-    0x06: ("EH", "gEt", "ɛ"),
-    0x07: ("EH1", "bEt", "ɛ"),
-    0x08: ("EH2", "gEt", "ɛ"),
-    0x09: ("EH3", "jAcket", "ɛ"),
-    0x0A: ("A", "dAy", "eɪ"),
-    0x0B: ("A1", "mAde", "eɪ"),
-    0x0C: ("A2", "hAt", "æ"),
-    0x0D: ("AW", "fAther", "ɑ"),
-    0x0E: ("AW1", "fAll", "ɔ"),
-    0x0F: ("AW2", "cAlt", "ɔ"),
-    0x10: ("UH", "bOOk", "ʊ"),
-    0x11: ("UH1", "lOOk", "ʊ"),
-    0x12: ("UH2", "rOOm", "u:"),
-    0x13: ("UH3", "fOOl", "u:"),
-    0x14: ("O", "bOAt", "oʊ"),
-    0x15: ("O1", "rOAd", "oʊ"),
-    0x16: ("O2", "nOt", "ɑ"),
-    0x17: ("IU", "yOU", "ju:"),
-    0x18: ("U", "yOU", "u:"),
-    0x19: ("U1", "fOOd", "u:"),
-    0x1A: ("ER", "bIRd", "ɜr"),
-    0x1B: ("ER1", "hER", "ɜr"),
-    0x1C: ("ER2", "lEARn", "ɜr"),
-    0x1D: ("R", "Red", "r"),
-    0x1E: ("R1", "caR", "r"),
-    0x1F: ("R2", "gReat", "r"),
-    0x20: ("L", "Let", "l"),
-    0x21: ("L1", "caLL", "l"),
-    0x22: ("LF", "Leaf", "l"),
-    0x23: ("W", "Win", "w"),
-    0x24: ("B", "Bet", "b"),
-    0x25: ("D", "Dog", "d"),
-    0x26: ("KV", "sKy", "k"),
-    0x27: ("P", "Pot", "p"),
-    0x28: ("T", "Top", "t"),
-    0x29: ("K", "Kit", "k"),
-    0x2A: ("HV", "aHead", "h"),
-    0x2B: ("HVC", "aHead", "h"),
-    0x2C: ("HF", "Help", "h"),
-    0x2D: ("HFC", "Help", "h"),
-    0x2E: ("HN", "Horse", "h"),
-    0x2F: ("Z", "Zoo", "z"),
-    0x30: ("S", "See", "s"),
-    0x31: ("J", "aZure", "ʒ"),
-    0x32: ("SCH", "SHip", "ʃ"),
-    0x33: ("V", "Vest", "v"),
-    0x34: ("F", "Fan", "f"),
-    0x35: ("THV", "THis", "ð"),
-    0x36: ("TH", "THin", "θ"),
-    0x37: ("M", "Met", "m"),
-    0x38: ("N", "Net", "n"),
-    0x39: ("NG", "siNG", "ŋ"),
-    0x3A: ("A", "lAst", "æ"),
-    0x3B: ("OH", "cOUgh", "ɔ"),
-    0x3C: ("U", "nEW", "u:"),
-    0x3D: ("UH", "pUt", "ʊ"),
-    0x3E: ("PA1", "pause", ""),
-    0x3F: ("STOP", "stop", ""),
+    0x01: ("E", "MEET", "i:"),
+    0x02: ("E1", "BENT", "ɛ"),
+    0x03: ("Y", "BEFORE", "j"),
+    0x04: ("YI", "YEAR", "j"),
+    0x05: ("AY", "PLEASE", "eɪ"),
+    0x06: ("IE", "ANY", "i"),
+    0x07: ("I", "SIX", "ɪ"),
+    0x08: ("A", "MADE", "eɪ"),
+    0x09: ("AI", "CARE", "ɛə"),
+    0x0A: ("EH", "NEST", "ɛ"),
+    0x0B: ("EH1", "BELT", "ɛ"),
+    0x0C: ("AE", "DAD", "æ"),
+    0x0D: ("AE1", "AFTER", "æ"),
+    0x0E: ("AH", "GOT", "ɑ"),
+    0x0F: ("AH1", "FATHER", "ɑ"),
+    0x10: ("AW", "OFFICE", "ɔ"),
+    0x11: ("O", "STORE", "ɔ"),
+    0x12: ("OU", "BOAT", "oʊ"),
+    0x13: ("OO", "LOOK", "ʊ"),
+    0x14: ("IU", "YOU", "ju:"),
+    0x15: ("IU1", "COULD", "ʊ"),
+    0x16: ("U", "TUNE", "u:"),
+    0x17: ("U1", "CARTOON", "u:"),
+    0x18: ("UH", "WONDER", "ʌ"),
+    0x19: ("UH1", "LOVE", "ʌ"),
+    0x1A: ("UH2", "WHAT", "ʌ"),
+    0x1B: ("UH3", "NUT", "ʌ"),
+    0x1C: ("ER", "BIRD", "ɜr"),
+    0x1D: ("R", "ROOF", "r"),
+    0x1E: ("R1", "RUG", "r"),
+    0x1F: ("R2", "MUTTER", "r"),
+    0x20: ("L", "LIFT", "l"),
+    0x21: ("L1", "PLAY", "l"),
+    0x22: ("LF", "FALL", "l"),
+    0x23: ("W", "WATER", "w"),
+    0x24: ("B", "BAG", "b"),
+    0x25: ("D", "PAID", "d"),
+    0x26: ("KV", "TAG", "g"),
+    0x27: ("P", "PEN", "p"),
+    0x28: ("T", "TART", "t"),
+    0x29: ("K", "KIT", "k"),
+    0x2A: ("HV", "hold vocal", ""),
+    0x2B: ("HVC", "hold vocal closure", ""),
+    0x2C: ("HF", "HEART", "h"),
+    0x2D: ("HFC", "hold fricative closure", ""),
+    0x2E: ("HN", "hold nasal", ""),
+    0x2F: ("Z", "ZERO", "z"),
+    0x30: ("S", "SAME", "s"),
+    0x31: ("J", "MEASURE", "ʒ"),
+    0x32: ("SCH", "SHIP", "ʃ"),
+    0x33: ("V", "VERY", "v"),
+    0x34: ("F", "FOUR", "f"),
+    0x35: ("THV", "THERE", "ð"),
+    0x36: ("TH", "WITH", "θ"),
+    0x37: ("M", "MORE", "m"),
+    0x38: ("N", "NINE", "n"),
+    0x39: ("NG", "RANG", "ŋ"),
+    0x3A: (":A", "MARCHEN", "a"),
+    0x3B: (":OH", "LOWE", "ø"),
+    0x3C: (":U", "FUNF", "y"),
+    0x3D: (":UH", "MENU", "y"),
+    0x3E: ("E2", "BITTE", "ɛ"),
+    0x3F: ("LB", "LUBE", "l"),
 }
+
+
+@dataclass(frozen=True)
+class Phoneme:
+    """One captured SSI-263 phoneme with its datasheet description."""
+
+    code: int
+    name: str
+    example: str
+    ipa: str
 
 
 class SSI263:
@@ -242,8 +253,6 @@ class SSI263:
 
         elif reg == self.REG_RATEINF:
             self.rate_inflection = value
-            rate = (value >> 4) & 0x0F
-            print(f"[SSI263] RATEINF: 0x{value:02X} rate={rate}")
             if self._synth:
                 self._synth.write_rateinf(value)
 
@@ -251,8 +260,6 @@ class SSI263:
             old_ctl = self.ctrl_art_amp & self.CONTROL_BIT
             self.ctrl_art_amp = value
             new_ctl = value & self.CONTROL_BIT
-            amp = value & 0x0F
-            print(f"[SSI263] CTRLAMP write: 0x{value:02X} CTL={1 if new_ctl else 0} AMP={amp}")
 
             # Forward to synth if connected
             if self._synth:
@@ -276,16 +283,11 @@ class SSI263:
         self.current_phoneme = phoneme
         self.phoneme_log.append(phoneme)
 
-        info = PHONEMES.get(phoneme, ("?", "unknown", ""))
-        name, example, _ = info
-
-        # Log it
         duration_cycles = self._calc_phoneme_duration_cycles()
-        duration_ms = (duration_cycles * 1000) // self._clock
-        print(f"[SSI263] Phoneme: 0x{phoneme:02X} {name} ({example}) duration={duration_ms}ms")
 
         # Call callback if set
         if self._on_phoneme:
+            name = PHONEMES.get(phoneme, ("?", "unknown", ""))[0]
             self._on_phoneme(phoneme, name)
 
         # Mark as speaking while phoneme plays
@@ -306,7 +308,6 @@ class SSI263:
         self.filter_freq = 0xFF
         self.speaking = False
         self.irq_enabled = False
-        print("[SSI263] Reset")
 
     def get_io_handlers(self) -> list[tuple[int, Callable[[int], int], Callable[[int, int], None]]]:
         """Return (port, read_handler, write_handler) for all ports."""
@@ -316,12 +317,23 @@ class SSI263:
             handlers.append((port, self.read, self.write))
         return handlers
 
-    def get_phoneme_text(self) -> str:
-        """Convert phoneme log to approximate text."""
+    def get_phonemes(
+        self,
+        *,
+        include_pauses: bool = True,
+        start: int = 0,
+    ) -> tuple[Phoneme, ...]:
+        """Return retained phonemes with names, examples, and IPA spellings."""
         result = []
-        for code in self.phoneme_log:
-            info = PHONEMES.get(code, ("?", "", ""))
-            name = info[0]
-            if name not in ("PA", "PA1", "STOP"):
-                result.append(name)
-        return " ".join(result)
+        for code in self.phoneme_log[start:]:
+            if not include_pauses and code == 0:
+                continue
+            name, example, ipa = PHONEMES.get(code, ("?", "unknown", ""))
+            result.append(Phoneme(code=code, name=name, example=example, ipa=ipa))
+        return tuple(result)
+
+    def get_phoneme_text(self) -> str:
+        """Return captured non-pause SSI-263 phoneme names."""
+        return " ".join(
+            phoneme.name for phoneme in self.get_phonemes(include_pauses=False)
+        )

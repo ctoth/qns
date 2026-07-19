@@ -493,12 +493,7 @@ class BNS:
                         else:
                             print(f"[Input] Unsupported character: U+{codepoint:04X}")
 
-                # Check for speech output (log only if no audio)
-                if self.ssi263.phoneme_log:
-                    self.stats['phonemes'] += len(self.ssi263.phoneme_log)
-                    if not self.synth:
-                        print(f"[Speech] Phonemes: {self.ssi263.phoneme_log}")
-                    self.ssi263.phoneme_log.clear()
+                self.stats['phonemes'] = len(self.ssi263.phoneme_log)
 
                 # Print I/O log if tracing (periodically to avoid flooding)
                 if self.io.logging and self.io._log:
@@ -622,6 +617,11 @@ def main() -> None:
     parser.add_argument("--output", choices=("console", "serial0", "serial1"),
                         default="console",
                         help="Show console logs or route one raw ASCI channel to standard output")
+    parser.add_argument(
+        "--speech",
+        choices=("codes", "names", "ipa", "examples"),
+        help="Print retained speech as codes, phoneme names, IPA, or datasheet example words",
+    )
 
     # Debugging options
     parser.add_argument("--cycles", type=int, default=0, metavar="N",
@@ -684,6 +684,15 @@ def main() -> None:
             bns.trace_boot()
         else:
             bns.run(max_cycles=args.cycles)
+
+        if args.speech:
+            phonemes = bns.ssi263.get_phonemes(include_pauses=False)
+            if args.speech == "codes":
+                speech = " ".join(f"{phoneme.code:02X}" for phoneme in phonemes)
+            else:
+                field = {"names": "name", "ipa": "ipa", "examples": "example"}[args.speech]
+                speech = " ".join(getattr(phoneme, field) for phoneme in phonemes)
+            print(f"Speech {args.speech}: {speech}")
 
         # Post-run actions
         if args.dump_ram:

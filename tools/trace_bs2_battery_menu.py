@@ -93,14 +93,12 @@ def main() -> None:
         bns = BNS(model="bs2")
         bns.load_rom(args.rom)
         bns.load_state(args.state)
-        phonemes: list[tuple[int, str]] = []
-        bns.ssi263.set_phoneme_callback(lambda code, name: phonemes.append((code, name)))
 
         run_until(
             bns,
             lambda: bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657,
         )
-        phonemes.clear()
+        speech_start = len(bns.ssi263.phoneme_log)
         print(
             f"post-boot gauge: high={int(bns.gas_gauge._line_high)} "
             f"awaiting_break={int(bns.gas_gauge._awaiting_break)} "
@@ -129,7 +127,8 @@ def main() -> None:
         nearby = bytes(bns.memory.read((mapped_pc + offset) & 0xFFFFF) for offset in range(-8, 8))
         print(
             f"candidate wait: cycle={menu_wait_cycle} pc={menu_wait_pc:04X} "
-            f"physical={mapped_pc:05X} phonemes={len(phonemes)} "
+            f"physical={mapped_pc:05X} "
+            f"phonemes={len(bns.ssi263.phoneme_log) - speech_start} "
             f"bytes={nearby.hex(' ')}",
             file=sys.stderr,
         )
@@ -148,7 +147,8 @@ def main() -> None:
 
         if bns.gas_gauge.command_log != EXPECTED_COMMANDS:
             raise RuntimeError(f"unexpected bq2010 commands: {bns.gas_gauge.command_log}")
-        non_pause_codes = [code for code, _ in phonemes if code]
+        phonemes = bns.ssi263.get_phonemes(start=speech_start)
+        non_pause_codes = [phoneme.code for phoneme in phonemes if phoneme.code]
         if non_pause_codes[-len(EXPECTED_SPEECH_SUFFIX):] != EXPECTED_SPEECH_SUFFIX:
             raise RuntimeError(
                 "battery speech does not end with 'one hundred percent not charging'"
@@ -156,8 +156,8 @@ def main() -> None:
 
     print(f"menu wait: cycle={menu_wait_cycle} pc={menu_wait_pc:04X}")
     print("commands:", " ".join(f"{value:02X}" for value in bns.gas_gauge.command_log))
-    print("phoneme codes:", " ".join(f"{code:02X}" for code, _ in phonemes))
-    print("phoneme names:", " ".join(name for _, name in phonemes))
+    print("phoneme codes:", " ".join(f"{phoneme.code:02X}" for phoneme in phonemes))
+    print("phoneme names:", " ".join(phoneme.name for phoneme in phonemes))
 
 
 if __name__ == "__main__":
