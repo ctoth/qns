@@ -224,6 +224,13 @@ class Z180:
         return self._regs.get(self.PC, 0)
 
     @property
+    def instruction_pc(self) -> int:
+        """Get the start address of the instruction currently executing."""
+        if CFFI_AVAILABLE and self._cpu:
+            return lib.qns_z180_get_instruction_pc(self._cpu)
+        return self._regs.get(self.PC, 0)
+
+    @property
     def sp(self) -> int:
         """Get stack pointer."""
         return self.get_reg(self.SP)

@@ -117,6 +117,7 @@ void qns_z180_set_irq(qns_z180_t* cpu, int line, int state);
 
 // Get PC directly (convenience)
 UINT16 qns_z180_get_pc(qns_z180_t* cpu);
+UINT16 qns_z180_get_instruction_pc(qns_z180_t* cpu);
 
 // Check if halted
 int qns_z180_is_halted(qns_z180_t* cpu);
@@ -503,6 +504,13 @@ void qns_z180_set_irq(qns_z180_t* cpu, int line, int state) {{
 
 UINT16 qns_z180_get_pc(qns_z180_t* cpu) {{
     return (UINT16)qns_z180_get_reg(cpu, Z180_PC);
+}}
+
+UINT16 qns_z180_get_instruction_pc(qns_z180_t* cpu) {{
+    if (!cpu || cpu->last_instruction_pc < 0) {{
+        return qns_z180_get_pc(cpu);
+    }}
+    return (UINT16)cpu->last_instruction_pc;
 }}
 
 int qns_z180_is_halted(qns_z180_t* cpu) {{

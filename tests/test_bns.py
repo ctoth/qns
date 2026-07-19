@@ -53,6 +53,20 @@ def test_bsp_command_loop_gate_requires_starta_bg_task_sequence():
     assert bns._bsp_command_loop_ready
 
 
+def test_address_trace_retains_causal_write_event_once():
+    """Overlapping trace selectors must retain one exact instruction event."""
+    bns = BNS(trace_writes=0xF000, trace_writes_range=(0xF000, 0xF000))
+    bns.memory.load_rom(bytes((
+        0x3E, 0x5A,        # LD A,5Ah (6 cycles)
+        0x32, 0x00, 0xF0,  # LD (F000h),A
+        0x18, 0xFE,        # JR $
+    )))
+
+    bns.cpu.run(100)
+
+    assert bns.traced_writes == [(6, 0x0002, 0xF000, 0x5A)]
+
+
 def test_bsplus_port_80_is_watchdog_read_and_speech_power_write():
     """The speech-only BSP model must not expose a display at port 0x80."""
     bns = BNS()

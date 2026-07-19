@@ -126,6 +126,7 @@ class BNS:
         # Write tracking for first-N and dump-all modes
         self.write_log = []  # List of (addr, value) tuples
         self.write_counts = {}  # Address -> occurrence count
+        self.traced_writes: list[tuple[int, int, int, int]] = []
         self._bsp_bg_timer_zero_writes = 0
         self._bsp_command_loop_ready = False
 
@@ -213,15 +214,23 @@ class BNS:
             else:
                 self._bsp_bg_timer_zero_writes = 0
 
+        single_trace = self.trace_writes_addr is not None and addr == self.trace_writes_addr
+        range_trace = (
+            self.trace_writes_range is not None
+            and self.trace_writes_range[0] <= addr <= self.trace_writes_range[1]
+        )
+        if single_trace or range_trace:
+            self.traced_writes.append(
+                (self.cpu.cycle_count, self.cpu.instruction_pc, addr, value)
+            )
+
         # Single address trace
-        if self.trace_writes_addr is not None and addr == self.trace_writes_addr:
+        if single_trace:
             print(f"[TRACE] Write 0x{addr:05X} = 0x{value:02X}")
 
         # Range trace
-        if self.trace_writes_range is not None:
-            start, end = self.trace_writes_range
-            if start <= addr <= end:
-                print(f"[TRACE] Write 0x{addr:05X} = 0x{value:02X}")
+        if range_trace:
+            print(f"[TRACE] Write 0x{addr:05X} = 0x{value:02X}")
 
         # First-N trace
         if self.trace_first_writes is not None and len(self.write_log) < self.trace_first_writes:
