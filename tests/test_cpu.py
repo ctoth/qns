@@ -108,6 +108,41 @@ def test_csio_exchange_crosses_native_callback_boundary():
     assert memory[0x100] == 0x0A
 
 
+def test_csio_receive_raises_internal_interrupt():
+    """CSI/O completion must dispatch the IL+0Ch internal interrupt vector."""
+    assert CFFI_AVAILABLE
+    pending = [0x8A]
+    program = bytearray(0x204)
+    program[:23] = bytes((
+        0x31, 0x00, 0x10,  # LD SP,1000h
+        0x3E, 0x00,        # LD A,0
+        0xED, 0x47,        # LD I,A
+        0xED, 0x5E,        # IM 2
+        0x3E, 0x40,        # LD A,40h
+        0xED, 0x39, 0x33,  # OUT0 (IL),A
+        0x3E, 0x67,        # LD A,EIE|RE|external clock
+        0xED, 0x39, 0x0A,  # OUT0 (CNTR),A
+        0xFB,              # EI
+        0x00,              # EI shadow
+        0x18, 0xFE,        # JR $
+    ))
+    program[0x4C:0x4E] = bytes((0x00, 0x02))
+    program[0x200:0x208] = bytes((
+        0xED, 0x38, 0x0B,  # IN0 A,(TRDR)
+        0x32, 0x00, 0x01,  # LD (0100h),A
+        0xED, 0x4D,        # RETI
+    ))
+
+    def receive() -> int:
+        return pending.pop() if pending else -1
+
+    cpu, memory = _cpu_with_program(program, csio_rx=receive)
+
+    cpu.run(1_000)
+
+    assert memory[0x100] == 0x8A
+
+
 def test_slp_interrupt_wake_resumes_at_instruction_after_slp():
     """SLP wake must execute the following RET, not skip past it."""
     assert CFFI_AVAILABLE

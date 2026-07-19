@@ -179,6 +179,7 @@ static void service_csio(qns_z180_t* cpu) {{
             control_base + Z180_CNTR,
             cntr
         );
+        z180_set_csio_completion(cpu->device, ASSERT_LINE);
     }}
 
     if (cntr & 0x20) {{
@@ -195,6 +196,7 @@ static void service_csio(qns_z180_t* cpu) {{
                 control_base + Z180_CNTR,
                 cntr
             );
+            z180_set_csio_completion(cpu->device, ASSERT_LINE);
         }}
     }}
 }}
