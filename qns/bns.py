@@ -877,6 +877,7 @@ def main() -> None:
     serial_output_channel = int(args.output[-1]) if raw_serial_output else None
     serial_output = sys.stdout.buffer if raw_serial_output else None
     output_context = redirect_stdout(sys.stderr) if raw_serial_output else nullcontext()
+    display_frame_emitted = False
 
     with output_context:
         bns = BNS(
@@ -893,6 +894,23 @@ def main() -> None:
             serial_output=serial_output,
             serial_output_channel=serial_output_channel,
         )
+        if args.display:
+            if not hasattr(bns, "display"):
+                raise RuntimeError(
+                    f"{args.model} has no built-in Braille display"
+                )
+
+            def emit_display_frame(frame: bytes) -> None:
+                nonlocal display_frame_emitted
+                display_frame_emitted = True
+                if args.display == "codes":
+                    display = " ".join(f"{cell:02X}" for cell in frame)
+                else:
+                    display = "".join(chr(0x2800 | cell) for cell in frame)
+                print(f"Display {args.display}: {display}", flush=True)
+
+            bns.display.set_frame_callback(emit_display_frame)
+
         bns.load_rom(args.rom_file)
         if args.state:
             state_path = Path(args.state)
@@ -915,16 +933,8 @@ def main() -> None:
                 speech = " ".join(getattr(phoneme, field) for phoneme in phonemes)
             print(f"Speech {args.speech}: {speech}")
 
-        if args.display:
-            if not hasattr(bns, "display"):
-                raise RuntimeError(
-                    f"{args.model} has no built-in Braille display"
-                )
-            if args.display == "codes":
-                display = " ".join(f"{cell:02X}" for cell in bns.display.buffer)
-            else:
-                display = "".join(chr(0x2800 | cell) for cell in bns.display.buffer)
-            print(f"Display {args.display}: {display}")
+        if args.display and not display_frame_emitted:
+            emit_display_frame(bytes(bns.display.buffer))
 
         # Post-run actions
         if args.dump_ram:

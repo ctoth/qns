@@ -49,10 +49,25 @@ def test_braille_lite_display_captures_command_prefixed_cells(cells: bytes):
     assert display.cursor == len(cells) % display.cells
 
 
+def test_braille_lite_display_emits_each_complete_frame():
+    display = BrailleDisplay()
+    frames: list[bytes] = []
+    display.set_frame_callback(frames.append)
+    cells = bytes(range(18))
+
+    for cell in cells:
+        display.transmit(0x83)
+        display.transmit(cell)
+
+    assert frames == [cells]
+
+
 @given(cells=st.binary(min_size=40, max_size=40))
 def test_parallel_40_cell_display_latches_source_order(cells: bytes):
     """BL4 shifts cells right-to-left and exposes them on the C2 strobe."""
     display = ParallelBrailleDisplay(cells=40)
+    frames: list[bytes] = []
+    display.set_frame_callback(frames.append)
     display.write_control(0xA2)
 
     for cell in reversed(cells):
@@ -60,12 +75,15 @@ def test_parallel_40_cell_display_latches_source_order(cells: bytes):
     display.write_control(5)
 
     assert display.buffer == cells
+    assert frames == [cells]
 
 
 @given(cells=st.binary(min_size=18, max_size=18))
 def test_parallel_18_cell_display_removes_source_spacers(cells: bytes):
     """BL2's 24-cell chain exposes its 18 data cells in logical order."""
     display = ParallelBrailleDisplay(cells=18)
+    frames: list[bytes] = []
+    display.set_frame_callback(frames.append)
     physical_frame: list[int] = []
     reversed_cells = bytes(reversed(cells))
     for offset in range(0, 18, 6):
@@ -77,6 +95,7 @@ def test_parallel_18_cell_display_removes_source_spacers(cells: bytes):
     display.write_control(5)
 
     assert display.buffer == cells
+    assert frames == [cells]
 
 
 def test_bq2010_decodes_bs2_pulses_and_returns_battery_registers():

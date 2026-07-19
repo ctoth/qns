@@ -510,6 +510,11 @@ class BrailleDisplay:
         self.current = current
         self._cell_follows = False
         self._response = -1
+        self._frame_callback: Callable[[bytes], None] | None = None
+
+    def set_frame_callback(self, callback: Callable[[bytes], None]) -> None:
+        """Set the standard-output observer for complete display frames."""
+        self._frame_callback = callback
 
     def transmit(self, value: int) -> None:
         """Accept one source-defined Braille Lite display command or cell."""
@@ -518,11 +523,15 @@ class BrailleDisplay:
             self.buffer[self.cursor] = value
             self.cursor = (self.cursor + 1) % self.cells
             self._cell_follows = False
+            if self.cursor == 0 and self._frame_callback is not None:
+                self._frame_callback(bytes(self.buffer))
         elif value == 0x81:
             self._response = self.status
         elif value == 0x82:
             self.buffer[:] = b"\0" * self.cells
             self.cursor = 0
+            if self._frame_callback is not None:
+                self._frame_callback(bytes(self.buffer))
         elif value == 0x83:
             self._cell_follows = True
         elif value == 0x85:
@@ -549,6 +558,11 @@ class ParallelBrailleDisplay:
         self._shift_byte = 0
         self._shift_bits = 0
         self._shifted_bytes: list[int] = []
+        self._frame_callback: Callable[[bytes], None] | None = None
+
+    def set_frame_callback(self, callback: Callable[[bytes], None]) -> None:
+        """Set the standard-output observer for latched display frames."""
+        self._frame_callback = callback
 
     def write_control(self, value: int) -> None:
         """Apply one 8255 mode-set or bit-set/reset control word."""
@@ -592,6 +606,8 @@ class ParallelBrailleDisplay:
             ]
         self.buffer[:] = bytes(reversed(frame))
         self._shifted_bytes.clear()
+        if self._frame_callback is not None:
+            self._frame_callback(bytes(self.buffer))
 
 
 class Watchdog:
