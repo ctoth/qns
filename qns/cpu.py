@@ -273,6 +273,10 @@ class Z180:
                 "irq_pending": False,
                 "brg_divisor": 0,
                 "frame_bits": 0,
+                "rie_set_count": 0,
+                "rie_clear_count": 0,
+                "rie_last_pc": 0,
+                "rie_last_cycle": 0,
             }
         return {
             "status": int(lib.qns_z180_get_asci_stat(self._cpu, channel)),
@@ -283,7 +287,18 @@ class Z180:
             "irq_pending": bool(lib.qns_z180_get_asci_irq_pending(self._cpu, channel)),
             "brg_divisor": int(lib.qns_z180_get_asci_brg_divisor(self._cpu, channel)),
             "frame_bits": int(lib.qns_z180_get_asci_frame_bits(self._cpu, channel)),
+            "rie_set_count": int(lib.qns_z180_get_asci_rie_set_count(self._cpu, channel)),
+            "rie_clear_count": int(
+                lib.qns_z180_get_asci_rie_clear_count(self._cpu, channel)
+            ),
+            "rie_last_pc": int(lib.qns_z180_get_asci_rie_last_pc(self._cpu, channel)),
+            "rie_last_cycle": int(lib.qns_z180_get_asci_rie_last_cycle(self._cpu, channel)),
         }
+
+    def reset_asci_debug(self) -> None:
+        """Reset ASCI transition counters at the start of a diagnostic phase."""
+        if CFFI_AVAILABLE and self._cpu:
+            lib.qns_z180_reset_asci_debug(self._cpu)
 
     def watch_pc(self, address: int | None) -> None:
         """Reset and enable one native instruction-address watch, or disable it."""

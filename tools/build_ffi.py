@@ -133,6 +133,11 @@ int qns_z180_get_asci_rx_fifo_depth(qns_z180_t* cpu, int channel);
 int qns_z180_get_asci_irq_pending(qns_z180_t* cpu, int channel);
 unsigned int qns_z180_get_asci_brg_divisor(qns_z180_t* cpu, int channel);
 UINT8 qns_z180_get_asci_frame_bits(qns_z180_t* cpu, int channel);
+void qns_z180_reset_asci_debug(qns_z180_t* cpu);
+unsigned long qns_z180_get_asci_rie_set_count(qns_z180_t* cpu, int channel);
+unsigned long qns_z180_get_asci_rie_clear_count(qns_z180_t* cpu, int channel);
+UINT16 qns_z180_get_asci_rie_last_pc(qns_z180_t* cpu, int channel);
+unsigned long long qns_z180_get_asci_rie_last_cycle(qns_z180_t* cpu, int channel);
 
 // Single-address instruction watch for causal firmware traces
 void qns_z180_watch_pc(qns_z180_t* cpu, int address);
@@ -187,10 +192,35 @@ typedef struct qns_z180 {{
     int pc_watch_address;
     unsigned long pc_watch_count;
     unsigned long long pc_watch_cycle;
+    UINT8 asci_last_stat[2];
+    unsigned long asci_rie_set_count[2];
+    unsigned long asci_rie_clear_count[2];
+    UINT16 asci_rie_last_pc[2];
+    unsigned long long asci_rie_last_cycle[2];
+    int last_instruction_pc;
 }} qns_z180_t;
 
 // Static pointer for callback routing (single instance for now)
 static qns_z180_t* g_cpu = NULL;
+
+static void reset_asci_debug_counters(qns_z180_t* cpu) {{
+    int channel;
+    if (!cpu || !cpu->device || !cpu->device->z180asci) {{
+        return;
+    }}
+    for (channel = 0; channel < 2; channel++) {{
+        struct z180asci_channel* asci = channel
+            ? cpu->device->z180asci->m_chan1
+            : cpu->device->z180asci->m_chan0;
+        cpu->asci_last_stat[channel] = asci->m_stat;
+        cpu->asci_rie_set_count[channel] = 0;
+        cpu->asci_rie_clear_count[channel] = 0;
+        cpu->asci_rie_last_pc[channel] = 0;
+        cpu->asci_rie_last_cycle[channel] = 0;
+    }}
+    cpu->last_instruction_pc = -1;
+}}
+
 static void service_csio(qns_z180_t* cpu) {{
     UINT8 cntr = (UINT8)cpu_get_state_z180(cpu->device, Z180_CNTR);
     offs_t control_base = cpu_get_state_z180(cpu->device, Z180_IOCR) & 0xc0;
@@ -230,12 +260,33 @@ static void service_csio(qns_z180_t* cpu) {{
 // The CPU core calls this before every instruction.
 void debugger_instruction_hook(device_t *device, offs_t curpc) {{
     if (g_cpu && g_cpu->device == (struct z180_device *)device) {{
+        int channel;
+        for (channel = 0; channel < 2; channel++) {{
+            struct z180asci_channel* asci = channel
+                ? g_cpu->device->z180asci->m_chan1
+                : g_cpu->device->z180asci->m_chan0;
+            UINT8 stat = asci->m_stat;
+            if ((stat ^ g_cpu->asci_last_stat[channel]) & 0x08) {{
+                if (stat & 0x08) {{
+                    g_cpu->asci_rie_set_count[channel]++;
+                }} else {{
+                    g_cpu->asci_rie_clear_count[channel]++;
+                }}
+                g_cpu->asci_rie_last_pc[channel] = g_cpu->last_instruction_pc >= 0
+                    ? (UINT16)g_cpu->last_instruction_pc
+                    : (UINT16)curpc;
+                g_cpu->asci_rie_last_cycle[channel] = g_cpu->completed_cycles
+                    + (unsigned int)(g_cpu->execution_cycles - cpu_get_icount_z180(device));
+            }}
+            g_cpu->asci_last_stat[channel] = stat;
+        }}
         if (g_cpu->pc_watch_address >= 0 && curpc == (offs_t)g_cpu->pc_watch_address) {{
             g_cpu->pc_watch_count++;
             g_cpu->pc_watch_cycle = g_cpu->completed_cycles
                 + (unsigned int)(g_cpu->execution_cycles - cpu_get_icount_z180(device));
         }}
         service_csio(g_cpu);
+        g_cpu->last_instruction_pc = (int)curpc;
     }}
 }}
 
@@ -359,6 +410,7 @@ qns_z180_t* qns_z180_create(
     }}
 
     cpu_reset_z180(cpu->device);
+    reset_asci_debug_counters(cpu);
     cpu->device->z180asci->m_chan0->m_brg_timer = cpu->device->z180asci->m_chan0->m_brg_const;
     cpu->device->z180asci->m_chan1->m_brg_timer = cpu->device->z180asci->m_chan1->m_brg_const;
     return cpu;
@@ -378,6 +430,7 @@ void qns_z180_reset(qns_z180_t* cpu) {{
         cpu->asci_cycles = 0;
         cpu->completed_cycles = 0;
         cpu->execution_cycles = 0;
+        reset_asci_debug_counters(cpu);
         cpu->device->z180asci->m_chan0->m_brg_timer = cpu->device->z180asci->m_chan0->m_brg_const;
         cpu->device->z180asci->m_chan1->m_brg_timer = cpu->device->z180asci->m_chan1->m_brg_const;
     }}
@@ -495,6 +548,26 @@ unsigned int qns_z180_get_asci_brg_divisor(qns_z180_t* cpu, int channel) {{
 UINT8 qns_z180_get_asci_frame_bits(qns_z180_t* cpu, int channel) {{
     struct z180asci_channel* asci = qns_z180_get_asci_channel(cpu, channel);
     return asci ? asci->m_bit_count : 0;
+}}
+
+void qns_z180_reset_asci_debug(qns_z180_t* cpu) {{
+    reset_asci_debug_counters(cpu);
+}}
+
+unsigned long qns_z180_get_asci_rie_set_count(qns_z180_t* cpu, int channel) {{
+    return cpu && channel >= 0 && channel < 2 ? cpu->asci_rie_set_count[channel] : 0;
+}}
+
+unsigned long qns_z180_get_asci_rie_clear_count(qns_z180_t* cpu, int channel) {{
+    return cpu && channel >= 0 && channel < 2 ? cpu->asci_rie_clear_count[channel] : 0;
+}}
+
+UINT16 qns_z180_get_asci_rie_last_pc(qns_z180_t* cpu, int channel) {{
+    return cpu && channel >= 0 && channel < 2 ? cpu->asci_rie_last_pc[channel] : 0;
+}}
+
+unsigned long long qns_z180_get_asci_rie_last_cycle(qns_z180_t* cpu, int channel) {{
+    return cpu && channel >= 0 && channel < 2 ? cpu->asci_rie_last_cycle[channel] : 0;
 }}
 
 void qns_z180_watch_pc(qns_z180_t* cpu, int address) {{

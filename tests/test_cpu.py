@@ -128,6 +128,10 @@ def test_asci_receive_interrupt_survives_disabled_interrupts(channel: int, value
     assert received["irq_pending"] is True
     assert received["brg_divisor"] > 0
     assert received["frame_bits"] > 0
+    assert received["rie_set_count"] == 1
+    assert received["rie_clear_count"] == 0
+    assert received["rie_last_pc"] == 26
+    assert received["rie_last_cycle"] > 0
 
     cpu.watch_pc(0x200)
     memory[loop_address:loop_address + 4] = bytes((
