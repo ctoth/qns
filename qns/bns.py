@@ -838,6 +838,11 @@ def main() -> None:
         help="Print retained speech as codes, phoneme names, IPA, or datasheet example words",
     )
     parser.add_argument(
+        "--speech-stream",
+        choices=("codes", "names", "ipa", "examples"),
+        help="Stream each non-pause phoneme as codes, names, IPA, or datasheet example words",
+    )
+    parser.add_argument(
         "--display",
         choices=("codes", "unicode"),
         help="Print the final retained Braille display through standard output",
@@ -894,6 +899,24 @@ def main() -> None:
             serial_output=serial_output,
             serial_output_channel=serial_output_channel,
         )
+        if args.speech_stream:
+            def emit_speech_phoneme(code: int, _name: str) -> None:
+                if code == 0:
+                    return
+                phoneme = bns.ssi263.get_phonemes(start=-1)[0]
+                if args.speech_stream == "codes":
+                    speech = f"{phoneme.code:02X}"
+                else:
+                    field = {
+                        "names": "name",
+                        "ipa": "ipa",
+                        "examples": "example",
+                    }[args.speech_stream]
+                    speech = getattr(phoneme, field)
+                print(f"Speech {args.speech_stream}: {speech}", flush=True)
+
+            bns.ssi263.set_phoneme_callback(emit_speech_phoneme)
+
         if args.display:
             if not hasattr(bns, "display"):
                 raise RuntimeError(
