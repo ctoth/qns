@@ -108,6 +108,37 @@ def test_csio_exchange_crosses_native_callback_boundary():
     assert memory[0x100] == 0x0A
 
 
+def test_io_callbacks_observe_exact_accumulated_cycle_positions():
+    """Timed peripherals must see each I/O instruction's starting cycle."""
+    assert CFFI_AVAILABLE
+    observed: list[int] = []
+    cpu: Z180
+    program = bytes((
+        0x3E, 0x00,        # LD A,00h (6 cycles)
+        0xED, 0x39, 0xA0,  # OUT0 (A0h),A (callback at cycle 6; 13 cycles)
+        0x00,              # NOP (3 cycles)
+        0x00,              # NOP (3 cycles)
+        0x3E, 0x20,        # LD A,20h (6 cycles)
+        0xED, 0x39, 0xA0,  # OUT0 (A0h),A (callback at cycle 31)
+        0x76,              # HALT
+    ))
+
+    def write_io(_port: int, _value: int) -> None:
+        observed.append(cpu.cycle_count)
+
+    cpu, _ = _cpu_with_program(program, io_write=write_io)
+
+    cpu.run(100)
+    assert observed == [6, 31]
+    assert cpu.cycle_count == 100
+
+    cpu.run(25)
+    assert cpu.cycle_count == 125
+
+    cpu.reset()
+    assert cpu.cycle_count == 0
+
+
 def test_csio_receive_raises_internal_interrupt():
     """CSI/O completion must dispatch the IL+0Ch internal interrupt vector."""
     assert CFFI_AVAILABLE

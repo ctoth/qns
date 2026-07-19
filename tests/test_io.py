@@ -2,7 +2,77 @@
 
 from datetime import datetime, timedelta
 
-from qns.io import MSM6242RTC, BrailleKeyboard, PIC16C56Clock
+from qns.io import MSM6242RTC, BQ2010GasGauge, BrailleKeyboard, PIC16C56Clock
+
+
+def test_bq2010_decodes_bs2_pulses_and_returns_battery_registers():
+    """BSNEW must exchange literal LSB-first return-to-one gauge frames."""
+    gauge = BQ2010GasGauge()
+
+    def read_register(command: int, start_cycle: int) -> tuple[int, int]:
+        cycle = start_cycle
+        gauge.write_line(False, cycle)
+        cycle += 18_020
+        gauge.write_line(True, cycle)
+        cycle += 5_992
+
+        for bit in range(8):
+            gauge.write_line(False, cycle)
+            cycle += 324 if command & (1 << bit) else 12_820
+            gauge.write_line(True, cycle)
+            cycle += 20_290 - (324 if command & (1 << bit) else 12_820)
+
+        value = 0
+        for bit in range(8):
+            while gauge.read_line(cycle):
+                cycle += 100
+            if gauge.read_line(cycle + 4_500):
+                value |= 1 << bit
+            cycle += 12_000
+        return value, cycle
+
+    nac, cycle = read_register(0x03, 0)
+    lmd, cycle = read_register(0x05, cycle + 20_000)
+    flags, _ = read_register(0x01, cycle + 20_000)
+
+    assert nac == 100
+    assert lmd == 100
+    assert flags == 0
+    assert gauge.command_log == [0x03, 0x05, 0x01]
+
+
+def test_bq2010_break_resynchronizes_after_partial_boot_frame():
+    """A real break must discard incomplete latch activity left by boot."""
+    gauge = BQ2010GasGauge()
+
+    gauge.write_line(False, 0)
+    gauge.write_line(True, 18_020)
+    cycle = 24_012
+    for _ in range(3):
+        gauge.write_line(False, cycle)
+        gauge.write_line(True, cycle + 324)
+        cycle += 20_290
+
+    cycle += 500_000
+    gauge.write_line(False, cycle)
+    gauge.write_line(True, cycle + 18_024)
+    cycle += 24_017
+    for bit in range(8):
+        low_cycles = 315 if 0x03 & (1 << bit) else 12_820
+        gauge.write_line(False, cycle)
+        gauge.write_line(True, cycle + low_cycles)
+        cycle += 20_290
+
+    assert gauge.command_log == [0x03]
+
+    value = 0
+    for bit in range(8):
+        while gauge.read_line(cycle):
+            cycle += 100
+        if gauge.read_line(cycle + 4_500):
+            value |= 1 << bit
+        cycle += 12_000
+    assert value == 100
 
 
 def test_msm6242_exposes_bsp_bcd_clock_registers():

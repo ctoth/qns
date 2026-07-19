@@ -118,6 +118,36 @@ def test_bs2_uses_bsnew_combined_power_latch():
     assert bns.speech_power_enabled
 
 
+def test_bs2_wires_bq2010_data_line_between_power_latch_and_port_b():
+    """BSNEW bit-5 writes and port-B bit 3 must share the timed gauge line."""
+    bns = BNS(model="bs2")
+
+    class TimedCPU:
+        cycle_count = 0
+
+    timed_cpu = TimedCPU()
+    bns.cpu = timed_cpu
+
+    def write_line(high: bool, cycle: int) -> None:
+        timed_cpu.cycle_count = cycle
+        bns._io_write(0xA0, 0x20 if high else 0)
+
+    write_line(False, 0)
+    write_line(True, 18_020)
+    cycle = 24_012
+    for bit in range(8):
+        write_line(False, cycle)
+        low_cycles = 324 if 0x03 & (1 << bit) else 12_820
+        write_line(True, cycle + low_cycles)
+        cycle += 20_290
+
+    timed_cpu.cycle_count = 184_900
+    assert bns._io_read(0x81) == 0xF7
+
+    timed_cpu.cycle_count = 194_400
+    assert bns._io_read(0x81) == 0xFF
+
+
 def test_bs2_owns_8255_and_high_bank_ports():
     """BS2 must not apply the BSPLUS speech latch to its 8255 port A."""
     bns = BNS(model="bs2")

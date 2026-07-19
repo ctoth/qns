@@ -9,7 +9,14 @@ from pathlib import Path
 from typing import BinaryIO
 
 from .cpu import Z180
-from .io import MSM6242RTC, BrailleKeyboard, IOBus, PIC16C56Clock, Watchdog
+from .io import (
+    MSM6242RTC,
+    BQ2010GasGauge,
+    BrailleKeyboard,
+    IOBus,
+    PIC16C56Clock,
+    Watchdog,
+)
 from .memory import Memory
 from .ssi263 import SSI263
 from .synth.ssi263_pcm import SSI263PCMSynth
@@ -134,6 +141,7 @@ class BNS:
         self.keyboard = BrailleKeyboard(port=self.PORT_KEYBOARD, keyclr_port=self.PORT_KEYCLR)
         self.rtc = MSM6242RTC(base_port=self.PORT_RTC_START)
         self.clock_pic = PIC16C56Clock() if model == "bs2" else None
+        self.gas_gauge = BQ2010GasGauge() if model == "bs2" else None
         self.watchdog = Watchdog(port=self.PORT_WATCHDOG)
         self.speech_power_enabled = False
         self.rs232_power_enabled = False
@@ -305,7 +313,13 @@ class BNS:
 
     def _read_parallel_port(self, port: int) -> int:
         """Read one BSNEW 8255 register."""
-        return self.parallel_ports[port - 0x80]
+        value = self.parallel_ports[port - 0x80]
+        if port == 0x81 and self.gas_gauge:
+            if self.gas_gauge.read_line(self.cpu.cycle_count):
+                value |= 0x08
+            else:
+                value &= ~0x08
+        return value
 
     def _write_parallel_port(self, port: int, value: int) -> None:
         """Apply one BSNEW 8255 data or control-register write."""
@@ -335,6 +349,8 @@ class BNS:
         self.flash_power_enabled = bool(value & 0x04)
         self.disk_power_enabled = bool(value & 0x08)
         self.charge_output_high = bool(value & 0x80)
+        if self.gas_gauge:
+            self.gas_gauge.write_line(bool(value & 0x20), self.cpu.cycle_count)
 
     def _write_high_bank(self, port: int, value: int) -> None:
         """Store the BSNEW language-ROM/high-bank latch."""
@@ -391,7 +407,7 @@ class BNS:
                 print(f"  Package size: {len(data)} bytes, Firmware size: {len(firmware)} bytes")
                 data = firmware
             else:
-                print(f"Warning: BNS package too small for firmware extraction")
+                print("Warning: BNS package too small for firmware extraction")
 
         # Load full ROM (up to 256KB for all 4 banks)
         # The BNS uses Z180 MMU bank switching to access different ROM banks
@@ -416,7 +432,10 @@ class BNS:
         """
         print("Starting BNS emulation...")
         print(f"Memory: {len(self.memory.rom)} ROM, {len(self.memory.ram)} RAM")
-        print(f"MMU: CBR={self.memory.cbr:02X} BBR={self.memory.bbr:02X} CBAR={self.memory.cbar:02X}")
+        print(
+            f"MMU: CBR={self.memory.cbr:02X} BBR={self.memory.bbr:02X} "
+            f"CBAR={self.memory.cbar:02X}"
+        )
         if self.synth:
             print("Audio: ENABLED")
             self.synth.start()
@@ -525,7 +544,10 @@ class BNS:
         print(f"Phonemes output: {self.stats['phonemes']}")
         print(f"Final PC:        0x{self.cpu.pc:04X}")
         print(f"CPU halted:      {self.cpu.halted}")
-        print(f"MMU state:       CBR=0x{self.cpu.cbr:02X} BBR=0x{self.cpu.bbr:02X} CBAR=0x{self.cpu.cbar:02X}")
+        print(
+            f"MMU state:       CBR=0x{self.cpu.cbr:02X} BBR=0x{self.cpu.bbr:02X} "
+            f"CBAR=0x{self.cpu.cbar:02X}"
+        )
 
     def dump_trace_data(self) -> None:
         """Dump traced data to files."""

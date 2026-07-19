@@ -1120,3 +1120,385 @@ Locate `STARTA` in the linked BSP image from its distinctive instruction sequenc
 - The available host firmware and shipped documentation therefore cannot prove whether the physical PIC treated year data `0x0B` as every year, year 2000, or by some hidden state. Implementing either meaning as exact BS2 behavior would be invention. Wildcard-year matching remains externally blocked and unclaimed; all directly observable normal clock, alarm storage/readback, exact alarm, hour/month/day wildcard, and raw-`0x06` minute wildcard surfaces are implemented and tested.
 - Current QNS source state has no active implementation slice; this handoff audit update is the only tracked project change beyond the four preserved user-owned modifications.
 - Next action: commit this record-only external-authority finding, then move to the next BSNEW target allowed by exact-convergence: establish the exact passive 8255 port-A/port-B input contract from BSNEW source definitions and live ROM read consumers before editing implementation.
+
+### BSNEW 8255 passive-input discovery checkpoint
+
+- Commit `3cbeb8a` (`Record BS2 clock protocol limit`) closed the wildcard-year audit as an eleven-line record-only commit. No new QNS source slice has started.
+- `BS.ASM` initializes the BSNEW 8255 with control byte `0xA2`, explicitly documented as port A output, port B input, and port C output. Therefore returning a fabricated passive port-A input value is not justified; BSNEW writes port A and the shared address's read side remains the watchdog service boundary already modeled at `0x80`.
+- The same initialization pulses port-C bits for the clock/parallel strobes. That output behavior is already covered by the committed C4 clock slice.
+- `BSPARMS.C`'s BSNEW definitions identify `CEPW=0xA0`, `CHGIN=0x81`, and `CHOBIT=5`, with comments stating these are the BSNEW pin/port assignments. Its gas-gauge send routines drive output bit 5 through the combined power latch at `0xA0`; port B at `0x81` is the corresponding input surface.
+- Broad source output also confirms the generic `IOSTAT` power-switch path is not a BSNEW port-A contract: the startup read is guarded by `.IF !BSNEW`.
+- Current tracked project change is only this handoff update; the four user-owned tracked modifications and unrelated artifacts remain untouched.
+- Blocker: the exact `CHGIN=0x81` bit value/cadence consumed by the gas-gauge receive path has not yet been isolated. Next action: locate literal reads of `CHGIN`, read that bounded routine and its caller, then define the first focused BSNEW port-B contract only if it changes a real firmware decision.
+
+### BSNEW gas-gauge timing checkpoint
+
+- `saybat40()` obtains percent charge by sending bq2010 commands `0x03`,
+  `0x05`, and `0x01`, then reading eight reply bits from `CHGIN` (`0x81`)
+  bit 3. The current fixed `0xFF` port-B value can therefore leave the ROM in
+  the reply-start wait loop forever.
+- The command is transmitted LSB-first on combined-power latch `0xA0` bit 5;
+  short and long low pulses encode one and zero. A reply sequenced only by
+  reads would be a substitute for the firmware-visible pulse protocol.
+- QNS currently updates `stats['cycles']` only after each 1,000-cycle CPU
+  execution chunk. Its I/O callbacks therefore cannot measure the latch
+  pulses exactly.
+- The Z180 core keeps an instruction-budget counter (`icount`), but its old
+  generic CPU-info accessor is commented out and the wrapper exposes no
+  current-cycle query. A narrow accessor for the already-existing `icount`
+  is necessary to timestamp I/O at instruction boundaries without changing
+  callback signatures or execution behavior.
+- The first attempted header patch changed nothing because the declaration
+  order in `z180.h` differed from the expected patch context.
+- Current state: QNS has no gas-gauge source slice yet; the external Z180
+  worktree remains clean and two commits ahead of its origin.
+- Next action: add, build, and commit the isolated Z180 `icount` accessor;
+  only then begin the QNS wrapper/device slice.
+
+### Z180 current-cycle accessor ready to commit
+
+- Added `cpu_get_icount_z180(device_t *)` to the external Z180 core. It returns
+  the existing execution-budget counter and changes no execution or callback
+  behavior.
+- `mingw32-make z180.o` compiled the changed core successfully in 7.4 seconds.
+  The generated untracked `z180.o` was then removed because it is reproducible
+  build output and not part of the source slice.
+- Git's default whitespace check treated CRLF line endings as trailing space;
+  `git -c core.whitespace=cr-at-eol diff --check` passes with the repository's
+  actual line-ending convention.
+- Exactly `z180/z180.c` and `z180/z180.h` are staged in the external repository.
+  No QNS implementation source has been edited.
+- Blocker: none. Next action: commit this isolated external slice, then verify
+  both repositories' tracked state before beginning the QNS wrapper/device
+  slice.
+
+### QNS timed-I/O bridge slice in progress
+
+- External commit `607e1ed` (`Expose Z180 execution cycle position`) closed the
+  isolated core slice. The external repository is clean and three commits
+  ahead of its origin.
+- The original TI bq2010 datasheet confirms an asynchronous, LSB-first,
+  return-to-one single-wire protocol. Command `0x03` reads NACH, `0x05` reads
+  LMD, and `0x01` reads FLGS1; FLGS1 bit 7 is the charging flag consumed by
+  the BSNEW firmware.
+- The datasheet specifies a 3 ms minimum break, 1 ms minimum break recovery,
+  host and device bit cycles of 3 ms minimum, device start hold of 500 us,
+  data setup by 750 us, and data valid for at least 1.5 ms. These match the
+  firmware's break, transmit, polling, and delayed-sample structure.
+- Added a focused native bridge test whose two `OUT0` callbacks must observe
+  exact instruction-start positions 6 and 31, then an accumulated count of
+  100 and 125 across two runs and zero after reset. The unchanged bridge
+  failed because `Z180.cycle_count` did not exist; the callback exceptions
+  left the observation list empty.
+- `tools/build_ffi.py` now tracks completed and active-call cycles using the
+  committed core `icount` accessor, and `qns/cpu.py` now exposes
+  `cycle_count` for native and stub CPUs.
+- The original `34` expectation was wrong because the core charges 13 cycles
+  for `OUT0`; the second callback is at 31. After correcting that false test
+  premise, the rebuilt native extension passes the focused timing authority.
+- Reread the controlling plan after that pass. The next unchecked target
+  remains the BSNEW port-B gas-gauge workflow.
+- The shipped `bs2eng.hlp` gives the exact interactive sequence: dots 34 enters
+  the Status Menu and dots 146 invokes `Percent of charge`. Correction: the
+  Status Menu chord is raw `0x4C` (dots 34 plus chord bar), while terminal `/`
+  maps to bare dots 34 raw `0x0C`; no current terminal character maps to raw
+  `0x4C`. Terminal `%` does map to bare dots 146 raw `0x29` for the menu choice.
+- Current state: the QNS timing bridge edits and focused test are uncommitted.
+  No gas-gauge peripheral code exists yet.
+- Blocker: none. Next action: run the bounded real-ROM measurement using `/`
+  followed by `%`, record the literal bit-5 pulse widths through
+  `Z180.cycle_count`, and use those measurements to fix the device thresholds.
+
+### Real-ROM gas-gauge measurement and focused wiring checkpoint
+
+- A temporary bounded measurement script loads the preserved initialized BS2
+  state, delivers complete firmware key-down/key-up transactions, and records
+  only `0xA0` bit-5 transitions through the new cycle counter.
+- The first `/`, `%` run produced zero edges because its 500,000-cycle quiet
+  window was shorter than one 64 ms speech completion; `%` could be injected
+  while the Status Menu transaction was still speaking.
+- The second run used a five-million-cycle quiet window. It spoke Status Menu
+  entries but ultimately produced zero edges and returned to normal idle PC
+  `D657`, showing that it waited past the active menu input boundary.
+- The earlier terminal-input premise was wrong: `/` delivers bare dots 34 as
+  raw `0x0C`, not the required chorded Status Menu command raw `0x4C`. Using
+  literal raw `0x4C` followed by raw `0x29` reached `saybat40(1)` in the real
+  ROM and produced the first bq2010 command.
+- The measured command starts at cycle 18,641,753. Its initial break low pulse
+  is 18,020 cycles. The eight following low pulses are 315, 324, 12,813,
+  12,821, 12,821, 12,823, 12,824, and 12,824 cycles, which decodes LSB-first
+  as command `0x03` (NACH). The temporary measurement script was then removed.
+- `BQ2010GasGauge` now models measured break/bit timing and replies to commands
+  `0x03`, `0x05`, and `0x01`; its focused measured-waveform test passes with
+  NACH 100, LMD 100, and FLGS1 0.
+- A focused BNS-level test now sends measured `0x03` timing through BSNEW power
+  latch bit 5 and samples parallel-port B bit 3. It fails at the exact missing
+  boundary: `_io_read(0x81)` returns fixed `0xFF` instead of expected `0xF7`
+  while the modeled gauge drives the data line low.
+- Current state: the timed-I/O bridge, bq2010 device model, focused authorities,
+  and this record are uncommitted. User-owned tracked changes remain preserved.
+- Blocker: none. Next action: wire the existing gauge model only at BSNEW power
+  latch bit 5 and port-B bit 3, then rerun the focused BNS wiring authority.
+
+### BSNEW gas-gauge wiring authority passes
+
+- `qns/bns.py` now constructs the bq2010 model only for `model="bs2"`, drives
+  its single-wire input from combined power-latch bit 5 at the native CPU's
+  current cycle, and overlays only parallel-port B bit 3 with its timed output.
+- The formerly failing BNS-level authority now passes: measured command `0x03`
+  driven through `0xA0` produces a low sample as port-B value `0xF7` and later
+  returns high as `0xFF`.
+- The preserved initialized state exists at
+  `C:\Users\Q\AppData\Local\Temp\qns-bs2-clock-pic-20260718.state`, length
+  2,686,992 bytes. It is a disposable live artifact, not a tracked regression
+  fixture and not by itself proof of the user-visible workflow.
+- The repository's only declared integration convention is the `manual` pytest
+  marker; current manual tests are audio-listening checks, not BS2 ROM workflow
+  drivers.
+- Current state: the timed-I/O bridge, bq2010 model, BS2 wiring, focused tests,
+  and this record remain one uncommitted gas-gauge slice. The preserved
+  user-owned tracked changes remain untouched.
+- Blocker: none. Next action: exercise literal raw Status Menu chord `0x4C`
+  followed by Percent of charge chord `0x29` against the real BS2 ROM and the
+  disposable initialized state; require all three firmware commands `0x03`,
+  `0x05`, and `0x01` plus the resulting percent/charging speech before closing
+  this slice.
+
+### BSNEW live battery gate preparation
+
+- `BQ2010GasGauge.command_log` now retains each fully decoded host command.
+  The measured-waveform authority asserts the exact `[0x03, 0x05, 0x01]`
+  sequence and passes.
+- Firmware source `BSPARMS.C::saybat40` confirms the causal output path: it
+  reads NACH with `0x03`, LMD with `0x05`, FLGS1 with `0x01`, computes
+  `NACH * 100 / LMD`, selects `charging` when FLGS1 bit 7 is set and
+  `not_charging` otherwise, then sends the formatted text through `say`.
+- `SSI263.set_phoneme_callback` is the existing non-invasive observation point
+  for collecting real-ROM speech without changing firmware timing or clearing
+  the emulator's own log prematurely.
+- Current state: the focused device and BNS wiring authorities pass; no live
+  three-command or resulting-speech claim has yet been made. The whole gas
+  gauge slice remains uncommitted.
+- Blocker: none. Next action: add a bounded reusable live verifier that loads
+  the supplied BS2 ROM and explicit disposable state, delivers raw `0x4C` then
+  raw `0x29` through complete keyboard handshakes, and fails unless the real
+  ROM produces `[0x03, 0x05, 0x01]`; retain its phoneme output to establish the
+  exact speech sequence rather than guessing it.
+
+### BSNEW live battery synchronization correction
+
+- Two bounded live-verifier attempts produced no bq2010 commands. The first
+  used only the sticky command-loop-seen flag and could inject during startup;
+  the second also required normal idle PC `D657` but still delivered `0x29`
+  immediately after the `0x4C` key-up acknowledgement. Neither attempt proved
+  a product reduction, and the rejected verifier file was fully removed.
+- The passing measured-waveform and BNS wiring implementation remains intact;
+  the failed live drivers do not contradict the modeled line behavior because
+  the firmware never reached `saybat40` in either run.
+- Source control flow now identifies the missing synchronization precisely:
+  the Status Menu loop calls `get_menu_key()`, which blocks in `getkey()`, saves
+  the physical chord in `bkey`, and only then translates it with `braasc`.
+  A completed IRQ down/up handshake does not prove the preceding `0x4C` has
+  been dispatched into that menu loop, so immediate `0x29` can be consumed in
+  the wrong command context.
+- No linker map, listing, or symbol file is present in the recovered source
+  tree. The next boundary must therefore be established from live keyboard
+  port reads/PCs or an equivalent current ROM state observation, not a guessed
+  source address.
+- Current state: the gas-gauge source/test slice remains uncommitted; the
+  user-owned tracked modifications and unrelated artifacts remain untouched.
+- Blocker: none. Next action: trace the real ROM's nonzero keyboard-port reads
+  and consuming PCs for `0x4C`; identify the subsequent `get_menu_key` wait,
+  then deliver `0x29` only at that proven state and rerun the three-command and
+  spoken-result gate.
+
+### BSNEW status-menu live-state trace in progress
+
+- Added bounded `tools/trace_bs2_battery_menu.py`. It loads the explicit ROM
+  and disposable state without saving, advances the CPU and SSI-263 together,
+  delivers complete raw keyboard down/up handshakes, and suppresses unrelated
+  emulator diagnostics so its result remains inspectable.
+- Source ordering supports a state-based gate: after dispatching/speaking a
+  status item, `parameters()` calls `get_menu_key()`, which blocks in `getkey`.
+  This is the next decision-changing boundary; a fixed speech delay is neither
+  required nor authorized.
+- The first trace attempt required command-loop-seen, PC `D657`, and
+  `cpu.halted` simultaneously at boot. It reached the 30-million-cycle bound
+  without satisfying that conjunction. Earlier live runs prove PC `D657` is
+  the normal idle boundary, but this sampling does not expose `halted` at the
+  same instant; the added boot condition was unsupported.
+- The trace now uses the previously proven command-loop-seen plus PC `D657`
+  boot predicate. Its separate post-`0x4C` candidate menu-wait predicate remains
+  `cpu.halted` at a non-`D657` PC and has not yet been observed or accepted.
+- Current state: no product source changed from this diagnostic; the gas-gauge
+  implementation slice remains uncommitted and the user-owned changes remain
+  untouched.
+- Blocker: none. Next action: rerun this corrected trace. Keep the menu-wait
+  predicate only if the real ROM reaches it and then produces literal commands
+  `03 05 01` after raw `0x29`; otherwise reject it and inspect the observed live
+  control state rather than adding another timing assumption.
+
+### BSNEW candidate wait `1BDA` rejected
+
+- The corrected boot predicate reached normal idle and processed raw `0x4C`.
+  The first non-`D657` halt occurred at cycle 13,666,000, PC `1BDA`, after 63
+  phonemes. Sending raw `0x29` there produced no bq2010 command within the
+  bounded 30-million-cycle continuation.
+- Requiring no pending SSI-263 completion and the same halted PC/phoneme count
+  across the next scheduler quantum still selected PC `1BDA`, at cycle
+  14,451,000. Raw `0x29` again produced no bq2010 command. Therefore `1BDA` is
+  a longer-lived firmware speech wait, not the menu's `getkey` boundary; both
+  candidate predicates are rejected.
+- The installed generic `objdump` supports only x86 targets, but the exact
+  external Z180 source includes its own `cpu_disassemble_z180` implementation.
+  No new disassembler integration has been added.
+- The live trace now computes the current Z180 MMU mapping and will report the
+  physical address plus 16 bytes around a candidate PC. That evidence can
+  identify the instruction at `1BDA` and support a causal next predicate.
+- Current state: no additional product source has changed; the gas-gauge slice
+  and diagnostic trace remain uncommitted. User-owned changes remain untouched.
+- Blocker: none. Next action: rerun the bounded trace once to collect the mapped
+  bytes at `1BDA`, decode them with the authoritative Z180 table or source, then
+  trace the actual post-status `getkey` wait without sending `0x29` at `1BDA`.
+
+### BSNEW battery frame reaches the ROM path but decoder lacks resynchronization
+
+- MMU mapping proves candidate PC `1BDA` is physical `01BDA`. Bytes around it
+  are `... 3A 54 D6 76 CD FF 13 18 F0 ...`; byte `76` at the PC is the Z80 HALT
+  in the firmware wait loop, not an arbitrary sampled instruction.
+- Corrected an earlier overstatement: the failed three-command predicate did
+  not prove zero commands. After adding failure-state output, the transaction
+  showed one decoded command, `FF`.
+- Clearing only the observational command log at proven post-boot idle still
+  produced `FF`, so the byte belongs to this status transaction rather than a
+  retained boot log entry.
+- Literal bit-5 edges prove the ROM is sending the intended first command. The
+  frame starts low at cycle 14,475,880 and rises at 14,493,904, an 18,024-cycle
+  break. Its following low widths are 315, 324, 12,808, 12,826, 12,808,
+  12,802, 12,821, and 12,821 cycles: LSB-first `03` exactly.
+- The model decodes that frame as `FF` because earlier boot latch activity can
+  leave `_awaiting_break` false with a partial frame. The current implementation
+  treats the 18,024-cycle protocol break as another data bit unless it already
+  expects a break. A physical bq2010 break is a frame resynchronization event;
+  this state-machine behavior is wrong.
+- Current state: no fix has been applied. The gas-gauge implementation and live
+  trace remain uncommitted; user-owned tracked changes remain untouched.
+- Blocker: none. Next action: add a focused authority that leaves the decoder
+  mid-frame, presents the observed long-idle plus 18,024-cycle break and `03`
+  waveform, and requires NACH 100. Then implement break resynchronization,
+  rerun that authority, and rerun the unchanged real-ROM three-command gate.
+
+### BSNEW real-ROM battery workflow passes
+
+- The live post-boot decoder state was `_awaiting_break=false`, no accumulated
+  command bits, and a bogus 656,686-cycle break captured from startup latch
+  activity. This directly confirms the partial-frame contamination premise.
+- Added a focused regression that leaves the receiver mid-frame, waits through
+  the observed long idle, sends an 18,024-cycle break plus literal `03`, and
+  requires command `03` with returned NACH 100. It failed as `37` before the
+  fix and now passes.
+- `BQ2010GasGauge` now treats a low pulse after more than twice the stored break
+  width of high idle as a new frame break even when a partial frame exists. It
+  discards the partial bits and recalibrates from that break. Ordinary bit-cell
+  high intervals remain below this threshold in the measured ROM waveform.
+- The unchanged real `bs2eng.bns` workflow now passes from the preserved state:
+  raw Status Menu `0x4C`, a stable `get_menu_key` wait at PC `1BDA`, then raw
+  Percent of charge `0x29` produce exact bq2010 commands `03 05 01`.
+- The resulting non-pause SSI-263 suffix is `W UH1 N / E HF UH N D R EH1 D /
+  P ER S EH N T / N AH T / T SCH AH ER D J I N KV`, the ROM's phonemes for
+  `one hundred percent not charging`. This is the first complete user-visible
+  BS2 battery-status pass.
+- The earlier final verifier predicate requiring editor PC `D657` was wrong:
+  the Status Menu remains in `get_menu_key` at HALT PC `1BDA` after speaking.
+  Requiring the stable menu wait is the correct completion state.
+- Current state: the timed-I/O bridge, bq2010 model and resynchronization fix,
+  BS2 wiring, focused tests, live verifier, and this record remain one
+  uncommitted kept slice. User-owned tracked changes remain untouched.
+- Blocker: none. Next action: make the live verifier assert exact commands and
+  the observed non-pause speech suffix, run focused and full current authority,
+  reread the plan, inspect the exact diff, and commit this slice before moving
+  to the next BS2 target.
+
+### BSNEW gas-gauge slice at cleanup and commit gate
+
+- The live verifier now asserts exact commands `[03, 05, 01]` and the complete
+  non-pause suffix for `one hundred percent not charging`; it passes against
+  the supplied ROM and preserved disposable state.
+- The established full current authority passes: 34 tests across
+  `tests/test_io.py`, `tests/test_bns.py`, and `tests/test_cpu.py` in 1.46
+  seconds. The controlling plan was reread after this passing run; the current
+  slice must be committed before moving to another BS2 target.
+- Scoped Ruff initially reported four findings introduced by this slice plus
+  older findings in touched bridge/runtime files. Import order in `qns/bns.py`
+  and `tests/test_io.py`, and both verifier findings, are fixed.
+- The user explicitly instructed: `take this chance to clean shit up and
+  commit`. This authorizes cleaning the remaining lint findings in the current
+  gas-gauge/timing slice before committing; it does not authorize touching the
+  four preserved user-owned tracked edits or unrelated untracked artifacts.
+- `qns/bns.py`'s older extraneous f-string and two overlong status lines are now
+  cleaned. `qns/cpu.py` now imports `Callable` from `collections.abc`.
+- Current state: cleanup of `tools/build_ffi.py` remains, then all verifier,
+  test, lint, whitespace, diff-scope, and staging checks must be rerun. No commit
+  has yet been made.
+- Blocker: none. Next action: clean the reported `tools/build_ffi.py` import,
+  f-string, and long-line findings; rerun all authorities, inspect/stage only
+  the intended slice and this record, then commit it.
+
+### BSNEW gas-gauge slice passes after cleanup
+
+- All reported lint defects in the current timing/gas-gauge slice are cleaned.
+  Scoped Ruff across the eight touched source/test/tool files reports
+  `All checks passed!`.
+- The embedded C wrapper now uses explicit `.format()` brace conversion instead
+  of an otherwise-empty f-string. `uv run tools/build_ffi.py` successfully
+  rebuilt and copied the native CFFI extension; only the same external Z180
+  compiler warnings were emitted.
+- The asserted real-ROM battery verifier passes against the rebuilt extension:
+  stable menu wait PC `1BDA`, commands `03 05 01`, and the full phoneme suffix
+  for `one hundred percent not charging`.
+- The established full authority passes again against the rebuilt extension:
+  34 tests across IO, BNS, and CPU in 1.81 seconds.
+- Current state: the kept slice is still uncommitted. User-owned tracked edits
+  and unrelated untracked artifacts remain outside its intended scope.
+- Blocker: none. Next action: rerun scoped lint once on final files, check
+  whitespace and line endings, inspect the exact diff and status, stage only
+  `notes-software-bns.md`, `tools/build_ffi.py`,
+  `tools/trace_bs2_battery_menu.py`, `qns/cpu.py`, `qns/io.py`, `qns/bns.py`,
+  `tests/test_cpu.py`, `tests/test_io.py`, and `tests/test_bns.py`; inspect the
+  staged diff, then commit this kept slice.
+
+### Line-ending cleanup correction before commit
+
+- An attempted CRLF normalization enlarged the scoped diff across whole files.
+  Current Git authority shows `core.autocrlf=false` and no `text` or `eol`
+  attributes on the intended paths, so literal LF is the repository format for
+  this commit.
+- The normalization was immediately reversed with `dos2unix` on only the nine
+  intended slice files. Substantive gas-gauge, timing, verifier, test, cleanup,
+  and handoff edits are preserved.
+- One read-only tool call incorrectly combined the Git configuration and
+  attribute inspections. It changed no project state, but violated the explicit
+  rule against combining separate steps and is recorded here rather than
+  excused by convenience.
+- Current state: no files are staged and no commit has been made. The four
+  user-owned tracked edits and unrelated untracked artifacts remain excluded.
+- Blocker: none. Next action: confirm the scoped diff is compact again, rerun
+  final Ruff and whitespace checks in LF form, inspect all intended diffs,
+  stage the exact nine paths only, inspect staged status/diff, and commit.
+
+### Mixed-line-ending staging correction
+
+- The preceding statement that literal LF is the repository format is wrong.
+  The tracked blobs themselves contain mixed line endings; both whole-file
+  CRLF conversion and whole-file LF conversion therefore enlarge the ordinary
+  working-tree diff.
+- `git diff --ignore-space-at-eol` isolates the intended substantive edits. The
+  exact corrective staging procedure is to apply that scoped patch to the
+  index, add the new verifier separately, inspect the staged result, commit it,
+  and then restore only residual line-ending noise in these known slice paths
+  from the committed index.
+- All nine intended files have now been inspected for substantive scope. The
+  four user-owned tracked changes and unrelated untracked artifacts remain
+  outside the slice.
+- Blocker: none. Next action: stage only the exact substantive patch and new
+  verifier, inspect the index, and commit the passing BSNEW gas-gauge slice.

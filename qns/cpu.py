@@ -6,7 +6,7 @@ If the CFFI extension isn't built, falls back to a stub implementation.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 # Try to import the compiled CFFI module
 try:
@@ -165,6 +165,7 @@ class Z180:
     def _init_stub(self) -> None:
         """Initialize stub implementation (no actual CPU execution)."""
         self._cpu = None
+        self._cycle_count = 0
         self._regs = {
             self.PC: 0x0000,
             self.SP: 0xFFFF,
@@ -186,6 +187,7 @@ class Z180:
             self._regs[self.PC] = 0x0000
             self._regs[self.SP] = 0xFFFF
             self._halted = False
+            self._cycle_count = 0
 
     def step(self) -> int:
         """Execute one instruction. Returns cycles consumed."""
@@ -197,7 +199,15 @@ class Z180:
             return lib.qns_z180_execute(self._cpu, cycles)
         else:
             # Stub: just return cycles without doing anything
+            self._cycle_count += cycles
             return cycles
+
+    @property
+    def cycle_count(self) -> int:
+        """Return the accumulated cycle position visible to I/O callbacks."""
+        if CFFI_AVAILABLE and self._cpu:
+            return int(lib.qns_z180_get_cycle_count(self._cpu))
+        return self._cycle_count
 
     def get_reg(self, reg: int) -> int:
         """Get a CPU register value."""

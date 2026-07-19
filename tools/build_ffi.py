@@ -11,9 +11,13 @@ The script will:
 3. Place the compiled extension in qns/
 """
 
-from cffi import FFI
+import glob
 import os
+import shutil
 import sys
+import tempfile
+
+from cffi import FFI
 
 # Find z180emu source
 Z180EMU_PATH = os.environ.get("Z180EMU_PATH", "C:/Users/Q/src/z180emu")
@@ -102,6 +106,9 @@ unsigned long qns_get_io_write_count(void);
 // Execute for given cycles, return actual cycles executed
 int qns_z180_execute(qns_z180_t* cpu, int cycles);
 
+// Current accumulated cycle position, including an active execution call
+unsigned long long qns_z180_get_cycle_count(qns_z180_t* cpu);
+
 // Get CPU register state
 UINT32 qns_z180_get_reg(qns_z180_t* cpu, int reg);
 
@@ -121,7 +128,8 @@ UINT8 qns_z180_get_cbar(qns_z180_t* cpu);
 """
 
 # C source that wraps z180emu
-SOURCE = f'''
+# Formatting converts doubled C braces without interpolating Python values.
+SOURCE = '''
 #include <stdlib.h>
 #include <string.h>
 
@@ -161,6 +169,8 @@ typedef struct qns_z180 {{
     csio_rx_callback py_csio_rx;
     csio_tx_callback py_csio_tx;
     unsigned int asci_cycles;
+    unsigned long long completed_cycles;
+    int execution_cycles;
 }} qns_z180_t;
 
 // Static pointer for callback routing (single instance for now)
@@ -344,6 +354,8 @@ void qns_z180_reset(qns_z180_t* cpu) {{
     if (cpu && cpu->device) {{
         cpu_reset_z180(cpu->device);
         cpu->asci_cycles = 0;
+        cpu->completed_cycles = 0;
+        cpu->execution_cycles = 0;
         cpu->device->z180asci->m_chan0->m_brg_timer = cpu->device->z180asci->m_chan0->m_brg_const;
         cpu->device->z180asci->m_chan1->m_brg_timer = cpu->device->z180asci->m_chan1->m_brg_const;
     }}
@@ -351,7 +363,10 @@ void qns_z180_reset(qns_z180_t* cpu) {{
 
 int qns_z180_execute(qns_z180_t* cpu, int cycles) {{
     if (cpu && cpu->device) {{
+        cpu->execution_cycles = cycles;
         cpu_execute_z180(cpu->device, cycles);
+        cpu->execution_cycles = 0;
+        cpu->completed_cycles += (unsigned int)cycles;
         cpu->asci_cycles += cycles;
         while (cpu->asci_cycles >= 16) {{
             z180asci_channel_device_timer(cpu->device->z180asci->m_chan0);
@@ -361,6 +376,17 @@ int qns_z180_execute(qns_z180_t* cpu, int cycles) {{
         return cycles;  // z180emu doesn't return actual cycles
     }}
     return 0;
+}}
+
+unsigned long long qns_z180_get_cycle_count(qns_z180_t* cpu) {{
+    if (!cpu || !cpu->device) {{
+        return 0;
+    }}
+    if (cpu->execution_cycles > 0) {{
+        return cpu->completed_cycles
+            + (unsigned int)(cpu->execution_cycles - cpu_get_icount_z180(cpu->device));
+    }}
+    return cpu->completed_cycles;
 }}
 
 UINT32 qns_z180_get_reg(qns_z180_t* cpu, int reg) {{
@@ -398,7 +424,7 @@ UINT8 qns_z180_get_bbr(qns_z180_t* cpu) {{
 UINT8 qns_z180_get_cbar(qns_z180_t* cpu) {{
     return (UINT8)qns_z180_get_reg(cpu, 58);  // Z180_CBAR
 }}
-'''
+'''.format()
 
 # Set up the FFI
 ffi.cdef(CDEF)
@@ -415,15 +441,15 @@ ffi.set_source(
         os.path.join(Z180EMU_PATH, "z180/z80daisy.c"),
         os.path.join(Z180EMU_PATH, "z180/z80scc.c"),
     ],
-    extra_compile_args=["-O2", "-D_CRT_SECURE_NO_WARNINGS"] if sys.platform != "win32" else ["/O2", "/D_CRT_SECURE_NO_WARNINGS"],
+    extra_compile_args=(
+        ["-O2", "-D_CRT_SECURE_NO_WARNINGS"]
+        if sys.platform != "win32"
+        else ["/O2", "/D_CRT_SECURE_NO_WARNINGS"]
+    ),
 )
 
 if __name__ == "__main__":
-    import tempfile
-    import shutil
-    import glob
-
-    print(f"Building z180 CFFI extension...")
+    print("Building z180 CFFI extension...")
     print(f"z180emu path: {Z180EMU_PATH}")
 
     # Build in temp directory to avoid setuptools package discovery issues
