@@ -6,7 +6,13 @@ from io import BytesIO
 
 import pytest
 
-from qns.bns import _ASCII_TO_BNS_KEY, BNS, _read_stdin_character
+from qns.bns import (
+    _ASCII_TO_BNS_KEY,
+    _BS2_COMBYT_PHYSICAL,
+    _BS2_IIB_PHYSICAL,
+    BNS,
+    _read_stdin_character,
+)
 
 
 def test_english_stdio_characters_use_firmware_keyboard_chords():
@@ -51,6 +57,122 @@ def test_bsp_command_loop_gate_requires_starta_bg_task_sequence():
 
     bns._mem_write(0x41653, 0)
     assert bns._bsp_command_loop_ready
+
+
+def test_power_on_stdin_holds_i_until_firmware_initializes_combyt(monkeypatch):
+    """The documented I-chord is down before cycle one and released by WARM0."""
+    characters = iter(("I", ""))
+    monkeypatch.setattr(
+        "qns.bns._read_stdin_character",
+        lambda: next(characters),
+    )
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
+    bns = BNS(model="bs2", stdin_device="keyboard", power_on_input=True)
+    observed = []
+
+    class PowerOnCPU:
+        halted = False
+        pc = 0
+
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
+
+        def run(self, cycles):
+            observed.append((bns.keyboard.dots, bns.keyboard._key_down))
+            bns._mem_write(_BS2_COMBYT_PHYSICAL, 0x64)
+            return cycles
+
+    bns.cpu = PowerOnCPU()
+    bns.run(max_cycles=1_000)
+
+    assert observed == [(0x4A, True)]
+    assert not bns.keyboard._key_down
+
+
+@pytest.mark.parametrize("character", ["", "i", "O"])
+def test_power_on_stdin_requires_documented_uppercase_i(monkeypatch, character):
+    """No nearby or missing stdin character may select the hard-reset path."""
+    monkeypatch.setattr("qns.bns._read_stdin_character", lambda: character)
+    bns = BNS(model="bs2", stdin_device="keyboard", power_on_input=True)
+
+    with pytest.raises(RuntimeError, match="uppercase I"):
+        bns.run(max_cycles=1_000)
+
+
+def test_power_on_stdin_rejects_non_keyboard_channel():
+    """A serial byte cannot be silently reinterpreted as a keyboard chord."""
+    with pytest.raises(ValueError, match="requires keyboard stdin"):
+        BNS(stdin_device="serial0", power_on_input=True)
+
+
+def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch):
+    """Queued input starts at a stable wait and spans both `_IIB` ISR phases."""
+    characters = iter(("y", ""))
+    monkeypatch.setattr(
+        "qns.bns._read_stdin_character",
+        lambda: next(characters),
+    )
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
+    bns = BNS(model="bs2", stdin_device="keyboard")
+    observed = []
+
+    class KeyPhaseCPU:
+        halted = False
+        pc = 0x1BDA
+
+        def __init__(self):
+            self.calls = 0
+
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
+
+        def run(self, cycles):
+            self.calls += 1
+            self.halted = True
+            observed.append(
+                (
+                    bns.keyboard.dots,
+                    bns.keyboard._key_down,
+                    bns.keyboard.latched,
+                )
+            )
+            if self.calls == 3:
+                bns.memory.write(_BS2_IIB_PHYSICAL, 0x3D)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 4:
+                bns.memory.write(_BS2_IIB_PHYSICAL, 0)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            return cycles
+
+    bns.cpu = KeyPhaseCPU()
+    bns.run(max_cycles=4_000)
+
+    assert observed == [
+        (0, False, False),
+        (0, False, False),
+        (0x3D, True, True),
+        (0x3D, False, True),
+    ]
+    assert bns.memory.read(_BS2_IIB_PHYSICAL) == 0
+    assert not bns.keyboard.latched
 
 
 def test_address_trace_retains_causal_write_event_once():

@@ -43,6 +43,10 @@ _ASCII_TO_BNS_KEY = bytes((
     0x2D, 0x3D, 0x35, 0x2A, 0x33, 0x3B, 0x18, 0x78,
 ))
 
+_BS2_COMBYT_PHYSICAL = 0x414B0
+_BS2_IIB_PHYSICAL = 0x4327D
+_BS2_POWER_ON_INITIALIZE_CHORD = 0x4A
+
 
 def _read_stdin_character() -> str:
     """Read one redirected byte or one unbuffered Windows console key."""
@@ -85,6 +89,7 @@ class BNS:
                  dump_writes_file: str | None = None,
                  trace_interrupts: bool = False,
                  stdin_device: str | None = None,
+                 power_on_input: bool = False,
                  serial_output: BinaryIO | None = None,
                  serial_output_channel: int | None = None):
         """Initialize the BNS emulator.
@@ -100,11 +105,14 @@ class BNS:
             dump_writes_file: File to dump all write addresses to (CSV format)
             trace_interrupts: Log interrupt-related activity (IRQ lines, ITC register)
             stdin_device: Standard-input target: keyboard, serial0, or serial1
+            power_on_input: Hold the first keyboard stdin chord during power-on
             serial_output: Raw byte stream for the selected serial output channel
             serial_output_channel: ASCI channel routed to serial_output
         """
         if model not in ("bsp", "bs2"):
             raise ValueError(f"Unsupported BNS model: {model}")
+        if power_on_input and stdin_device != "keyboard":
+            raise ValueError("power-on input requires keyboard stdin")
 
         self.clock = clock
         self.model = model
@@ -112,6 +120,7 @@ class BNS:
         self.io = IOBus()
         self.trace_interrupts = trace_interrupts
         self.stdin_device = stdin_device
+        self.power_on_input = power_on_input
         self.serial_output = serial_output
         self.serial_output_channel = serial_output_channel
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
@@ -129,6 +138,7 @@ class BNS:
         self.traced_writes: list[tuple[int, int, int, int]] = []
         self._bsp_bg_timer_zero_writes = 0
         self._bsp_command_loop_ready = False
+        self._bs2_combyt_writes = 0
 
         # Statistics
         self.stats = {
@@ -202,6 +212,9 @@ class BNS:
     def _mem_write(self, addr: int, value: int) -> None:
         """Memory write callback for CPU."""
         self.stats['writes'] += 1
+
+        if addr == _BS2_COMBYT_PHYSICAL:
+            self._bs2_combyt_writes += 1
 
         # BSP STARTA writes zero to bg_timer and immediately calls bg_task,
         # which writes zero there again.  Under the linked BSP MMU state,
@@ -451,9 +464,28 @@ class BNS:
 
         keyboard_input_queue: queue.Queue[str] | None = None
         input_phase: str | None = None
+        input_chord: int | None = None
+        key_wait_candidate: tuple[int, int] | None = None
+        power_on_combyt_writes = self._bs2_combyt_writes
         if self.stdin_device is not None:
             if self.stdin_device == "keyboard":
                 keyboard_input_queue = queue.Queue()
+                if self.power_on_input:
+                    power_on_character = _read_stdin_character()
+                    if not power_on_character:
+                        raise RuntimeError("power-on input ended before uppercase I")
+                    codepoint = ord(power_on_character)
+                    if (
+                        codepoint >= len(_ASCII_TO_BNS_KEY)
+                        or _ASCII_TO_BNS_KEY[codepoint]
+                        != _BS2_POWER_ON_INITIALIZE_CHORD
+                    ):
+                        raise RuntimeError(
+                            "power-on input must begin with uppercase I"
+                        )
+                    input_chord = _BS2_POWER_ON_INITIALIZE_CHORD
+                    self.keyboard.press(input_chord)
+                    input_phase = "power-on"
 
             def read_stdin() -> None:
                 if self.stdin_device == "keyboard":
@@ -479,16 +511,48 @@ class BNS:
                 self.ssi263.set_cycle_count(cycles_run)
                 self.ssi263.check_pending_irq(cycles_run)
 
-                if input_phase == "down" and not self.keyboard.latched:
+                key_wait_signature = None
+                if (
+                    self.cpu.halted
+                    and self.ssi263._pending_irq_cycle is None
+                ):
+                    key_wait_signature = (
+                        self.cpu.pc,
+                        len(self.ssi263.phoneme_log),
+                    )
+                stable_key_wait = (
+                    key_wait_signature is not None
+                    and key_wait_signature == key_wait_candidate
+                )
+                key_wait_candidate = key_wait_signature
+
+                if (
+                    input_phase == "power-on"
+                    and self._bs2_combyt_writes > power_on_combyt_writes
+                ):
+                    self.keyboard.release()
+                    input_phase = None
+                    input_chord = None
+                elif (
+                    input_phase == "down"
+                    and not self.keyboard.latched
+                    and input_chord is not None
+                    and self.memory.read(_BS2_IIB_PHYSICAL) == input_chord
+                ):
                     self.keyboard.release()
                     input_phase = "up"
-                elif input_phase == "up" and not self.keyboard.latched:
+                elif (
+                    input_phase == "up"
+                    and not self.keyboard.latched
+                    and self.memory.read(_BS2_IIB_PHYSICAL) == 0
+                ):
                     input_phase = None
+                    input_chord = None
 
                 if (
                     keyboard_input_queue is not None
                     and input_phase is None
-                    and self._bsp_command_loop_ready
+                    and stable_key_wait
                 ):
                     try:
                         character = keyboard_input_queue.get_nowait()
@@ -497,7 +561,8 @@ class BNS:
                     else:
                         codepoint = ord(character)
                         if codepoint < len(_ASCII_TO_BNS_KEY):
-                            self.keyboard.press(_ASCII_TO_BNS_KEY[codepoint])
+                            input_chord = _ASCII_TO_BNS_KEY[codepoint]
+                            self.keyboard.press(input_chord)
                             input_phase = "down"
                         else:
                             print(f"[Input] Unsupported character: U+{codepoint:04X}")
@@ -623,6 +688,11 @@ def main() -> None:
     parser.add_argument("--input", choices=("keyboard", "serial0", "serial1"),
                         default="keyboard",
                         help="Route standard input to the BNS keyboard or an ASCI channel")
+    parser.add_argument(
+        "--power-on-input",
+        action="store_true",
+        help="Read and hold an initial uppercase I from keyboard stdin during power-on",
+    )
     parser.add_argument("--output", choices=("console", "serial0", "serial1"),
                         default="console",
                         help="Show console logs or route one raw ASCI channel to standard output")
@@ -678,6 +748,7 @@ def main() -> None:
             trace_first_writes=args.trace_first_writes,
             dump_writes_file=args.dump_writes,
             stdin_device=args.input,
+            power_on_input=args.power_on_input,
             serial_output=serial_output,
             serial_output_channel=serial_output_channel,
         )
