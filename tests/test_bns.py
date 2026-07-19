@@ -46,7 +46,7 @@ def test_interactive_windows_stdin_reads_one_key_without_newline(monkeypatch):
     assert _read_stdin_character() == "O"
 
 
-@pytest.mark.parametrize("model", ["bsp", "bs2", "bsl", "bl2"])
+@pytest.mark.parametrize("model", ["bsp", "bs2", "bsl", "bl2", "bl4"])
 def test_command_loop_gate_requires_linked_starta_instruction(model):
     """Early timer initialization cannot open stdin before linked STARTA."""
     bns = BNS(model=model)
@@ -62,7 +62,7 @@ def test_command_loop_gate_requires_linked_starta_instruction(model):
 
 @pytest.mark.parametrize(
     ("model", "character", "chord"),
-    [("bs2", "I", 0x4A), ("bl2", "b", 0x03)],
+    [("bs2", "I", 0x4A), ("bl2", "b", 0x03), ("bl4", "b", 0x03)],
 )
 def test_power_on_stdin_holds_chord_until_profile_acceptance_boundary(
     monkeypatch,
@@ -100,8 +100,11 @@ def test_power_on_stdin_holds_chord_until_profile_acceptance_boundary(
             observed.append((bns.keyboard.dots, bns.keyboard._key_down))
             if model == "bs2":
                 bns._mem_write(_COMBYT_PHYSICAL, 0x64)
-            else:
+            elif model == "bl2":
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            else:
+                bns._io_read(0xB0)
+                bns._io_read(0xC0)
             return cycles
 
     bns.cpu = PowerOnCPU()
@@ -137,8 +140,8 @@ def test_power_on_stdin_rejects_non_keyboard_channel():
 
 @pytest.mark.parametrize("model", ["bsp", "bsl"])
 def test_power_on_stdin_rejects_profiles_without_proven_reset_boundary(model):
-    """A COMBYT release event cannot be applied to an unproven firmware."""
-    with pytest.raises(ValueError, match="proven BS2 or BL2 boundary"):
+    """A power-on release event cannot be applied to unproven firmware."""
+    with pytest.raises(ValueError, match="proven BS2, BL2, or BL4 boundary"):
         BNS(model=model, stdin_device="keyboard", power_on_input=True)
 
 
@@ -149,22 +152,25 @@ def test_keyboard_acceptance_addresses_match_each_linked_english_rom():
         "bs2": 0x4327D,
         "bsl": 0x433E5,
         "bl2": 0x433E6,
+        "bl4": 0x433F0,
     }
     assert _COMMAND_LOOP_TIMER_PHYSICAL == {
         "bsp": 0x41653,
         "bs2": 0x41654,
         "bsl": 0x41653,
         "bl2": 0x41654,
+        "bl4": 0x4165A,
     }
     assert _COMMAND_LOOP_TIMER_WRITE_PC == {
         "bsp": 0x0A0D,
         "bs2": 0x0A7E,
         "bsl": 0x0A97,
         "bl2": 0x0AF5,
+        "bl4": 0x0B36,
     }
 
 
-@pytest.mark.parametrize("model", ["bsp", "bs2", "bsl", "bl2"])
+@pytest.mark.parametrize("model", ["bsp", "bs2", "bsl", "bl2", "bl4"])
 def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
     """Queued input starts at a stable wait and spans both `_IIB` ISR phases."""
     characters = iter(("y", ""))
@@ -462,6 +468,42 @@ def test_bl2_combines_bsnew_devices_with_parallel_display():
     bns.cpu._csio_tx(4)
     bns._io_write(0x83, 9)
     assert bns.cpu._csio_rx() != -1
+
+
+def test_bl4_owns_split_keyboard_parallel_display_and_four_megabyte_flash():
+    """BL4 uses its source-defined ports without borrowing BL2 addresses."""
+    bns = BNS(model="bl4")
+    display_controls = []
+    bns.display.write_control = display_controls.append
+
+    assert len(bns.memory.flash) == 4 * 1024 * 1024
+    assert bns.ssi263.base_port == 0x90
+    assert bns.keyboard.port == 0xB0
+    assert bns.keyboard.keyclr_port == 0xD0
+
+    bns.keyboard.press(0x41)
+    assert bns._io_read(0xB0) == 0x01
+    assert bns._io_read(0xC0) == 0x01
+    bns._io_write(0xD0, 0)
+    assert not bns.keyboard.latched
+
+    bns._io_write(0xA3, 3)
+    assert display_controls == [3]
+    bns.cpu._csio_tx(4)
+    bns._io_write(0xA3, 9)
+    assert bns.cpu._csio_rx() != -1
+
+    bns._io_write(0x80, 0x93)
+    assert bns.rs232_power_enabled
+    assert bns.speech_power_enabled
+    assert bns.disk_power_enabled
+    assert bns.charge_output_high
+    assert bns._io_read(0xE0) == 0xFF
+
+    bns._io_write(0xE0, 2)
+    bns._io_write(0xF0, 0x0F)
+    assert bns.bl4_latch == 2
+    assert bns.memory.high_bank_latch == 0x0F
 
 
 def test_bns_rejects_unknown_hardware_model():

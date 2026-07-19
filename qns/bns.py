@@ -52,18 +52,21 @@ _KEYBOARD_INPUT_BUFFER_PHYSICAL = {
     "bs2": 0x4327D,
     "bsl": 0x433E5,
     "bl2": 0x433E6,
+    "bl4": 0x433F0,
 }
 _COMMAND_LOOP_TIMER_PHYSICAL = {
     "bsp": 0x41653,
     "bs2": 0x41654,
     "bsl": 0x41653,
     "bl2": 0x41654,
+    "bl4": 0x4165A,
 }
 _COMMAND_LOOP_TIMER_WRITE_PC = {
     "bsp": 0x0A0D,
     "bs2": 0x0A7E,
     "bsl": 0x0A97,
     "bl2": 0x0AF5,
+    "bl4": 0x0B36,
 }
 
 
@@ -116,7 +119,7 @@ class BNS:
         Args:
             clock: CPU clock frequency in Hz (default 12.288 MHz for BSPLUS)
             audio: Enable audio output for SSI-263 speech
-            model: Hardware profile: bsp, bs2, bsl, or bl2
+            model: Hardware profile: bsp, bs2, bsl, bl2, or bl4
             trace_io: Log all I/O port reads/writes
             trace_writes: Physical address to trace writes to (None = disabled)
             trace_writes_range: (start, end) tuple for range tracing
@@ -128,18 +131,23 @@ class BNS:
             serial_output: Raw byte stream for the selected serial output channel
             serial_output_channel: ASCI channel routed to serial_output
         """
-        if model not in ("bsp", "bs2", "bsl", "bl2"):
+        if model not in ("bsp", "bs2", "bsl", "bl2", "bl4"):
             raise ValueError(f"Unsupported BNS model: {model}")
         if power_on_input and stdin_device != "keyboard":
             raise ValueError("power-on input requires keyboard stdin")
-        if power_on_input and model not in ("bs2", "bl2"):
-            raise ValueError("power-on input requires a proven BS2 or BL2 boundary")
+        if power_on_input and model not in ("bs2", "bl2", "bl4"):
+            raise ValueError(
+                "power-on input requires a proven BS2, BL2, or BL4 boundary"
+            )
 
         self.clock = clock
         self.model = model
-        self.memory = Memory(
-            flash_size=2 * 1024 * 1024 if model in ("bs2", "bl2") else 0
-        )
+        flash_size = {
+            "bs2": 2 * 1024 * 1024,
+            "bl2": 2 * 1024 * 1024,
+            "bl4": 4 * 1024 * 1024,
+        }.get(model, 0)
+        self.memory = Memory(flash_size=flash_size)
         self.io = IOBus()
         self.trace_interrupts = trace_interrupts
         self.stdin_device = stdin_device
@@ -166,6 +174,7 @@ class BNS:
         self.traced_writes: list[tuple[int, int, int, int]] = []
         self._command_loop_write_count = 0
         self._combyt_writes = 0
+        self._bl4_key_samples = 0
 
         # Statistics
         self.stats = {
@@ -175,15 +184,27 @@ class BNS:
         }
 
         # Peripherals
-        self.ssi263 = SSI263(base_port=self.PORT_SSI263, clock=clock)
-        self.keyboard = BrailleKeyboard(port=self.PORT_KEYBOARD, keyclr_port=self.PORT_KEYCLR)
+        ssi263_port = 0x90 if model == "bl4" else self.PORT_SSI263
+        keyboard_port = 0xB0 if model == "bl4" else self.PORT_KEYBOARD
+        keyclr_port = 0xD0 if model == "bl4" else self.PORT_KEYCLR
+        self.ssi263 = SSI263(base_port=ssi263_port, clock=clock)
+        self.keyboard = BrailleKeyboard(
+            port=keyboard_port,
+            keyclr_port=keyclr_port,
+        )
         self.rtc = MSM6242RTC(base_port=self.PORT_RTC_START)
-        self.clock_pic = PIC16C56Clock() if model in ("bs2", "bl2") else None
+        self.clock_pic = (
+            PIC16C56Clock() if model in ("bs2", "bl2", "bl4") else None
+        )
         if model == "bsl":
             self.display = BrailleDisplay()
         elif model == "bl2":
             self.display = ParallelBrailleDisplay(cells=18)
-        self.gas_gauge = BQ2010GasGauge() if model in ("bs2", "bl2") else None
+        elif model == "bl4":
+            self.display = ParallelBrailleDisplay(cells=40)
+        self.gas_gauge = (
+            BQ2010GasGauge() if model in ("bs2", "bl2", "bl4") else None
+        )
         self.watchdog = Watchdog(port=self.PORT_WATCHDOG)
         self.speech_power_enabled = False
         self.rs232_power_enabled = False
@@ -192,6 +213,8 @@ class BNS:
         self.charge_output_high = False
         self.power_latch = 0
         self.parallel_ports = [0xFF, 0xFF, 0x00, 0xFF]
+        self._parallel_port_base = 0xA0 if model == "bl4" else 0x80
+        self.bl4_latch = 0
         self.high_bank_latch = 0
 
         # Audio synthesis
@@ -315,9 +338,18 @@ class BNS:
         for port, read_h, write_h in self.ssi263.get_io_handlers():
             self.io.register(port, read_h, write_h)
 
-        # Keyboard (0x40) and keyclr (0x20)
-        self.io.register(self.PORT_KEYBOARD, self.keyboard.read, self.keyboard.write)
-        self.io.register(self.PORT_KEYCLR, self.keyboard.keyclr_read, self.keyboard.keyclr_write)
+        # Keyboard and key-clear ports are profile-owned.
+        keyboard_read = (
+            self._read_bl4_dots if self.model == "bl4" else self.keyboard.read
+        )
+        self.io.register(self.keyboard.port, keyboard_read, self.keyboard.write)
+        self.io.register(
+            self.keyboard.keyclr_port,
+            self.keyboard.keyclr_read,
+            self.keyboard.keyclr_write,
+        )
+        if self.model == "bl4":
+            self.io.register(0xC0, read_handler=self._read_bl4_space)
 
         # BSPLUS maps the MSM6242 direct-bus RTC across 0x60-0x6F.
         self.io.register_range(
@@ -335,6 +367,16 @@ class BNS:
             self.io.register(0x83, write_handler=self._write_parallel_port)
             self.io.register(0xA0, write_handler=self._write_bsnew_power)
             self.io.register(0xE0, write_handler=self._write_high_bank)
+        elif self.model == "bl4":
+            self.io.register(0x80, write_handler=self._write_bl4_power)
+            for port in range(0xA0, 0xA4):
+                self.io.register(
+                    port,
+                    self._read_parallel_port if port != 0xA3 else None,
+                    self._write_parallel_port,
+                )
+            self.io.register(0xE0, self._read_bl4_status, self._write_bl4_latch)
+            self.io.register(0xF0, write_handler=self._write_high_bank)
         else:
             # BSPLUS and B_LITE decode reads at 0x80 as watchdog service and
             # writes as speech-power control. B_LITE's display uses CSI/O.
@@ -365,8 +407,8 @@ class BNS:
 
     def _read_parallel_port(self, port: int) -> int:
         """Read one BSNEW 8255 register."""
-        value = self.parallel_ports[port - 0x80]
-        if port == 0x81 and self.gas_gauge:
+        value = self.parallel_ports[port - self._parallel_port_base]
+        if self.model in ("bs2", "bl2") and port == 0x81 and self.gas_gauge:
             if self.gas_gauge.read_line(self.cpu.cycle_count):
                 value |= 0x08
             else:
@@ -375,11 +417,11 @@ class BNS:
 
     def _write_parallel_port(self, port: int, value: int) -> None:
         """Apply one BSNEW 8255 data or control-register write."""
-        register = port - 0x80
+        register = port - self._parallel_port_base
         self.parallel_ports[register] = value
         if register != 3:
             return
-        if self.model == "bl2":
+        if self.model in ("bl2", "bl4"):
             self.display.write_control(value)
         if value & 0x80:
             self.parallel_ports[2] = 0
@@ -405,6 +447,36 @@ class BNS:
         self.charge_output_high = bool(value & 0x80)
         if self.gas_gauge:
             self.gas_gauge.write_line(bool(value & 0x20), self.cpu.cycle_count)
+
+    def _read_bl4_dots(self, port: int) -> int:
+        """Return BL4 dot keys without its separately wired space bar."""
+        return self.keyboard.read(port) & 0x3F
+
+    def _read_bl4_space(self, port: int) -> int:
+        """Return the BL4 space-bar input on port C0 bit zero."""
+        self._bl4_key_samples += 1
+        return int(bool(self.keyboard.dots & 0x40))
+
+    def _write_bl4_power(self, port: int, value: int) -> None:
+        """Apply the BL4 combined power and gas-gauge output latch."""
+        self.power_latch = value
+        self.rs232_power_enabled = bool(value & 0x01)
+        self.speech_power_enabled = bool(value & 0x02)
+        self.disk_power_enabled = bool(value & 0x10)
+        self.charge_output_high = bool(value & 0x80)
+        if self.gas_gauge:
+            self.gas_gauge.write_line(bool(value & 0x80), self.cpu.cycle_count)
+
+    def _read_bl4_status(self, port: int) -> int:
+        """Return power-on status plus the BL4 gas-gauge input on bit three."""
+        value = 0xFF
+        if self.gas_gauge and not self.gas_gauge.read_line(self.cpu.cycle_count):
+            value &= ~0x08
+        return value
+
+    def _write_bl4_latch(self, port: int, value: int) -> None:
+        """Retain the BL4 cursor-key/PIC latch output."""
+        self.bl4_latch = value
 
     def _write_high_bank(self, port: int, value: int) -> None:
         """Store the BSNEW language-ROM/high-bank latch."""
@@ -497,6 +569,7 @@ class BNS:
         input_chord: int | None = None
         key_wait_candidate: tuple[int, int] | None = None
         power_on_combyt_writes = self._combyt_writes
+        power_on_bl4_key_samples = self._bl4_key_samples
         input_command_loop_writes = self._command_loop_write_count
         if self.stdin_device is not None:
             if self.stdin_device == "keyboard":
@@ -572,6 +645,10 @@ class BNS:
                             and self._combyt_writes > power_on_combyt_writes
                         )
                         or (self.model == "bl2" and not self.keyboard.latched)
+                        or (
+                            self.model == "bl4"
+                            and self._bl4_key_samples > power_on_bl4_key_samples
+                        )
                     )
                 ):
                     self.keyboard.release()
@@ -733,8 +810,12 @@ def main() -> None:
     # Basic options
     parser.add_argument("--audio", action="store_true",
                         help="Enable SSI-263 audio output")
-    parser.add_argument("--model", choices=("bsp", "bs2", "bsl", "bl2"), default="bsp",
-                        help="Select the hardware profile (default: bsp)")
+    parser.add_argument(
+        "--model",
+        choices=("bsp", "bs2", "bsl", "bl2", "bl4"),
+        default="bsp",
+        help="Select the hardware profile (default: bsp)",
+    )
     parser.add_argument("--trace", action="store_true",
                         help="Show boot trace instead of running")
     parser.add_argument("--input", choices=("keyboard", "serial0", "serial1"),
