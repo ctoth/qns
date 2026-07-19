@@ -240,7 +240,7 @@ def reach_editor_command_loop(harness: BS2Harness) -> None:
     """Complete the real first-boot dialogue and reach the editor key loop."""
     bns = harness.bns
     harness.wait_for_key()
-    if bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657:
+    if bns._command_loop_write_count > 0 and bns.cpu.pc == 0xD657:
         return
 
     names = [
@@ -290,7 +290,7 @@ def reach_editor_command_loop(harness: BS2Harness) -> None:
         ),
     )
     harness.wait_for_key()
-    if bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657:
+    if bns._command_loop_write_count > 0 and bns.cpu.pc == 0xD657:
         return
 
     response_names = [
@@ -311,7 +311,7 @@ def reach_editor_command_loop(harness: BS2Harness) -> None:
     harness.chord(FLASH_INITIALIZATION_Y_KEY)
     if wipeout:
         harness.run_until(
-            lambda: bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657,
+            lambda: bns._command_loop_write_count > 0 and bns.cpu.pc == 0xD657,
             "BS2 editor command loop after file-area initialization",
         )
     else:
@@ -497,7 +497,7 @@ def main() -> None:
         chord_phases.append(f"E=[{serial_output.format_events(serial_event_cursor)}]")
         transfer_ymodem(harness, serial_cursor, args.program)
         harness.run_until(
-            lambda: bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657,
+            lambda: bns._command_loop_write_count > 0 and bns.cpu.pc == 0xD657,
             "BS2 editor command loop after YMODEM import",
         )
 

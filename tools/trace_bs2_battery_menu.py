@@ -66,7 +66,7 @@ def main() -> None:
         bns = harness.bns
 
         harness.run_until(
-            lambda: bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657,
+            lambda: bns._command_loop_write_count > 0 and bns.cpu.pc == 0xD657,
             "BS2 editor command loop",
         )
         speech_start = len(bns.ssi263.phoneme_log)

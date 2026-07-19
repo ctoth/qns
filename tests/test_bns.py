@@ -9,7 +9,9 @@ import pytest
 from qns.bns import (
     _ASCII_TO_BNS_KEY,
     _BS2_COMBYT_PHYSICAL,
-    _BS2_IIB_PHYSICAL,
+    _COMMAND_LOOP_TIMER_PHYSICAL,
+    _COMMAND_LOOP_TIMER_WRITE_PC,
+    _KEYBOARD_INPUT_BUFFER_PHYSICAL,
     BNS,
     _read_stdin_character,
 )
@@ -44,19 +46,18 @@ def test_interactive_windows_stdin_reads_one_key_without_newline(monkeypatch):
     assert _read_stdin_character() == "O"
 
 
-def test_bsp_command_loop_gate_requires_starta_bg_task_sequence():
-    """One initialization write cannot open stdin before STARTA."""
-    bns = BNS()
+@pytest.mark.parametrize("model", ["bsp", "bs2", "bsl"])
+def test_command_loop_gate_requires_linked_starta_instruction(model):
+    """Early timer initialization cannot open stdin before linked STARTA."""
+    bns = BNS(model=model)
+    bns.cpu = type("InstructionCPU", (), {"instruction_pc": 0x1234})()
 
-    bns._mem_write(0x41653, 0)
-    assert not bns._bsp_command_loop_ready
+    bns._mem_write(_COMMAND_LOOP_TIMER_PHYSICAL[model], 0)
+    assert bns._command_loop_write_count == 0
 
-    bns._mem_write(0x41653, 1)
-    bns._mem_write(0x41653, 0)
-    assert not bns._bsp_command_loop_ready
-
-    bns._mem_write(0x41653, 0)
-    assert bns._bsp_command_loop_ready
+    bns.cpu.instruction_pc = _COMMAND_LOOP_TIMER_WRITE_PC[model]
+    bns._mem_write(_COMMAND_LOOP_TIMER_PHYSICAL[model], 0)
+    assert bns._command_loop_write_count == 1
 
 
 def test_power_on_stdin_holds_i_until_firmware_initializes_combyt(monkeypatch):
@@ -114,7 +115,34 @@ def test_power_on_stdin_rejects_non_keyboard_channel():
         BNS(stdin_device="serial0", power_on_input=True)
 
 
-def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch):
+@pytest.mark.parametrize("model", ["bsp", "bsl"])
+def test_power_on_stdin_rejects_profiles_without_proven_reset_boundary(model):
+    """The BS2 COMBYT release event cannot be applied to another firmware."""
+    with pytest.raises(ValueError, match="supported only for BS2"):
+        BNS(model=model, stdin_device="keyboard", power_on_input=True)
+
+
+def test_keyboard_acceptance_addresses_match_each_linked_english_rom():
+    """Each profile owns the physical `_IIB` reached under command-loop CBR=34."""
+    assert _KEYBOARD_INPUT_BUFFER_PHYSICAL == {
+        "bsp": 0x4327C,
+        "bs2": 0x4327D,
+        "bsl": 0x433E5,
+    }
+    assert _COMMAND_LOOP_TIMER_PHYSICAL == {
+        "bsp": 0x41653,
+        "bs2": 0x41654,
+        "bsl": 0x41653,
+    }
+    assert _COMMAND_LOOP_TIMER_WRITE_PC == {
+        "bsp": 0x0A0D,
+        "bs2": 0x0A7E,
+        "bsl": 0x0A97,
+    }
+
+
+@pytest.mark.parametrize("model", ["bsp", "bs2", "bsl"])
+def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
     """Queued input starts at a stable wait and spans both `_IIB` ISR phases."""
     characters = iter(("y", ""))
     monkeypatch.setattr(
@@ -130,7 +158,7 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch):
             self.target()
 
     monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
-    bns = BNS(model="bs2", stdin_device="keyboard")
+    bns = BNS(model=model, stdin_device="keyboard")
     observed = []
 
     class KeyPhaseCPU:
@@ -155,10 +183,13 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch):
                 )
             )
             if self.calls == 3:
-                bns.memory.write(_BS2_IIB_PHYSICAL, 0x3D)
+                bns.memory.write(
+                    _KEYBOARD_INPUT_BUFFER_PHYSICAL[model],
+                    0x3D,
+                )
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             elif self.calls == 4:
-                bns.memory.write(_BS2_IIB_PHYSICAL, 0)
+                bns.memory.write(_KEYBOARD_INPUT_BUFFER_PHYSICAL[model], 0)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             return cycles
 
@@ -171,7 +202,72 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch):
         (0x3D, True, True),
         (0x3D, False, True),
     ]
-    assert bns.memory.read(_BS2_IIB_PHYSICAL) == 0
+    assert bns.memory.read(_KEYBOARD_INPUT_BUFFER_PHYSICAL[model]) == 0
+    assert not bns.keyboard.latched
+
+
+def test_bsl_keyboard_stdin_uses_each_command_loop_epoch(monkeypatch):
+    """Timer-woken BSL input need not remain halted for two host quanta."""
+    characters = iter(("a", ""))
+    monkeypatch.setattr(
+        "qns.bns._read_stdin_character",
+        lambda: next(characters),
+    )
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
+    bns = BNS(model="bsl", stdin_device="keyboard")
+    observed = []
+
+    class TimerWokenCPU:
+        halted = False
+        pc = 0xD656
+        instruction_pc = 0
+
+        def __init__(self):
+            self.calls = 0
+
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
+
+        def run(self, cycles):
+            self.calls += 1
+            observed.append(
+                (
+                    bns.keyboard.dots,
+                    bns.keyboard._key_down,
+                    bns.keyboard.latched,
+                )
+            )
+            if self.calls == 1:
+                self.instruction_pc = _COMMAND_LOOP_TIMER_WRITE_PC["bsl"]
+                bns._mem_write(_COMMAND_LOOP_TIMER_PHYSICAL["bsl"], 0)
+            elif self.calls == 2:
+                bns.memory.write(
+                    _KEYBOARD_INPUT_BUFFER_PHYSICAL["bsl"],
+                    0x01,
+                )
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 3:
+                bns.memory.write(_KEYBOARD_INPUT_BUFFER_PHYSICAL["bsl"], 0)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            return cycles
+
+    bns.cpu = TimerWokenCPU()
+    bns.run(max_cycles=3_000)
+
+    assert observed == [
+        (0, False, False),
+        (0x01, True, True),
+        (0x01, False, True),
+    ]
     assert not bns.keyboard.latched
 
 

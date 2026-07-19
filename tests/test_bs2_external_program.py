@@ -24,6 +24,7 @@ from tools.verify_bs2_external_program import (
     is_flash_initialization_prompt,
     is_folder_initialization_prompt,
     is_wipeout_prompt,
+    reach_editor_command_loop,
     ymodem_packet,
 )
 
@@ -38,6 +39,26 @@ def test_next_external_program_uses_dot5_chord_not_bare_dot5():
     """FILEP C5 is raw dot 5 plus the BNS chord/space bit."""
     assert DOT5_CHORD == 0x50
     assert DOT5_CHORD != 0x10
+
+
+def test_editor_loop_accepts_exact_linked_command_loop_epoch():
+    """The verifier uses the retained STARTA epoch, not the deleted heuristic."""
+    class Firmware:
+        _command_loop_write_count = 1
+
+        class CPU:
+            pc = 0xD657
+
+        cpu = CPU()
+
+    class Harness:
+        bns = Firmware()
+
+        @staticmethod
+        def wait_for_key():
+            pass
+
+    reach_editor_command_loop(Harness())
 
 
 @given(program_length=st.integers(min_value=0, max_value=0xFFFF))

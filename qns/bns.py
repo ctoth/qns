@@ -45,8 +45,22 @@ _ASCII_TO_BNS_KEY = bytes((
 ))
 
 _BS2_COMBYT_PHYSICAL = 0x414B0
-_BS2_IIB_PHYSICAL = 0x4327D
 _BS2_POWER_ON_INITIALIZE_CHORD = 0x4A
+_KEYBOARD_INPUT_BUFFER_PHYSICAL = {
+    "bsp": 0x4327C,
+    "bs2": 0x4327D,
+    "bsl": 0x433E5,
+}
+_COMMAND_LOOP_TIMER_PHYSICAL = {
+    "bsp": 0x41653,
+    "bs2": 0x41654,
+    "bsl": 0x41653,
+}
+_COMMAND_LOOP_TIMER_WRITE_PC = {
+    "bsp": 0x0A0D,
+    "bs2": 0x0A7E,
+    "bsl": 0x0A97,
+}
 
 
 def _read_stdin_character() -> str:
@@ -114,6 +128,8 @@ class BNS:
             raise ValueError(f"Unsupported BNS model: {model}")
         if power_on_input and stdin_device != "keyboard":
             raise ValueError("power-on input requires keyboard stdin")
+        if power_on_input and model != "bs2":
+            raise ValueError("power-on input is currently supported only for BS2")
 
         self.clock = clock
         self.model = model
@@ -122,6 +138,11 @@ class BNS:
         self.trace_interrupts = trace_interrupts
         self.stdin_device = stdin_device
         self.power_on_input = power_on_input
+        self._keyboard_input_buffer_physical = (
+            _KEYBOARD_INPUT_BUFFER_PHYSICAL[model]
+        )
+        self._command_loop_timer_physical = _COMMAND_LOOP_TIMER_PHYSICAL[model]
+        self._command_loop_timer_write_pc = _COMMAND_LOOP_TIMER_WRITE_PC[model]
         self.serial_output = serial_output
         self.serial_output_channel = serial_output_channel
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
@@ -137,8 +158,7 @@ class BNS:
         self.write_log = []  # List of (addr, value) tuples
         self.write_counts = {}  # Address -> occurrence count
         self.traced_writes: list[tuple[int, int, int, int]] = []
-        self._bsp_bg_timer_zero_writes = 0
-        self._bsp_command_loop_ready = False
+        self._command_loop_write_count = 0
         self._bs2_combyt_writes = 0
 
         # Statistics
@@ -220,16 +240,14 @@ class BNS:
         if addr == _BS2_COMBYT_PHYSICAL:
             self._bs2_combyt_writes += 1
 
-        # BSP STARTA writes zero to bg_timer and immediately calls bg_task,
-        # which writes zero there again.  Under the linked BSP MMU state,
-        # logical 0xD653 is physical 0x41653.
-        if addr == 0x41653:
-            if value == 0:
-                self._bsp_bg_timer_zero_writes += 1
-                if self._bsp_bg_timer_zero_writes >= 2:
-                    self._bsp_command_loop_ready = True
-            else:
-                self._bsp_bg_timer_zero_writes = 0
+        # Count only the linked STARTA instruction that opens another command-loop
+        # epoch.  The same timer is also cleared during early RAM initialization.
+        if (
+            addr == self._command_loop_timer_physical
+            and value == 0
+            and self.cpu.instruction_pc == self._command_loop_timer_write_pc
+        ):
+            self._command_loop_write_count += 1
 
         single_trace = self.trace_writes_addr is not None and addr == self.trace_writes_addr
         range_trace = (
@@ -469,6 +487,7 @@ class BNS:
         input_chord: int | None = None
         key_wait_candidate: tuple[int, int] | None = None
         power_on_combyt_writes = self._bs2_combyt_writes
+        input_command_loop_writes = self._command_loop_write_count
         if self.stdin_device is not None:
             if self.stdin_device == "keyboard":
                 keyboard_input_queue = queue.Queue()
@@ -539,14 +558,15 @@ class BNS:
                     input_phase == "down"
                     and not self.keyboard.latched
                     and input_chord is not None
-                    and self.memory.read(_BS2_IIB_PHYSICAL) == input_chord
+                    and self.memory.read(self._keyboard_input_buffer_physical)
+                    == input_chord
                 ):
                     self.keyboard.release()
                     input_phase = "up"
                 elif (
                     input_phase == "up"
                     and not self.keyboard.latched
-                    and self.memory.read(_BS2_IIB_PHYSICAL) == 0
+                    and self.memory.read(self._keyboard_input_buffer_physical) == 0
                 ):
                     input_phase = None
                     input_chord = None
@@ -554,7 +574,11 @@ class BNS:
                 if (
                     keyboard_input_queue is not None
                     and input_phase is None
-                    and stable_key_wait
+                    and (
+                        stable_key_wait
+                        or self._command_loop_write_count
+                        > input_command_loop_writes
+                    )
                 ):
                     try:
                         character = keyboard_input_queue.get_nowait()
@@ -566,6 +590,9 @@ class BNS:
                             input_chord = _ASCII_TO_BNS_KEY[codepoint]
                             self.keyboard.press(input_chord)
                             input_phase = "down"
+                            input_command_loop_writes = (
+                                self._command_loop_write_count
+                            )
                         else:
                             print(f"[Input] Unsupported character: U+{codepoint:04X}")
 
