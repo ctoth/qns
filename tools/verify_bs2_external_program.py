@@ -265,6 +265,10 @@ def reject_disk_probes(
 
     bns.stdin_device = "serial0"
     bns.serial_output_channel = 0
+    combyt_trace = ",".join(
+        f"{value:02X}@{cycle}/pc={pc:04X}"
+        for cycle, pc, _address, value in bns.traced_writes
+    )
     cursor = wait_for_serial(
         bns,
         output,
@@ -272,7 +276,7 @@ def reject_disk_probes(
         cursor,
         bytes((0x05,)),
         "ASCI0 disk-drive ENQ",
-        context="; ".join(traces),
+        context=f"{context}; {'; '.join(traces)}; COMBYT=[{combyt_trace}]",
     )
     queue_serial(bns, bytes((NAK,)))
     traces.append(wait_for_firmware_receive(bns, 0, "ASCI0 NAK"))
@@ -353,6 +357,7 @@ def main() -> None:
         serial_output = TimestampedBytesIO(lambda: bns.cpu.cycle_count)
         bns = BNS(
             model="bs2",
+            trace_writes=0x414B0,
             stdin_device="serial1",
             serial_output=serial_output,
             serial_output_channel=1,
@@ -360,10 +365,19 @@ def main() -> None:
         bns.load_rom(args.rom)
         bns.load_state(args.state)
 
+        loaded_combyt = bns.memory.read(0x414B0)
+        bns.cpu.watch_pc(0x07F2)
+
         run_until(
             bns,
             lambda: bns._bsp_command_loop_ready and bns.cpu.pc == 0xD657,
             "BS2 editor command loop",
+        )
+        boot_context = (
+            f"loaded_COMBYT={loaded_combyt:02X},"
+            f"command_COMBYT={bns.memory.read(0x414B0):02X},"
+            f"initializer_hits={bns.cpu.pc_watch_count},"
+            f"initializer_cycle={bns.cpu.pc_watch_cycle}"
         )
         speech_start = len(bns.ssi263.phoneme_log)
 
@@ -383,7 +397,7 @@ def main() -> None:
         chord_phases.append(f"T=[{format_serial_events(events)}]")
         serial_event_cursor = len(serial_output.events)
         probe_context = (
-            f"T_delivered={t_delivered_cycle},"
+            f"{boot_context},T_delivered={t_delivered_cycle},"
             f"chord_phases=[{';'.join(chord_phases)}]"
         )
         serial_cursor, probe_traces = reject_disk_probes(
