@@ -365,6 +365,17 @@ def test_serial_standard_streams_select_one_asci_channel():
     assert output.getvalue() == b"A"
 
 
+def test_unselected_serial_output_is_silent(capsys):
+    """Firmware serial bytes are not unsolicited console diagnostics."""
+    bns = BNS()
+    capsys.readouterr()
+
+    bns._serial_transmit(0, ord("M"))
+    bns._serial_transmit(1, ord("E"))
+
+    assert capsys.readouterr().out == ""
+
+
 def test_cli_serial_standard_io_round_trip(tmp_path):
     """A firmware byte must travel from stdin through ASCI and back to stdout."""
     echo_rom = tmp_path / "serial-echo.bin"

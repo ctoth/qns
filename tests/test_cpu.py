@@ -190,7 +190,7 @@ def test_asci_debug_state_rejects_invalid_channel():
             raise AssertionError(f"channel {channel} did not raise ValueError")
 
 
-def test_csio_exchange_crosses_native_callback_boundary():
+def test_csio_exchange_crosses_native_callback_boundary(capfd):
     """CSI/O must deliver transmit data and return a received byte to firmware."""
     assert CFFI_AVAILABLE
     transmitted: list[int] = []
@@ -226,6 +226,7 @@ def test_csio_exchange_crosses_native_callback_boundary():
 
     assert transmitted == [0x81]
     assert memory[0x100] == 0x0A
+    assert capfd.readouterr().out == ""
 
 
 def test_io_callbacks_observe_exact_accumulated_cycle_positions():

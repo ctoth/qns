@@ -174,11 +174,7 @@ class Memory:
 
         if addr < len(self.ram):
             self.ram[addr] = value & 0xFF
-            was_new = addr not in self._written_addrs
             self._written_addrs.add(addr)  # Track for shadow RAM reads
-            # Debug: track VOLUME address (0x4215C)
-            if addr == 0x4215C:
-                print(f"[MEM] Write to VOLUME (0x4215C): {value}")
 
     def set_high_bank_latch(self, value: int) -> None:
         """Select the BSNEW 512 KiB flash page and enable state."""

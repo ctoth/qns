@@ -34,6 +34,15 @@ def test_nonvolatile_state_preserves_shadow_ram_written_addresses(tmp_path):
     assert not state_path.with_name(f".{state_path.name}.tmp").exists()
 
 
+def test_shadow_ram_writes_are_silent(capsys):
+    """Ordinary firmware memory traffic must not leak debugging to stdout."""
+    memory = Memory()
+
+    memory.write(0x4215C, 0xFF)
+
+    assert capsys.readouterr().out == ""
+
+
 def test_nonvolatile_state_rejects_wrong_ram_size(tmp_path):
     """A state image cannot be silently truncated or extended."""
     state_path = tmp_path / "bsp.state"

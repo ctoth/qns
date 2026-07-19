@@ -389,14 +389,12 @@ class BNS:
             return -1
 
     def _serial_transmit(self, channel: int, value: int) -> None:
-        """Write an ASCI byte to its selected raw stream or the console log."""
+        """Write an ASCI byte only to its explicitly selected raw stream."""
         if self.serial_output is not None:
             if channel != self.serial_output_channel:
                 return
             self.serial_output.write(bytes((value,)))
             self.serial_output.flush()
-            return
-        print(f"[Serial{channel}] {bytes((value,))!r}")
 
     def load_rom(self, path: Path | str) -> None:
         """Load ROM file.
