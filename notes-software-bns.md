@@ -1609,3 +1609,71 @@ Locate `STARTA` in the linked BSP image from its distinctive instruction sequenc
   then move to the next genuine BS2 target: execute the supplied external
   `.bns` programs through the real file-manager path and identify only proven
   missing storage/loader boundaries.
+
+### BS2 external-program contract discovery
+
+- Commit `075fa4d` (`Record invalid BS2 parallel target`) closed the rejected
+  experiment with no product-source change.
+- Supplied BS2 external assets are `bsname.bns` (25,108 bytes), `calsort.bns`
+  (17,092 bytes), and `calsort.msg` (1,557 bytes), alongside the main
+  `bs2eng.bns` ROM, help, dictionary, and update text. Both program binaries
+  begin with a jump followed by the literal `BNS\0` signature.
+- `FILEP.C` treats external programs as ordinary firmware file-system entries
+  of type `TY_EXEC`. From the file menu, `x` or x-chord executes the selected
+  program; plain `x` may collect arguments. A flash-resident program is copied
+  into RAM first, then `execute_program(file.top_of_file)` is called, and the
+  temporary/moved copy is reconciled afterward.
+- This proves that loading host `.bns` bytes directly into CPU memory would
+  substitute for the real product path. The supplied assets must become real
+  BS2 file-system entries before the ROM can select and execute them.
+- Current state: no product source has been edited. User-owned changes and
+  unrelated artifacts remain untouched.
+- Blocker: none. Next action: read `execute_program` and the file-import/update
+  paths to establish the exact executable header, placement, and supported
+  transfer mechanism; then choose a real stdio-driven import gate without
+  inventing an out-of-band loader.
+
+### BS2 external-program import path established
+
+- `BS.ASM::_execute_program` maps the selected firmware file at logical
+  `0x1000`, requires `BNS\0` at offsets 2 through 5, reads code/data lengths and
+  the stored CRC from the program header, validates the code beginning at
+  `0x100E`, configures the application MMU and API vectors, and jumps to the
+  program's real entry point. The supplied headers match this contract.
+- `FILETRAN.C::upload_download` is the source-backed host import route. From the
+  file menu, receive plus protocol `y` starts true batch YMODEM on the selected
+  ASCI channel. Packet zero supplies the filename and exact size; the firmware
+  creates the ordinary file entry, receives 128-byte or 1K blocks with CRC,
+  calculates the `.bns` executable type, and returns through the file system.
+- The exact YMODEM receiver sequence is standard and explicit in source: send
+  `C`, accept a 128-byte block-zero header, ACK and request `C`, receive numbered
+  data blocks, ACK EOT, request the next header with `C`, then accept an empty
+  block zero to end the batch.
+- Direct BNS driving can use the real keyboard IRQ path for menu chords while
+  the existing serial receive/output callbacks carry YMODEM bytes. This avoids
+  both a host-memory injector and any need to invent a second firmware loader.
+- Current state: no product source has been edited; only this investigation
+  record is modified.
+- Blocker: none. Next action: add a bounded real-ROM verifier that loads the
+  preserved initialized state, enters `O`, `f`, t-chord, receive, YMODEM,
+  transfers `bsname.bns`, then exits the file menu and runs it through exact
+  O-chord `x` plus the program name. Require loader/API execution evidence.
+
+### External verifier rejected; speech output target selected
+
+- The first verifier attempt reached the firmware transfer wait at PC `2303`
+  but did not observe the YMODEM `C`. Moving the serial buffer reset before the
+  final menu key did not change that result. No transfer or application
+  execution was claimed.
+- The unfinished verifier was removed in full before changing targets. No
+  product source was edited by the external-program investigation.
+- The user redirected the active work to remove repeated low-level speech noise
+  and make phoneme, word-like grouping, and related speech observations easier
+  to obtain. Existing user-owned SSI/synth edits are now directly in scope but
+  must be inspected rather than overwritten.
+- Current state: only this investigation record is new from the rejected slice;
+  the prior user-owned tracked modifications remain present.
+- Blocker: none. Next action: commit this record-only reconciliation, inspect
+  the current SSI-263 logging/callback and user speech-tool diffs, then define
+  the smallest shared capture surface that removes duplicate output and gives
+  tools compact codes, names, and grouped speech.
