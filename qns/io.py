@@ -1,7 +1,48 @@
 """I/O port handling for BNS hardware."""
 
+from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timedelta
+
+
+class PIC16C56Clock:
+    """Battery-backed BSNEW clock PIC connected through Z180 CSI/O."""
+
+    def __init__(self, now: Callable[[], datetime] | None = None):
+        self._now = now or datetime.now
+        self._pending_command: int | None = None
+        self._responses: deque[int] = deque()
+
+    def transmit(self, value: int) -> None:
+        """Hold one CSI/O byte until the firmware raises the clock strobe."""
+        self._pending_command = value & 0xFF
+
+    def strobe(self) -> None:
+        """Latch and execute the pending firmware-to-PIC command."""
+        if self._pending_command is None:
+            return
+        command = self._pending_command
+        self._pending_command = None
+        if command == 4:
+            self._queue_current_datetime()
+
+    def receive(self) -> int:
+        """Return one PIC-to-firmware byte, or -1 when none is pending."""
+        if not self._responses:
+            return -1
+        return self._responses.popleft()
+
+    def _queue_current_datetime(self) -> None:
+        current = self._now()
+        self._responses.append(0x20 | (current.minute & 0x1F))
+        if current.minute > 31:
+            self._responses.append(0x05)
+        self._responses.extend((
+            0x40 | current.month,
+            0x60 | current.day,
+            0xA0 | current.hour,
+            0x80 | ((current.year - 1989) & 0x1F),
+        ))
 
 
 class MSM6242RTC:

@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 
-from qns.io import MSM6242RTC, BrailleKeyboard
+from qns.io import MSM6242RTC, BrailleKeyboard, PIC16C56Clock
 
 
 def test_msm6242_exposes_bsp_bcd_clock_registers():
@@ -16,6 +16,27 @@ def test_msm6242_exposes_bsp_bcd_clock_registers():
     assert rtc.read(0x6D) == 0
     assert rtc.read(0x6E) == 0
     assert rtc.read(0x6F) == 0x04
+
+
+def test_pic16c56_clock_returns_field_bytes_after_command_strobe():
+    """BSNEW's clock PIC must latch command 4 and return year last."""
+    current = datetime(2020, 7, 18, 19, 45, 0)
+    clock = PIC16C56Clock(now=lambda: current)
+
+    clock.transmit(4)
+    assert clock.receive() == -1
+
+    clock.strobe()
+
+    assert [clock.receive() for _ in range(6)] == [
+        0x2D,  # minute low five bits
+        0x05,  # add the sixth minute bit
+        0x47,  # month
+        0x72,  # day
+        0xB3,  # hour
+        0x9F,  # year 2020, the completion sentinel
+    ]
+    assert clock.receive() == -1
 
 
 def test_msm6242_hold_allows_atomic_clock_setting_and_resume():

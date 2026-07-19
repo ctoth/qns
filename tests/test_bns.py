@@ -135,6 +135,22 @@ def test_bs2_owns_8255_and_high_bank_ports():
     assert len(bns.memory.flash) == 2 * 1024 * 1024
 
 
+def test_bs2_wires_clock_pic_to_csio_and_8255_c4_strobe():
+    """The BSNEW PIC must receive CSIO commands only on the C4 rising edge."""
+    bns = BNS(model="bs2")
+
+    bns.cpu._csio_tx(4)
+    assert bns.cpu._csio_rx() == -1
+
+    bns._io_write(0x83, 0x09)
+
+    assert bns.parallel_ports[2] & 0x10
+    assert bns.cpu._csio_rx() != -1
+
+    bns._io_write(0x83, 0x08)
+    assert not bns.parallel_ports[2] & 0x10
+
+
 def test_bns_rejects_unknown_hardware_model():
     with pytest.raises(ValueError, match="Unsupported BNS model: unknown"):
         BNS(model="unknown")

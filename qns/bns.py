@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from .cpu import Z180
-from .io import MSM6242RTC, BrailleKeyboard, IOBus, Watchdog
+from .io import MSM6242RTC, BrailleKeyboard, IOBus, PIC16C56Clock, Watchdog
 from .memory import Memory
 from .ssi263 import SSI263
 from .synth.ssi263_pcm import SSI263PCMSynth
@@ -133,6 +133,7 @@ class BNS:
         self.ssi263 = SSI263(base_port=self.PORT_SSI263, clock=clock)
         self.keyboard = BrailleKeyboard(port=self.PORT_KEYBOARD, keyclr_port=self.PORT_KEYCLR)
         self.rtc = MSM6242RTC(base_port=self.PORT_RTC_START)
+        self.clock_pic = PIC16C56Clock() if model == "bs2" else None
         self.watchdog = Watchdog(port=self.PORT_WATCHDOG)
         self.speech_power_enabled = False
         self.rs232_power_enabled = False
@@ -140,7 +141,7 @@ class BNS:
         self.disk_power_enabled = False
         self.charge_output_high = False
         self.power_latch = 0
-        self.parallel_ports = [0xFF] * 4
+        self.parallel_ports = [0xFF, 0xFF, 0x00, 0xFF]
         self.high_bank_latch = 0
 
         # Audio synthesis
@@ -160,6 +161,8 @@ class BNS:
             io_write=self._io_write,
             serial_rx=self._serial_receive,
             serial_tx=self._serial_transmit,
+            csio_rx=self.clock_pic.receive if self.clock_pic else None,
+            csio_tx=self.clock_pic.transmit if self.clock_pic else None,
         )
 
         # Connect keyboard interrupt (INT2) to CPU
@@ -305,8 +308,24 @@ class BNS:
         return self.parallel_ports[port - 0x80]
 
     def _write_parallel_port(self, port: int, value: int) -> None:
-        """Store one BSNEW 8255 register write."""
-        self.parallel_ports[port - 0x80] = value
+        """Apply one BSNEW 8255 data or control-register write."""
+        register = port - 0x80
+        self.parallel_ports[register] = value
+        if register != 3:
+            return
+        if value & 0x80:
+            self.parallel_ports[2] = 0
+            return
+
+        bit = (value >> 1) & 0x07
+        mask = 1 << bit
+        was_set = bool(self.parallel_ports[2] & mask)
+        if value & 0x01:
+            self.parallel_ports[2] |= mask
+        else:
+            self.parallel_ports[2] &= ~mask
+        if bit == 4 and value & 0x01 and not was_set and self.clock_pic:
+            self.clock_pic.strobe()
 
     def _write_bsnew_power(self, port: int, value: int) -> None:
         """Apply the BSNEW combined serial, speech, flash, and disk latch."""
