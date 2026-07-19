@@ -1045,3 +1045,13 @@ Locate `STARTA` in the linked BSP image from its distinctive instruction sequenc
 - Reread the controlling plan after the passing substantial test run. Passing tests authorize keeping this normal-clock reduction; they do not complete alarm selection/alerting, 8255 status inputs, power workflows, external programs, remaining ROM profiles, or the full audit.
 - Current slice is exactly `qns/io.py`, `tests/test_io.py`, and this mandatory handoff update. User-owned tracked modifications and unrelated untracked artifacts remain untouched.
 - Next action: inspect and commit this exact normal-clock slice. Then remain on the clock PIC target and begin the separate alarm-bank selection/storage/readback slice from authoritative `TNSCLK.C` commands `3`, `4`, and `2`.
+
+### Alarm-bank selection and readback pass
+
+- Commit `6edf0cb` (`Implement BS2 clock setting`) closed the normal-clock slice with exactly `qns/io.py`, `tests/test_io.py`, and the mandatory handoff update.
+- Added a focused authority for `TNSCLK.C`'s alarm selection contract: raw command `3`, tagged alarm minute/month/day/hour/year writes, command `4` readback, command `2` restoration of the untouched normal bank, and a second command `4` readback.
+- The unchanged implementation failed because command `3` still returned normal time. `PIC16C56Clock` now maintains an isolated alarm field bank, routes tagged writes to the selected bank, and serializes the selected bank on command `4`.
+- The focused alarm-bank test now passes. The full current authority also passes: 27 tests across `tests/test_io.py`, `tests/test_bns.py`, and `tests/test_cpu.py` in 1.41 seconds.
+- Reread the controlling plan after the passing substantial test run. Alarm storage/readback is a kept reduction, but actual due-alarm `0x0A` delivery and wake behavior remain unchecked on this same clock PIC target.
+- Current slice is exactly `qns/io.py`, `tests/test_io.py`, and this mandatory handoff update. User-owned tracked modifications and unrelated untracked artifacts remain untouched.
+- Blocker: none. Next action: inspect and commit this exact alarm-bank slice, then establish a focused failing authority for a due selected alarm producing the source-defined raw `0x0A` PIC-to-firmware notification without repeated delivery.

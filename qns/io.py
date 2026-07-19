@@ -24,6 +24,13 @@ class PIC16C56Clock:
         }
         self._normal_reference = current
         self._normal_selected = True
+        self._alarm_fields = {
+            "year": 1989,
+            "month": 0,
+            "day": 0,
+            "hour": 0,
+            "minute": 0,
+        }
 
     def transmit(self, value: int) -> None:
         """Hold one CSI/O byte until the firmware raises the clock strobe."""
@@ -41,8 +48,8 @@ class PIC16C56Clock:
             self._normal_selected = False
         elif command == 4:
             self._queue_current_datetime()
-        elif self._normal_selected:
-            self._write_normal_field(command)
+        else:
+            self._write_selected_field(command)
 
     def receive(self) -> int:
         """Return one PIC-to-firmware byte, or -1 when none is pending."""
@@ -51,8 +58,11 @@ class PIC16C56Clock:
         return self._responses.popleft()
 
     def _queue_current_datetime(self) -> None:
-        self._advance_normal_clock()
-        current = self._normal_fields
+        if self._normal_selected:
+            self._advance_normal_clock()
+            current = self._normal_fields
+        else:
+            current = self._alarm_fields
         self._responses.append(0x20 | (current["minute"] & 0x1F))
         if current["minute"] > 31:
             self._responses.append(0x05)
@@ -63,23 +73,28 @@ class PIC16C56Clock:
             0x80 | ((current["year"] - 1989) & 0x1F),
         ))
 
-    def _write_normal_field(self, value: int) -> None:
-        self._advance_normal_clock()
+    def _write_selected_field(self, value: int) -> None:
+        if self._normal_selected:
+            self._advance_normal_clock()
+            fields = self._normal_fields
+        else:
+            fields = self._alarm_fields
         field = value & 0xE0
         data = value & 0x1F
         if value == 0x05:
-            self._normal_fields["minute"] += 32
+            fields["minute"] += 32
         elif field == 0x20:
-            self._normal_fields["minute"] = data
+            fields["minute"] = data
         elif field == 0x40:
-            self._normal_fields["month"] = data
+            fields["month"] = data
         elif field == 0x60:
-            self._normal_fields["day"] = data
+            fields["day"] = data
         elif field == 0x80:
-            self._normal_fields["year"] = 1989 + data
+            fields["year"] = 1989 + data
         elif field == 0xA0:
-            self._normal_fields["hour"] = data
-        self._normal_reference = self._now()
+            fields["hour"] = data
+        if self._normal_selected:
+            self._normal_reference = self._now()
 
     def _advance_normal_clock(self) -> None:
         current_reference = self._now()

@@ -67,6 +67,42 @@ def test_pic16c56_clock_sets_and_returns_normal_datetime_fields():
     assert clock.receive() == -1
 
 
+def test_pic16c56_clock_keeps_alarm_fields_separate_from_normal_time():
+    """Commands 3 and 2 must select isolated alarm and normal value banks."""
+    clock = PIC16C56Clock(now=lambda: datetime(2020, 7, 18, 19, 45, 0))
+
+    def send(value: int) -> None:
+        clock.transmit(value)
+        clock.strobe()
+
+    send(3)
+    send(0x2F)  # minute: 15
+    send(0x45)  # month: 5
+    send(0x66)  # day: 6
+    send(0xA7)  # hour: 7
+    send(0x9D)  # year: 2018
+    send(4)
+
+    assert [clock.receive() for _ in range(5)] == [
+        0x2F,
+        0x45,
+        0x66,
+        0xA7,
+        0x9D,
+    ]
+
+    send(2)
+    send(4)
+    assert [clock.receive() for _ in range(6)] == [
+        0x2D,
+        0x05,
+        0x47,
+        0x72,
+        0xB3,
+        0x9F,
+    ]
+
+
 def test_msm6242_hold_allows_atomic_clock_setting_and_resume():
     """HOLD freezes the BCD bank until BSP releases its completed writes."""
     current = [datetime(2026, 7, 18, 23, 45, 56)]
