@@ -127,7 +127,9 @@ def format_asci_state(bns: BNS, channel: int) -> str:
     return (
         f"asci{channel}=stat:{state['status']:02X},bits:{state['rx_bits_remaining']},"
         f"fifo:{state['rx_fifo_depth']},irq:{int(state['irq_pending'])},"
-        f"div:{state['brg_divisor']},frame:{state['frame_bits']}"
+        f"div:{state['brg_divisor']},frame:{state['frame_bits']},"
+        f"rie:+{state['rie_set_count']}/-{state['rie_clear_count']}@"
+        f"{state['rie_last_pc']:04X}/{state['rie_last_cycle']}"
     )
 
 
@@ -319,6 +321,7 @@ def main() -> None:
             run_until_stable_key_wait(bns)
         deliver_chord(bns, Y_KEY)
         run_until_speech_idle(bns)
+        bns.cpu.reset_asci_debug()
         deliver_chord(bns, E_CHORD)
 
         serial_cursor, probe_traces = reject_disk_probes(bns, serial_output)
