@@ -1502,3 +1502,22 @@ Locate `STARTA` in the linked BSP image from its distinctive instruction sequenc
   outside the slice.
 - Blocker: none. Next action: stage only the exact substantive patch and new
   verifier, inspect the index, and commit the passing BSNEW gas-gauge slice.
+
+### BSNEW gas-gauge slice committed
+
+- Commit `03c5f26` (`Implement BS2 battery gas gauge`) contains exactly the
+  nine intended files: the timed native bridge, bq2010 model and BS2 wiring,
+  focused authorities, asserted real-ROM verifier, cleanup, and this handoff.
+- The staged whitespace check passed. The remaining unstaged differences in
+  the touched tracked paths were proven empty under
+  `git diff --ignore-space-at-eol` and were restored from the committed index;
+  no user-owned tracked path was restored or staged.
+- The last established product authority remains the passing 34-test IO/BNS/CPU
+  suite and the passing real-ROM Status Menu battery verifier with commands
+  `03 05 01` and exact `one hundred percent not charging` phoneme suffix.
+- Current state: the battery/status workflow slice is committed. User-owned
+  tracked changes and unrelated untracked artifacts remain untouched. This
+  checkpoint note is the only new project change after the commit.
+- Blocker: none. Next action: reread the active plan and begin the first
+  causally relevant unchecked BS2 power/status or external-program surface as
+  one exact-convergence target.
