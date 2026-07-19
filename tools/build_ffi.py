@@ -138,6 +138,10 @@ unsigned long qns_z180_get_asci_rie_set_count(qns_z180_t* cpu, int channel);
 unsigned long qns_z180_get_asci_rie_clear_count(qns_z180_t* cpu, int channel);
 UINT16 qns_z180_get_asci_rie_last_pc(qns_z180_t* cpu, int channel);
 unsigned long long qns_z180_get_asci_rie_last_cycle(qns_z180_t* cpu, int channel);
+unsigned long qns_z180_get_asci_stat_write_count(qns_z180_t* cpu, int channel);
+UINT8 qns_z180_get_asci_stat_last_write(qns_z180_t* cpu, int channel);
+UINT16 qns_z180_get_asci_stat_last_write_pc(qns_z180_t* cpu, int channel);
+unsigned long long qns_z180_get_asci_stat_last_write_cycle(qns_z180_t* cpu, int channel);
 
 // Single-address instruction watch for causal firmware traces
 void qns_z180_watch_pc(qns_z180_t* cpu, int address);
@@ -197,6 +201,10 @@ typedef struct qns_z180 {{
     unsigned long asci_rie_clear_count[2];
     UINT16 asci_rie_last_pc[2];
     unsigned long long asci_rie_last_cycle[2];
+    unsigned long asci_stat_write_baseline[2];
+    unsigned long asci_last_native_stat_write_count[2];
+    UINT16 asci_stat_last_write_pc[2];
+    unsigned long long asci_stat_last_write_cycle[2];
     int last_instruction_pc;
 }} qns_z180_t;
 
@@ -217,6 +225,10 @@ static void reset_asci_debug_counters(qns_z180_t* cpu) {{
         cpu->asci_rie_clear_count[channel] = 0;
         cpu->asci_rie_last_pc[channel] = 0;
         cpu->asci_rie_last_cycle[channel] = 0;
+        cpu->asci_stat_write_baseline[channel] = asci->m_stat_write_count;
+        cpu->asci_last_native_stat_write_count[channel] = asci->m_stat_write_count;
+        cpu->asci_stat_last_write_pc[channel] = 0;
+        cpu->asci_stat_last_write_cycle[channel] = 0;
     }}
     cpu->last_instruction_pc = -1;
 }}
@@ -266,6 +278,14 @@ void debugger_instruction_hook(device_t *device, offs_t curpc) {{
                 ? g_cpu->device->z180asci->m_chan1
                 : g_cpu->device->z180asci->m_chan0;
             UINT8 stat = asci->m_stat;
+            if (asci->m_stat_write_count != g_cpu->asci_last_native_stat_write_count[channel]) {{
+                g_cpu->asci_last_native_stat_write_count[channel] = asci->m_stat_write_count;
+                g_cpu->asci_stat_last_write_pc[channel] = g_cpu->last_instruction_pc >= 0
+                    ? (UINT16)g_cpu->last_instruction_pc
+                    : (UINT16)curpc;
+                g_cpu->asci_stat_last_write_cycle[channel] = g_cpu->completed_cycles
+                    + (unsigned int)(g_cpu->execution_cycles - cpu_get_icount_z180(device));
+            }}
             if ((stat ^ g_cpu->asci_last_stat[channel]) & 0x08) {{
                 if (stat & 0x08) {{
                     g_cpu->asci_rie_set_count[channel]++;
@@ -568,6 +588,26 @@ UINT16 qns_z180_get_asci_rie_last_pc(qns_z180_t* cpu, int channel) {{
 
 unsigned long long qns_z180_get_asci_rie_last_cycle(qns_z180_t* cpu, int channel) {{
     return cpu && channel >= 0 && channel < 2 ? cpu->asci_rie_last_cycle[channel] : 0;
+}}
+
+unsigned long qns_z180_get_asci_stat_write_count(qns_z180_t* cpu, int channel) {{
+    struct z180asci_channel* asci = qns_z180_get_asci_channel(cpu, channel);
+    return asci && channel >= 0 && channel < 2
+        ? asci->m_stat_write_count - cpu->asci_stat_write_baseline[channel]
+        : 0;
+}}
+
+UINT8 qns_z180_get_asci_stat_last_write(qns_z180_t* cpu, int channel) {{
+    struct z180asci_channel* asci = qns_z180_get_asci_channel(cpu, channel);
+    return asci ? asci->m_stat_last_write : 0;
+}}
+
+UINT16 qns_z180_get_asci_stat_last_write_pc(qns_z180_t* cpu, int channel) {{
+    return cpu && channel >= 0 && channel < 2 ? cpu->asci_stat_last_write_pc[channel] : 0;
+}}
+
+unsigned long long qns_z180_get_asci_stat_last_write_cycle(qns_z180_t* cpu, int channel) {{
+    return cpu && channel >= 0 && channel < 2 ? cpu->asci_stat_last_write_cycle[channel] : 0;
 }}
 
 void qns_z180_watch_pc(qns_z180_t* cpu, int address) {{

@@ -277,6 +277,10 @@ class Z180:
                 "rie_clear_count": 0,
                 "rie_last_pc": 0,
                 "rie_last_cycle": 0,
+                "stat_write_count": 0,
+                "stat_last_write": 0,
+                "stat_last_write_pc": 0,
+                "stat_last_write_cycle": 0,
             }
         return {
             "status": int(lib.qns_z180_get_asci_stat(self._cpu, channel)),
@@ -293,6 +297,18 @@ class Z180:
             ),
             "rie_last_pc": int(lib.qns_z180_get_asci_rie_last_pc(self._cpu, channel)),
             "rie_last_cycle": int(lib.qns_z180_get_asci_rie_last_cycle(self._cpu, channel)),
+            "stat_write_count": int(
+                lib.qns_z180_get_asci_stat_write_count(self._cpu, channel)
+            ),
+            "stat_last_write": int(
+                lib.qns_z180_get_asci_stat_last_write(self._cpu, channel)
+            ),
+            "stat_last_write_pc": int(
+                lib.qns_z180_get_asci_stat_last_write_pc(self._cpu, channel)
+            ),
+            "stat_last_write_cycle": int(
+                lib.qns_z180_get_asci_stat_last_write_cycle(self._cpu, channel)
+            ),
         }
 
     def reset_asci_debug(self) -> None:

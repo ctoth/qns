@@ -132,6 +132,10 @@ def test_asci_receive_interrupt_survives_disabled_interrupts(channel: int, value
     assert received["rie_clear_count"] == 0
     assert received["rie_last_pc"] == 26
     assert received["rie_last_cycle"] > 0
+    assert received["stat_write_count"] == 1
+    assert received["stat_last_write"] == 0x08
+    assert received["stat_last_write_pc"] == 26
+    assert received["stat_last_write_cycle"] > 0
 
     cpu.watch_pc(0x200)
     memory[loop_address:loop_address + 4] = bytes((
