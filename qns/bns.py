@@ -17,6 +17,7 @@ from .io import (
     IOBus,
     ParallelBrailleDisplay,
     PIC16C56Clock,
+    TNSKeyboard,
     Watchdog,
 )
 from .memory import Memory
@@ -61,6 +62,7 @@ _KEYBOARD_INPUT_BUFFER_PHYSICAL = {
     "bsl": 0x433E5,
     "bl2": 0x433E6,
     "bl4": 0x433F0,
+    "tns": 0x4329D,
 }
 _COMMAND_LOOP_TIMER_PHYSICAL = {
     "bsp": 0x41653,
@@ -68,6 +70,7 @@ _COMMAND_LOOP_TIMER_PHYSICAL = {
     "bsl": 0x41653,
     "bl2": 0x41654,
     "bl4": 0x4165A,
+    "tns": 0x41659,
 }
 _COMMAND_LOOP_TIMER_WRITE_PC = {
     "bsp": 0x0A0D,
@@ -75,6 +78,7 @@ _COMMAND_LOOP_TIMER_WRITE_PC = {
     "bsl": 0x0A97,
     "bl2": 0x0AF5,
     "bl4": 0x0B36,
+    "tns": 0x0AF9,
 }
 
 
@@ -153,7 +157,7 @@ class BNS:
             stdio_output: Structured output for all emulated device events
             stdio_watch_pc: Program counter reported through structured output
         """
-        if model not in ("bsp", "bs2", "bsl", "bl2", "bl4"):
+        if model not in ("bsp", "bs2", "bsl", "bl2", "bl4", "tns"):
             raise ValueError(f"Unsupported BNS model: {model}")
         if power_on_input and stdin_device not in ("keyboard", "jsonl"):
             raise ValueError("power-on input requires keyboard stdin")
@@ -212,17 +216,20 @@ class BNS:
         }
 
         # Peripherals
-        ssi263_port = 0x90 if model == "bl4" else self.PORT_SSI263
+        ssi263_port = 0x90 if model in ("bl4", "tns") else self.PORT_SSI263
         keyboard_port = 0xB0 if model == "bl4" else self.PORT_KEYBOARD
         keyclr_port = 0xD0 if model == "bl4" else self.PORT_KEYCLR
         self.ssi263 = SSI263(base_port=ssi263_port, clock=clock)
-        self.keyboard = BrailleKeyboard(
-            port=keyboard_port,
-            keyclr_port=keyclr_port,
-        )
+        if model == "tns":
+            self.keyboard = TNSKeyboard()
+        else:
+            self.keyboard = BrailleKeyboard(
+                port=keyboard_port,
+                keyclr_port=keyclr_port,
+            )
         self.rtc = MSM6242RTC(base_port=self.PORT_RTC_START)
         self.clock_pic = (
-            PIC16C56Clock() if model in ("bs2", "bl2", "bl4") else None
+            PIC16C56Clock() if model in ("bs2", "bl2", "bl4", "tns") else None
         )
         if model == "bsl":
             self.display = BrailleDisplay()
@@ -241,7 +248,10 @@ class BNS:
         self.charge_output_high = False
         self.power_latch = 0
         self.parallel_ports = [0xFF, 0xFF, 0x00, 0xFF]
-        self._parallel_port_base = 0xA0 if model == "bl4" else 0x80
+        self._parallel_port_base = {
+            "bl4": 0xA0,
+            "tns": 0xC0,
+        }.get(model, 0x80)
         self.bl4_latch = 0
         self.high_bank_latch = 0
 
@@ -373,23 +383,35 @@ class BNS:
             self._read_bl4_dots if self.model == "bl4" else self.keyboard.read
         )
         self.io.register(self.keyboard.port, keyboard_read, self.keyboard.write)
-        self.io.register(
-            self.keyboard.keyclr_port,
-            self.keyboard.keyclr_read,
-            self.keyboard.keyclr_write,
-        )
+        if self.model != "tns":
+            self.io.register(
+                self.keyboard.keyclr_port,
+                self.keyboard.keyclr_read,
+                self.keyboard.keyclr_write,
+            )
         if self.model == "bl4":
             self.io.register(0xC0, read_handler=self._read_bl4_space)
 
         # BSPLUS maps the MSM6242 direct-bus RTC across 0x60-0x6F.
-        self.io.register_range(
-            self.PORT_RTC_START,
-            self.PORT_RTC_END,
-            self.rtc.read,
-            self.rtc.write,
-        )
+        if self.model != "tns":
+            self.io.register_range(
+                self.PORT_RTC_START,
+                self.PORT_RTC_END,
+                self.rtc.read,
+                self.rtc.write,
+            )
 
-        if self.model in ("bs2", "bl2"):
+        if self.model == "tns":
+            self.io.register(0x80, self.watchdog.read, self._write_speech_power)
+            self.io.register(0xB0, write_handler=self._write_tns_power)
+            for port in range(0xC0, 0xC4):
+                self.io.register(
+                    port,
+                    self._read_parallel_port if port != 0xC3 else None,
+                    self._write_parallel_port,
+                )
+            self.io.register(0xE0, self._read_tns_status, self._write_tns_latch)
+        elif self.model in ("bs2", "bl2"):
             # BSNEW shares 0x80 with watchdog reads and 8255 port-A writes.
             self.io.register(0x80, self.watchdog.read, self._write_parallel_port)
             for port in range(0x81, 0x83):
@@ -477,6 +499,18 @@ class BNS:
         self.charge_output_high = bool(value & 0x80)
         if self.gas_gauge:
             self.gas_gauge.write_line(bool(value & 0x20), self.cpu.cycle_count)
+
+    def _write_tns_power(self, port: int, value: int) -> None:
+        """Retain the Type 'n Speak power-control latch."""
+        self.power_latch = value
+
+    def _read_tns_status(self, port: int) -> int:
+        """Return inactive Type 'n Speak power and battery status inputs."""
+        return 0xFF
+
+    def _write_tns_latch(self, port: int, value: int) -> None:
+        """Retain the Type 'n Speak status/clock latch output."""
+        self.high_bank_latch = value
 
     def _read_bl4_dots(self, port: int) -> int:
         """Return BL4 dot keys without its separately wired space bar."""
@@ -943,7 +977,7 @@ def main() -> None:
                         help="Enable SSI-263 audio output")
     parser.add_argument(
         "--model",
-        choices=("bsp", "bs2", "bsl", "bl2", "bl4"),
+        choices=("bsp", "bs2", "bsl", "bl2", "bl4", "tns"),
         default="bsp",
         help="Select the hardware profile (default: bsp)",
     )

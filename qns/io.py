@@ -491,6 +491,52 @@ class BrailleKeyboard:
                 self._irq_callback(1)  # Assert INT2
 
 
+class TNSKeyboard:
+    """Type 'n Speak keyboard-PIC scan-byte input on INT2."""
+
+    def __init__(self, port: int = 0xD0) -> None:
+        self.port = port
+        self.code = 0
+        self.latched = False
+        self._down_code = 0
+        self._irq_callback = None
+
+    def set_irq_callback(self, callback) -> None:
+        """Set the INT2 line callback."""
+        self._irq_callback = callback
+
+    def read(self, _port: int) -> int:
+        """Return and acknowledge the current keyboard-PIC byte."""
+        code = self.code
+        if self.latched:
+            self.latched = False
+            if self._irq_callback:
+                self._irq_callback(0)
+        return code
+
+    def write(self, _port: int, _value: int) -> None:
+        """Ignore writes to the input-only keyboard-PIC port."""
+
+    def press(self, code: int) -> None:
+        """Present one key-down scan code."""
+        self._down_code = code | 0x80
+        self._present(self._down_code)
+
+    def release(self) -> None:
+        """Present the matching key-up scan code."""
+        if not self._down_code:
+            return
+        code = self._down_code & 0x7F
+        self._down_code = 0
+        self._present(code)
+
+    def _present(self, code: int) -> None:
+        self.code = code & 0xFF
+        self.latched = True
+        if self._irq_callback:
+            self._irq_callback(1)
+
+
 class BrailleDisplay:
     """Braille Lite 18 display connected through the Z180 CSI/O port."""
 

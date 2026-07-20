@@ -12,6 +12,7 @@ from qns.io import (
     BrailleKeyboard,
     ParallelBrailleDisplay,
     PIC16C56Clock,
+    TNSKeyboard,
 )
 
 
@@ -33,6 +34,20 @@ def test_braille_lite_display_returns_source_defined_status_values():
         display.transmit(command)
         assert display.receive() == expected
         assert display.receive() == -1
+
+
+def test_tns_keyboard_pic_interrupts_for_distinct_down_and_up_codes():
+    """The TNS PIC presents one scan byte on each INT2 edge."""
+    keyboard = TNSKeyboard()
+    interrupts = []
+    keyboard.set_irq_callback(interrupts.append)
+
+    keyboard.press(0x94)
+    assert keyboard.read(0xD0) == 0x94
+    keyboard.release()
+    assert keyboard.read(0xD0) == 0x14
+
+    assert interrupts == [1, 0, 1, 0]
 
 
 @given(cells=st.binary(min_size=1, max_size=18))

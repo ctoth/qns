@@ -50,7 +50,7 @@ def test_interactive_windows_stdin_reads_one_key_without_newline(monkeypatch):
     assert _read_stdin_character() == "O"
 
 
-@pytest.mark.parametrize("model", ["bsp", "bs2", "bsl", "bl2", "bl4"])
+@pytest.mark.parametrize("model", ["bsp", "bs2", "bsl", "bl2", "bl4", "tns"])
 def test_command_loop_gate_requires_linked_starta_instruction(model):
     """Early timer initialization cannot open stdin before linked STARTA."""
     bns = BNS(model=model)
@@ -157,6 +157,7 @@ def test_keyboard_acceptance_addresses_match_each_linked_english_rom():
         "bsl": 0x433E5,
         "bl2": 0x433E6,
         "bl4": 0x433F0,
+        "tns": 0x4329D,
     }
     assert _COMMAND_LOOP_TIMER_PHYSICAL == {
         "bsp": 0x41653,
@@ -164,6 +165,7 @@ def test_keyboard_acceptance_addresses_match_each_linked_english_rom():
         "bsl": 0x41653,
         "bl2": 0x41654,
         "bl4": 0x4165A,
+        "tns": 0x41659,
     }
     assert _COMMAND_LOOP_TIMER_WRITE_PC == {
         "bsp": 0x0A0D,
@@ -171,7 +173,28 @@ def test_keyboard_acceptance_addresses_match_each_linked_english_rom():
         "bsl": 0x0A97,
         "bl2": 0x0AF5,
         "bl4": 0x0B36,
+        "tns": 0x0AF9,
     }
+
+
+def test_tns_owns_source_defined_hardware_ports():
+    """TNS must not inherit the incompatible BSPLUS or BL4 port map."""
+    bns = BNS(model="tns")
+
+    assert bns.ssi263.base_port == 0x90
+    assert bns.keyboard.port == 0xD0
+    assert bns.clock_pic is not None
+    assert not hasattr(bns, "display")
+
+    bns.io.write(0x80, 1)
+    bns.io.write(0xB0, 0x5A)
+    bns.io.write(0xC0, 0xA5)
+    bns.io.write(0xE0, 0x69)
+
+    assert bns.speech_power_enabled
+    assert bns.power_latch == 0x5A
+    assert bns.parallel_ports[0] == 0xA5
+    assert bns.high_bank_latch == 0x69
 
 
 @pytest.mark.parametrize("model", ["bsp", "bs2", "bsl", "bl2", "bl4"])
