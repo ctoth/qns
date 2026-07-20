@@ -2,16 +2,25 @@
 
 High-level synthesizer combining phoneme data, DSP, and audio output.
 Can be used standalone or connected to the emulator's SSI263 chip.
+
+Uses formant synthesis ported from MAME's Votrax SC-01 emulator.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
 
-from .dsp import apply_amplitude, apply_filter, pitch_shift, time_stretch
-from .phonemes import PHONEME_INFO, get_phoneme_samples
+from .formant import FormantSynth
 from .player import AudioPlayer
+
+# SSI-263 (SC-02) to SC-01 phoneme translation table
+# Corrected mapping based on SC-02 datasheet phoneme chart.
+# See docs/sc02-phoneme-mapping.md for full details.
+# The old MAME table (ssi263hle.cpp) was acknowledged as "completely wrong".
+from .sc02_to_sc01 import SC02_TO_SC01
+
+SSI263_TO_SC01: tuple[int, ...] = SC02_TO_SC01
 
 
 @dataclass
@@ -55,6 +64,9 @@ class SSI263Synth:
         self._player: Optional[AudioPlayer] = None
         self._phoneme_callback: Optional[Callable[[int], None]] = None
         self._phoneme_complete_callback: Optional[Callable[[], None]] = None
+
+        # Formant synthesizer for audio generation
+        self._formant = FormantSynth(sample_rate=sample_rate)
 
         if audio_enabled:
             self._player = AudioPlayer(sample_rate=sample_rate)
@@ -188,40 +200,36 @@ class SSI263Synth:
     ) -> np.ndarray:
         """Get processed audio samples for a phoneme.
 
+        Uses formant synthesis via the SC-01 emulation from MAME.
+        SSI-263 phoneme codes are translated to SC-01 codes.
+
         Returns float32 samples normalized to -1.0 to 1.0.
-
-        SSI-263 phoneme mapping (from AppleWin):
-        - Phoneme 0: pause (return silence)
-        - Phoneme 1: missing sample, maps to phoneme 2
-        - Phonemes 2-63: map to data indices 0-61 (subtract 2)
         """
-        # Handle pause phoneme
-        if phoneme == 0:
-            # Return short silence for pause
-            return np.zeros(int(self.sample_rate * 0.05), dtype=np.float32)
+        # Translate SSI-263 phoneme to SC-01 phoneme
+        sc01_phoneme = SSI263_TO_SC01[phoneme & 0x3F]
 
-        # Map phoneme 1 to phoneme 2 (missing sample workaround)
-        if phoneme == 1:
-            phoneme = 2
+        # Map inflection (12-bit, 2048=neutral) to SC-01 inflection (2-bit, 0-3)
+        # Higher inflection = higher pitch
+        if inflection > 3072:
+            sc01_inflection = 3
+        elif inflection > 2560:
+            sc01_inflection = 2
+        elif inflection > 1536:
+            sc01_inflection = 1
+        else:
+            sc01_inflection = 0
 
-        # Convert SSI-263 phoneme code to data index (subtract 2)
-        data_index = phoneme - 2
+        # Synthesize using formant synthesis
+        samples = self._formant.synthesize_phoneme(
+            phoneme=sc01_phoneme,
+            inflection=sc01_inflection,
+        )
 
-        # Validate index
-        if data_index < 0 or data_index >= len(PHONEME_INFO):
-            # Return silence for invalid phonemes
-            return np.zeros(100, dtype=np.float32)
+        # Apply amplitude scaling
+        if amplitude < 15:
+            samples = samples * (amplitude / 15.0)
 
-        samples = get_phoneme_samples(data_index)
-
-        # Apply DSP chain
-        samples = apply_amplitude(samples, amplitude)
-        samples = apply_filter(samples, filter_freq)
-        samples = time_stretch(samples, rate, duration)
-        samples = pitch_shift(samples, inflection)
-
-        # Convert to float32 normalized
-        return (samples / 32768.0).astype(np.float32)
+        return samples
 
     # === Private ===
 
