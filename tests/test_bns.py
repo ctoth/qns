@@ -11,14 +11,12 @@ import pytest
 from qns.bns import (
     _ASCII_TO_BNS_KEY,
     _COMBYT_PHYSICAL,
-    _COMMAND_LOOP_TIMER_PHYSICAL,
-    _COMMAND_LOOP_TIMER_WRITE_PC,
-    _KEYBOARD_INPUT_BUFFER_PHYSICAL,
     BNS,
     _keyboard_input_chord,
     _read_stdin_character,
     _tns_input_scan,
 )
+from qns.profiles import PROFILES
 from qns.bns import main as bns_main
 from qns.stdio import JSONLOutput
 
@@ -156,11 +154,11 @@ def test_command_loop_gate_requires_linked_starta_instruction(model):
     bns = BNS(model=model)
     bns.cpu = type("InstructionCPU", (), {"instruction_pc": 0x1234})()
 
-    bns._mem_write(_COMMAND_LOOP_TIMER_PHYSICAL[model], 0)
+    bns._mem_write(PROFILES[model].command_loop_timer, 0)
     assert bns._command_loop_write_count == 0
 
-    bns.cpu.instruction_pc = _COMMAND_LOOP_TIMER_WRITE_PC[model]
-    bns._mem_write(_COMMAND_LOOP_TIMER_PHYSICAL[model], 0)
+    bns.cpu.instruction_pc = PROFILES[model].command_loop_timer_pc
+    bns._mem_write(PROFILES[model].command_loop_timer, 0)
     assert bns._command_loop_write_count == 1
 
 
@@ -251,7 +249,9 @@ def test_power_on_stdin_rejects_profiles_without_proven_reset_boundary(model):
 
 def test_keyboard_acceptance_addresses_match_each_linked_english_rom():
     """Each profile owns the physical `_IIB` reached under command-loop CBR=34."""
-    assert _KEYBOARD_INPUT_BUFFER_PHYSICAL == {
+    assert {
+        name: profile.keyboard_input_buffer for name, profile in PROFILES.items()
+    } == {
         "bsp": 0x4327C,
         "bs2": 0x4327D,
         "bsl": 0x433E5,
@@ -259,7 +259,9 @@ def test_keyboard_acceptance_addresses_match_each_linked_english_rom():
         "bl4": 0x433F0,
         "tns": 0x4329D,
     }
-    assert _COMMAND_LOOP_TIMER_PHYSICAL == {
+    assert {
+        name: profile.command_loop_timer for name, profile in PROFILES.items()
+    } == {
         "bsp": 0x41653,
         "bs2": 0x41654,
         "bsl": 0x41653,
@@ -267,7 +269,9 @@ def test_keyboard_acceptance_addresses_match_each_linked_english_rom():
         "bl4": 0x4165A,
         "tns": 0x41659,
     }
-    assert _COMMAND_LOOP_TIMER_WRITE_PC == {
+    assert {
+        name: profile.command_loop_timer_pc for name, profile in PROFILES.items()
+    } == {
         "bsp": 0x0A0D,
         "bs2": 0x0A7E,
         "bsl": 0x0A97,
@@ -344,7 +348,7 @@ def test_tns_owns_source_defined_hardware_ports():
     assert bns.ssi263.base_port == 0x90
     assert bns.keyboard.port == 0xD0
     assert bns.clock_pic is not None
-    assert not hasattr(bns, "display")
+    assert bns.display is None
 
     bns.io.write(0x80, 1)
     bns.io.write(0xB0, 0x5A)
@@ -400,12 +404,12 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
             )
             if self.calls == 3:
                 bns.memory.write(
-                    _KEYBOARD_INPUT_BUFFER_PHYSICAL[model],
+                    PROFILES[model].keyboard_input_buffer,
                     0x3D,
                 )
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             elif self.calls == 4:
-                bns.memory.write(_KEYBOARD_INPUT_BUFFER_PHYSICAL[model], 0)
+                bns.memory.write(PROFILES[model].keyboard_input_buffer, 0)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             return cycles
 
@@ -418,7 +422,7 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
         (0x3D, True, True),
         (0x3D, False, True),
     ]
-    assert bns.memory.read(_KEYBOARD_INPUT_BUFFER_PHYSICAL[model]) == 0
+    assert bns.memory.read(PROFILES[model].keyboard_input_buffer) == 0
     assert not bns.keyboard.latched
 
 
@@ -470,10 +474,10 @@ def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):
                 )
             )
             if self.calls == 3:
-                bns.memory.write(_KEYBOARD_INPUT_BUFFER_PHYSICAL["bsp"], 0x01)
+                bns.memory.write(PROFILES["bsp"].keyboard_input_buffer, 0x01)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             elif self.calls == 4:
-                bns.memory.write(_KEYBOARD_INPUT_BUFFER_PHYSICAL["bsp"], 0)
+                bns.memory.write(PROFILES["bsp"].keyboard_input_buffer, 0)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             return cycles
 
@@ -583,16 +587,16 @@ def test_bsl_keyboard_stdin_uses_each_command_loop_epoch(monkeypatch):
                 )
             )
             if self.calls == 1:
-                self.instruction_pc = _COMMAND_LOOP_TIMER_WRITE_PC["bsl"]
-                bns._mem_write(_COMMAND_LOOP_TIMER_PHYSICAL["bsl"], 0)
+                self.instruction_pc = PROFILES["bsl"].command_loop_timer_pc
+                bns._mem_write(PROFILES["bsl"].command_loop_timer, 0)
             elif self.calls == 2:
                 bns.memory.write(
-                    _KEYBOARD_INPUT_BUFFER_PHYSICAL["bsl"],
+                    PROFILES["bsl"].keyboard_input_buffer,
                     0x01,
                 )
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             elif self.calls == 3:
-                bns.memory.write(_KEYBOARD_INPUT_BUFFER_PHYSICAL["bsl"], 0)
+                bns.memory.write(PROFILES["bsl"].keyboard_input_buffer, 0)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             return cycles
 
@@ -659,8 +663,8 @@ def test_tns_modified_stdin_preserves_physical_modifier_sequence(
             if bns.keyboard.latched:
                 observed.append(bns.keyboard.read(0xD0))
             if self.calls == 1:
-                self.instruction_pc = _COMMAND_LOOP_TIMER_WRITE_PC["tns"]
-                bns._mem_write(_COMMAND_LOOP_TIMER_PHYSICAL["tns"], 0)
+                self.instruction_pc = PROFILES["tns"].command_loop_timer_pc
+                bns._mem_write(PROFILES["tns"].command_loop_timer, 0)
             return cycles
 
     bns.cpu = KeyboardPICCPU()
@@ -695,7 +699,7 @@ def test_bsplus_port_80_is_watchdog_read_and_speech_power_write():
     """The speech-only BSP model must not expose a display at port 0x80."""
     bns = BNS()
 
-    assert not hasattr(bns, "display")
+    assert bns.display is None
     assert bns._io_read(0x80) == 0xFF
 
     bns._io_write(0x80, 1)
