@@ -8,7 +8,13 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from qns.stdio import JSONLOutput, KeyboardInput, SerialInput, parse_input_event
+from qns.stdio import (
+    JSONLOutput,
+    KeyboardInput,
+    SerialInput,
+    WatchPCInput,
+    parse_input_event,
+)
 
 
 @pytest.mark.parametrize(
@@ -16,6 +22,7 @@ from qns.stdio import JSONLOutput, KeyboardInput, SerialInput, parse_input_event
     (
         ('{"device":"keyboard","text":"Of"}', KeyboardInput("Of")),
         ('{"device":"keyboard","chord":74}', KeyboardInput(0x4A)),
+        ('{"device":"cpu","watch_pc":4096}', WatchPCInput(0x1000)),
     ),
 )
 def test_keyboard_events_preserve_text_and_raw_chords(line, expected):
@@ -46,6 +53,7 @@ def test_serial_events_preserve_arbitrary_binary_data(channel: int, data: bytes)
         ('{"device":"keyboard","chord":256}', "0 through 255"),
         ('{"device":"serial0","data":"%%%"}', "valid base64"),
         ('{"device":"serial2","data":""}', "device must be"),
+        ('{"device":"cpu","watch_pc":65536}', "logical address"),
     ),
 )
 def test_input_events_reject_ambiguous_or_invalid_values(line: str, message: str):

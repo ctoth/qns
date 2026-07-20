@@ -23,7 +23,14 @@ class SerialInput:
     data: bytes
 
 
-def parse_input_event(line: str) -> KeyboardInput | SerialInput:
+@dataclass(frozen=True)
+class WatchPCInput:
+    """Request to arm the existing native logical-PC watch."""
+
+    address: int
+
+
+def parse_input_event(line: str) -> KeyboardInput | SerialInput | WatchPCInput:
     """Parse and validate one newline-delimited JSON input event."""
     try:
         event = json.loads(line)
@@ -60,7 +67,17 @@ def parse_input_event(line: str) -> KeyboardInput | SerialInput:
             raise ValueError("serial data is not valid base64") from error
         return SerialInput(channel=int(device[-1]), data=decoded)
 
-    raise ValueError("input event device must be keyboard, serial0, or serial1")
+    if device == "cpu":
+        address = event.get("watch_pc")
+        if (
+            isinstance(address, bool)
+            or not isinstance(address, int)
+            or not 0 <= address <= 0xFFFF
+        ):
+            raise ValueError("CPU watch_pc must be a logical address from 0 through 65535")
+        return WatchPCInput(address)
+
+    raise ValueError("input event device must be keyboard, serial0, serial1, or cpu")
 
 
 class JSONLOutput:

@@ -21,7 +21,13 @@ from .io import (
 )
 from .memory import Memory
 from .ssi263 import SSI263
-from .stdio import JSONLOutput, KeyboardInput, SerialInput, parse_input_event
+from .stdio import (
+    JSONLOutput,
+    KeyboardInput,
+    SerialInput,
+    WatchPCInput,
+    parse_input_event,
+)
 from .synth.ssi263_pcm import SSI263PCMSynth
 
 # Raw English BNS keyboard chords from BSTABLES.ASM's regular English TABLE.
@@ -178,6 +184,7 @@ class BNS:
         self._stdio_watch_pc = stdio_watch_pc
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
         self._stdio_serial_input_queues = (queue.Queue(), queue.Queue())
+        self._stdio_watch_queue: queue.Queue[int] = queue.Queue()
         self._stdin_error_queue: queue.Queue[ValueError] = queue.Queue()
 
         # Debugging options
@@ -663,6 +670,8 @@ class BNS:
                         elif isinstance(event, SerialInput):
                             for byte in event.data:
                                 self._stdio_serial_input_queues[event.channel].put(byte)
+                        elif isinstance(event, WatchPCInput):
+                            self._stdio_watch_queue.put(event.address)
                 else:
                     while data := sys.stdin.buffer.read(1):
                         self._serial_input_queue.put(data[0])
@@ -679,6 +688,21 @@ class BNS:
                     pass
                 else:
                     raise RuntimeError(f"invalid JSONL stdin event: {stdin_error}")
+
+                try:
+                    watch_pc = self._stdio_watch_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                else:
+                    self._stdio_watch_pc = watch_pc
+                    self.cpu.watch_pc(watch_pc)
+                    pc_watch_reported = False
+                    if self.stdio_output is not None:
+                        self.stdio_output.emit(
+                            "cpu",
+                            event="watch-armed",
+                            pc=watch_pc,
+                        )
 
                 # Run in chunks of 1000 cycles
                 chunk = 1000 if max_cycles == 0 else min(1000, max_cycles - cycles_run)

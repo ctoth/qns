@@ -810,6 +810,45 @@ def test_cli_jsonl_reports_existing_native_pc_watch(tmp_path):
     assert event["cbar"] == 0xF0
 
 
+def test_cli_jsonl_arms_native_pc_watch_during_execution(tmp_path):
+    watch_rom = tmp_path / "dynamic-watch.bin"
+    watch_rom.write_bytes(
+        bytes((0xC3, 0x10, 0x00))
+        + bytes(13)
+        + bytes((0x18, 0xFE))
+    )
+    watch_event = json.dumps({"device": "cpu", "watch_pc": 0x10}).encode()
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "qns.bns",
+            str(watch_rom),
+            "--cycles",
+            "500000",
+            "--stdio",
+            "jsonl",
+        ),
+        input=watch_event + b"\n",
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert events[0] == {
+        "device": "cpu",
+        "event": "watch-armed",
+        "pc": 0x10,
+    }
+    assert events[1]["device"] == "cpu"
+    assert events[1]["event"] == "pc-watch"
+    assert events[1]["pc"] == 0x10
+    assert events[1]["cycle"] > 0
+
+
 def test_cli_prints_retained_bl2_display_to_standard_output(tmp_path):
     """The built-in display is observable without a hardware adapter."""
     idle_rom = tmp_path / "idle.rom"
