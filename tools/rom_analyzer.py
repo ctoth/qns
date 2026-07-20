@@ -92,7 +92,7 @@ def info(rom_file: Path):
         second = bank[1] if len(bank) > 1 else 0
 
         if first == 0xF3:  # DI instruction
-            click.echo(f"  Starts with: DI (disable interrupts)")
+            click.echo("  Starts with: DI (disable interrupts)")
             if second == 0xC3:  # JP opcode after DI
                 addr = bank[2] | (bank[3] << 8)
                 click.echo(f"  Entry: DI; JP 0x{addr:04X}")
@@ -240,13 +240,19 @@ def find_pattern(rom_file: Path, pattern: str, context: int, limit: int):
                 after = bank[pos + len(search_bytes):ctx_end]
 
                 click.echo(f"Bank {bank_num}, offset 0x{pos:04X}:")
-                click.echo(f"  {format_hex_bytes(before)} [{format_hex_bytes(matched)}] {format_hex_bytes(after)}")
+                click.echo(
+                    f"  {format_hex_bytes(before)} "
+                    f"[{format_hex_bytes(matched)}] {format_hex_bytes(after)}"
+                )
 
                 # If pattern starts with AF 32 (XOR A; LD (nn),A), decode the address
                 if len(search_bytes) >= 2 and search_bytes[0] == 0xAF and search_bytes[1] == 0x32:
                     if pos + 4 <= len(bank):
                         addr = bank[pos + 2] | (bank[pos + 3] << 8)
-                        click.echo(f"  -> XOR A; LD (0x{addr:04X}),A  ; clears address 0x{addr:04X}")
+                        click.echo(
+                            f"  -> XOR A; LD (0x{addr:04X}),A  ; "
+                            f"clears address 0x{addr:04X}"
+                        )
 
                 shown_matches += 1
 

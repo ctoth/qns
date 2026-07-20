@@ -13,12 +13,14 @@ from qns.bns import (
     BNS,
     _read_stdin_character,
 )
+from qns.cli import main as bns_main
 from qns.input_driver import (
     ASCII_TO_BNS_KEY,
     keyboard_input_chord,
     tns_input_scan,
 )
 from qns.loader import InputBoundary
+from qns.stdio import JSONLOutput
 
 # Chord-acceptance addresses of the linked NFB99 English ROMs, as
 # discovered by qns.loader.find_input_boundary and originally proven in
@@ -32,8 +34,6 @@ INPUT_BOUNDARIES: dict[str, InputBoundary] = {
     "bl4": InputBoundary(0x433F0, 0x4165A, 0x0B36),
     "tns": InputBoundary(0x4329D, 0x41659, 0x0AF9),
 }
-from qns.cli import main as bns_main
-from qns.stdio import JSONLOutput
 
 
 def _build_update_package(image_offset, firmware):

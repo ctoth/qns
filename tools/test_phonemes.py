@@ -21,8 +21,8 @@ import numpy as np
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from qns.synth import SSI263Synth
 from qns.ssi263 import PHONEMES
+from qns.synth import SSI263Synth
 
 
 def list_phonemes():
@@ -80,8 +80,9 @@ def play_all_phonemes(synth: SSI263Synth):
 
 def play_raw_sample(synth: SSI263Synth, index: int):
     """Play raw sample data by index to identify sample order."""
-    from qns.synth.phonemes import PHONEME_INFO, get_phoneme_samples
     import numpy as np
+
+    from qns.synth.phonemes import PHONEME_INFO, get_phoneme_samples
 
     if index < 0 or index >= len(PHONEME_INFO):
         print(f"Invalid index {index}. Must be 0-{len(PHONEME_INFO)-1}")
@@ -209,7 +210,7 @@ def main():
             name = info[0]
             output = f"phoneme_dumps/0x{code:02X}_{name}.wav"
             dump_phoneme(synth, code, output)
-        print(f"\nDumped all phonemes to phoneme_dumps/")
+        print("\nDumped all phonemes to phoneme_dumps/")
         return
 
     # Audio playback commands

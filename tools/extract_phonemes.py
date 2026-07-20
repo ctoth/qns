@@ -103,7 +103,8 @@ def generate_phonemes_py(info: list[tuple[int, int]], data: list[int]) -> str:
     lines.append('    """')
     lines.append("    if not 0 <= phoneme_index < len(PHONEME_INFO):")
     lines.append(
-        f'        raise ValueError(f"Invalid phoneme index {{phoneme_index}}, must be 0-{len(info) - 1}")'
+        "        raise ValueError("
+        f'f"Invalid phoneme index {{phoneme_index}}, must be 0-{len(info) - 1}")'
     )
     lines.append("")
     lines.append("    offset, length = PHONEME_INFO[phoneme_index]")

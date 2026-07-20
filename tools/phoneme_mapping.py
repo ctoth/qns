@@ -16,8 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from qns.ssi263 import PHONEMES as SSI263_PHONEMES
-from qns.synth.sc02_to_sc01 import SC02_TO_SC01
 from qns.synth.sc01_rom import PHONE_NAMES as SC01_NAMES
+from qns.synth.sc02_to_sc01 import SC02_TO_SC01
 
 
 def get_ssi263_info(code: int) -> tuple[str, str]:
@@ -56,7 +56,10 @@ def print_full_mapping():
         elif ssi_name.upper() != sc01_name.upper():
             notes = "DIFFERENT!"
 
-        print(f"0x{ssi_code:02X}   {ssi_name:<6} {ssi_example:<15} | 0x{sc01_code:02X}   {sc01_name:<10} | {notes}")
+        print(
+            f"0x{ssi_code:02X}   {ssi_name:<6} {ssi_example:<15} | "
+            f"0x{sc01_code:02X}   {sc01_name:<10} | {notes}"
+        )
 
 
 def analyze_mismatches():
@@ -102,12 +105,12 @@ def compare_phoneme(code: int):
     print(f"Phoneme Comparison: SSI-263 0x{code:02X}")
     print("=" * 50)
     print()
-    print(f"SSI-263 Phoneme:")
+    print("SSI-263 Phoneme:")
     print(f"  Code:    0x{code:02X}")
     print(f"  Name:    {ssi_name}")
     print(f"  Example: {ssi_example}")
     print()
-    print(f"Mapped to SC-01 Phoneme:")
+    print("Mapped to SC-01 Phoneme:")
     print(f"  Code:    0x{sc01_code:02X}")
     print(f"  Name:    {sc01_name}")
     print()

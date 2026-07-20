@@ -6,7 +6,6 @@ Run with: uv run pytest tests/test_synth.py -v
 import numpy as np
 import pytest
 
-
 # =============================================================================
 # Phoneme sample data
 # =============================================================================

@@ -15,6 +15,8 @@ Parameters per phoneme:
     duration: Base duration units (7-bit, 0-127)
 """
 
+# ruff: noqa: E501 - generated ROM records intentionally stay one per line
+
 from typing import TypedDict
 
 

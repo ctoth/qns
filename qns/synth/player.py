@@ -5,7 +5,6 @@ Provides real-time audio output for the SSI-263 synthesizer.
 
 import queue
 import threading
-from typing import Optional
 
 import numpy as np
 import sounddevice as sd
@@ -25,7 +24,7 @@ class AudioPlayer:
         self.blocksize = blocksize
 
         self._queue: queue.Queue[np.ndarray] = queue.Queue()
-        self._stream: Optional[sd.OutputStream] = None
+        self._stream: sd.OutputStream | None = None
         self._buffer: np.ndarray = np.array([], dtype=np.float32)
         self._lock = threading.Lock()
         self._playing = False

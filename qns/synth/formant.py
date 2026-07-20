@@ -11,7 +11,6 @@ Signal flow:
 
 from dataclasses import dataclass, field
 from math import pi, sqrt, tan
-from typing import Optional
 
 import numpy as np
 
@@ -128,7 +127,7 @@ class FormantSynth:
     def synthesize_phoneme(
         self,
         phoneme: int,
-        duration_override: Optional[float] = None,
+        duration_override: float | None = None,
         inflection: int = 0,
     ) -> np.ndarray:
         """Synthesize audio for a single phoneme.

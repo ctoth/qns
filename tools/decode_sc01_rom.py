@@ -107,7 +107,11 @@ def main():
 
     print(f"Decoded {len(phonemes)} phonemes from {rom_path.name}")
     print()
-    print(f"{'ID':>4} {'Name':<5} {'F1':>3} {'F2':>3} {'F2Q':>3} {'F3':>3} {'VA':>3} {'FA':>3} {'FC':>3} {'VD':>3} {'CLD':>3} {'CL':>3} {'DUR':>4}")
+    print(
+        f"{'ID':>4} {'Name':<5} {'F1':>3} {'F2':>3} {'F2Q':>3} "
+        f"{'F3':>3} {'VA':>3} {'FA':>3} {'FC':>3} {'VD':>3} "
+        f"{'CLD':>3} {'CL':>3} {'DUR':>4}"
+    )
     print("-" * 60)
 
     for p in phonemes:

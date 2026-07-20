@@ -8,14 +8,6 @@ from pathlib import Path
 from typing import BinaryIO
 
 from .cpu import Z180
-from .input_driver import ChordInputDriver
-from .loader import (
-    EnglishBoundary,
-    InputBoundary,
-    find_english_boundary,
-    find_input_boundary,
-    load_firmware,
-)
 from .devices import (
     MSM6242RTC,
     BQ2010GasGauge,
@@ -26,6 +18,14 @@ from .devices import (
     PIC16C56Clock,
     TNSKeyboard,
     Watchdog,
+)
+from .input_driver import ChordInputDriver
+from .loader import (
+    EnglishBoundary,
+    InputBoundary,
+    find_english_boundary,
+    find_input_boundary,
+    load_firmware,
 )
 from .memory import Memory
 from .profiles import PROFILES
