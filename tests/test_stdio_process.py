@@ -6,6 +6,25 @@ from qns.memory import Memory
 from tools.stdio_process import BNSStdioProcess
 
 
+def test_stdio_process_timeout_names_the_waited_for_boundary(monkeypatch):
+    process = object.__new__(BNSStdioProcess)
+
+    def timeout(_remaining):
+        raise TimeoutError("no BNS event; speech_tail=[transfer cancelled]")
+
+    monkeypatch.setattr(process, "next_event", timeout)
+
+    with pytest.raises(
+        TimeoutError,
+        match=r"data block 17 ACK.*no BNS event.*transfer cancelled",
+    ):
+        process.wait_for(
+            lambda _event: False,
+            "data block 17 ACK",
+            timeout=1,
+        )
+
+
 def test_stdio_process_round_trips_binary_serial_through_real_cli(tmp_path):
     echo_rom = tmp_path / "serial-echo.bin"
     echo_rom.write_bytes(bytes((

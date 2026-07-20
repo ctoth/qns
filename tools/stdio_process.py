@@ -164,7 +164,12 @@ class BNSStdioProcess:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            event = self.next_event(remaining)
+            try:
+                event = self.next_event(remaining)
+            except TimeoutError as error:
+                raise TimeoutError(
+                    f"timed out waiting for {description}: {error}"
+                ) from error
             if predicate(event):
                 return event
         raise TimeoutError(f"BNS did not produce {description} within {timeout:.1f}s")
