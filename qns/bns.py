@@ -658,12 +658,9 @@ class BNS:
         """Load ROM file.
 
         Handles three formats:
-        1. Pre-extracted .bin files (64KB, loaded directly)
-        2. Raw firmware files (may need truncation)
-        3. BNS update packages (firmware at offset 0x3000)
-
-        The BNS hardware uses a 64KB ROM (27512 EPROM). The firmware files
-        contain multiple 64KB banks - we load only the first bank.
+        1. Pre-extracted .bin files
+        2. Raw firmware files
+        3. BNS update packages with an aligned image and length/CRC metadata
         """
         path = Path(path)
         data = path.read_bytes()
@@ -677,21 +674,48 @@ class BNS:
 
         # Check for BNS update package format
         if len(data) >= 5 and data[2:5] == b'BNS':
-            # This is an update package - firmware is at offset 0x3000
-            IMAGE_OFFSET = 0x3000
-            if len(data) > IMAGE_OFFSET:
-                firmware = data[IMAGE_OFFSET:]
-                print(f"Extracted firmware from update package at offset 0x{IMAGE_OFFSET:X}")
-                print(f"  Package size: {len(data)} bytes, Firmware size: {len(firmware)} bytes")
-                data = firmware
-            else:
-                print("Warning: BNS package too small for firmware extraction")
+            matches = []
+            for image_offset in range(0x1000, len(data), 0x1000):
+                image_length = int.from_bytes(
+                    data[image_offset - 6:image_offset - 2],
+                    "little",
+                )
+                if image_length != len(data) - image_offset:
+                    continue
 
-        # Load full ROM (up to 256KB for all 4 banks)
-        # The BNS uses Z180 MMU bank switching to access different ROM banks
-        if len(data) > 256 * 1024:
-            print(f"  Limiting to 256KB ROM (from {len(data)} bytes)")
-            data = data[:256 * 1024]
+                expected_crc = int.from_bytes(
+                    data[image_offset - 2:image_offset],
+                    "little",
+                )
+                actual_crc = 0
+                for byte in data[image_offset:]:
+                    high_bit = actual_crc & 0x8000
+                    actual_crc = (actual_crc << 1) & 0xFFFF
+                    actual_crc = (
+                        (actual_crc & 0xFF00)
+                        | ((actual_crc + byte) & 0xFF)
+                    )
+                    if high_bit:
+                        actual_crc ^= 0xA097
+                if actual_crc == expected_crc:
+                    matches.append(image_offset)
+
+            if len(matches) != 1:
+                raise ValueError(
+                    "BNS update package must contain exactly one aligned "
+                    f"length/CRC-validated image; found {len(matches)}"
+                )
+
+            image_offset = matches[0]
+            data = data[image_offset:]
+            print(
+                "Extracted firmware from update package at offset "
+                f"0x{image_offset:X}"
+            )
+            print(
+                f"  Package size: {path.stat().st_size} bytes, "
+                f"Firmware size: {len(data)} bytes"
+            )
 
         self.memory.load_rom(data)
         print(f"Loaded ROM: {path.name} ({len(data)} bytes at physical 0x00000)")
