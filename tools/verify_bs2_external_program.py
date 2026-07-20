@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from tools.bs2_harness import BS2Harness
+from tools.stdio_process import BNSStdioProcess
 
 CYCLE_LIMIT = 100_000_000
 
@@ -183,6 +184,64 @@ FLASH_CONFIRMATION_PROMPT = (
     "OU",
     "ER",
     "EH",
+    "N",
+)
+FILE_COMMAND_PROMPT = (
+    "EH",
+    "N",
+    "T",
+    "ER",
+    "F",
+    "AH",
+    "E",
+    "L",
+    "K",
+    "UH1",
+    "M",
+    "AE",
+    "N",
+    "D",
+)
+BSNAME_SPEECH_MARKER = (
+    "A",
+    "E1",
+    "D",
+    "T",
+    "U",
+    "U",
+    "B",
+    "R",
+    "A",
+    "E",
+    "L",
+    "I",
+    "N",
+    "THV",
+    "I",
+    "S",
+    "F",
+    "E",
+    "L",
+    "D",
+    "EH",
+    "N",
+    "T",
+    "ER",
+    "E",
+    "K",
+    "OU",
+    "ER",
+    "D",
+    "W",
+    "EH",
+    "N",
+    "YI",
+    "U",
+    "U",
+    "AH",
+    "ER",
+    "D",
+    "UH1",
     "N",
 )
 
@@ -386,6 +445,194 @@ def transfer_ymodem(harness: BS2Harness, cursor: int, program: Path) -> None:
     harness.wait_for_serial(0, cursor, bytes((ACK,)), "empty batch header ACK")
 
 
+def send_stdio_chord(
+    process: BNSStdioProcess,
+    chord: int,
+    *,
+    wait_ready: bool = True,
+) -> None:
+    """Deliver one exact chord and require firmware acceptance."""
+    process.send_keyboard(chord=chord)
+    process.wait_for_keyboard("accepted", chord=chord, timeout=60)
+    if wait_ready:
+        process.wait_for_keyboard("ready", timeout=60)
+
+
+def reach_stdio_editor_command_loop(process: BNSStdioProcess) -> None:
+    """Complete real first-boot prompts using speech and keyboard events only."""
+    process.wait_for_keyboard(
+        "accepted",
+        chord=POWER_ON_INITIALIZE_CHORD,
+        timeout=60,
+    )
+    responded_at = -1
+    initialization_prompts = (
+        FLASH_INITIALIZATION_PROMPT,
+        FILE_INITIALIZATION_PROMPT,
+        FOLDER_INITIALIZATION_PROMPT,
+        WIPEOUT_PROMPT,
+        FLASH_CONFIRMATION_PROMPT,
+    )
+    for _ in range(12):
+        process.wait_for_keyboard("ready", timeout=60)
+        names = process.speech_names
+        prompt_seen = any(
+            tuple(names[-len(prompt):]) == prompt
+            for prompt in initialization_prompts
+        )
+        if not prompt_seen or len(names) == responded_at:
+            return
+        responded_at = len(names)
+        process.send_keyboard(chord=FLASH_INITIALIZATION_Y_KEY)
+        process.wait_for_keyboard(
+            "accepted",
+            chord=FLASH_INITIALIZATION_Y_KEY,
+            timeout=60,
+        )
+    raise RuntimeError("BS2 initialization exceeded 12 firmware prompts")
+
+
+def transfer_stdio_ymodem(
+    process: BNSStdioProcess,
+    cursor: int,
+    program: Path,
+) -> None:
+    """Transfer one external program through structured ASCI0 events."""
+    program_data = program.read_bytes()
+    header = (
+        program.name.encode("ascii")
+        + b"\0"
+        + str(len(program_data)).encode("ascii")
+        + b"\0"
+    ).ljust(128, b"\0")
+
+    cursor = process.wait_for_serial(
+        0,
+        cursor,
+        bytes((CRC_REQUEST,)),
+        "initial YMODEM CRC request",
+        timeout=60,
+    )
+    process.send_serial(0, ymodem_packet(0, header, 128))
+    cursor = process.wait_for_serial(
+        0,
+        cursor,
+        bytes((ACK, CRC_REQUEST)),
+        "header ACK and data CRC request",
+        timeout=60,
+    )
+
+    for block_number, offset in enumerate(range(0, len(program_data), 1_024), start=1):
+        payload = program_data[offset : offset + 1_024].ljust(1_024, bytes((CPM_EOF,)))
+        process.send_serial(
+            0,
+            ymodem_packet(block_number & 0xFF, payload, 1_024),
+        )
+        cursor = process.wait_for_serial(
+            0,
+            cursor,
+            bytes((ACK,)),
+            f"data block {block_number} ACK",
+            timeout=60,
+        )
+
+    process.send_serial(0, bytes((EOT,)))
+    cursor = process.wait_for_serial(
+        0,
+        cursor,
+        bytes((ACK, CRC_REQUEST)),
+        "EOT ACK and batch CRC request",
+        timeout=60,
+    )
+    process.send_serial(0, ymodem_packet(0, bytes(128), 128))
+    process.wait_for_serial(
+        0,
+        cursor,
+        bytes((ACK,)),
+        "empty batch header ACK",
+        timeout=60,
+    )
+
+
+def verify_through_stdio(rom: Path, state: Path, program: Path) -> None:
+    """Import and execute a program through the shipped CLI subprocess."""
+    expected_cbar = expected_program_cbar(program.read_bytes())
+    with BNSStdioProcess(
+        rom,
+        model="bs2",
+        state=state,
+        power_on_input=True,
+    ) as process:
+        process.send_keyboard(chord=POWER_ON_INITIALIZE_CHORD)
+        reach_stdio_editor_command_loop(process)
+        speech_start = len(process.speech_names)
+
+        send_stdio_chord(process, O_CHORD)
+        send_stdio_chord(process, F_KEY)
+        process.wait_for_speech_suffix(
+            FILE_COMMAND_PROMPT,
+            "Enter file command prompt",
+            timeout=60,
+        )
+
+        serial1_cursor = len(process.serial[1])
+        serial0_cursor = len(process.serial[0])
+        send_stdio_chord(process, T_CHORD, wait_ready=False)
+        serial1_cursor = process.wait_for_serial(
+            1,
+            serial1_cursor,
+            bytes((0x05,)),
+            "ASCI1 disk-drive ENQ",
+            timeout=60,
+        )
+        process.send_serial(1, bytes((NAK,)))
+        serial0_cursor = process.wait_for_serial(
+            0,
+            serial0_cursor,
+            bytes((0x05,)),
+            "ASCI0 disk-drive ENQ",
+            timeout=60,
+        )
+        process.send_serial(0, bytes((NAK,)))
+
+        process.wait_for_keyboard("ready", timeout=60)
+        send_stdio_chord(process, R_KEY)
+        send_stdio_chord(process, Y_KEY, wait_ready=False)
+        transfer_stdio_ymodem(process, serial0_cursor, program)
+
+        process.wait_for_speech_suffix(
+            FILE_COMMAND_PROMPT,
+            "post-import Enter file command prompt",
+            timeout=60,
+        )
+        process.wait_for_keyboard("ready", timeout=60)
+        send_stdio_chord(process, DOT5_CHORD)
+
+        process.arm_pc_watch(0x1000, timeout=60)
+        process.send_keyboard(chord=X_CHORD)
+        entry = process.wait_for_pc_watch(0x1000, timeout=60)
+        if entry.get("cbar") != expected_cbar:
+            raise RuntimeError(
+                f"external program entered with CBAR {entry.get('cbar'):02X}; "
+                f"expected {expected_cbar:02X}"
+            )
+        process.wait_for_speech_suffix(
+            BSNAME_SPEECH_MARKER,
+            "BSNAME program speech",
+            timeout=60,
+        )
+
+        phonemes = process.speech_names[speech_start:]
+
+    print(f"imported: {program.name} ({program.stat().st_size} bytes)")
+    print(
+        f"entry: cycle={entry['cycle']} pc={entry['pc']:04X} "
+        f"cbar={entry['cbar']:02X}"
+    )
+    print("serial: ASCI1 ENQ/NAK; ASCI0 ENQ/NAK; YMODEM complete")
+    print("phonemes:", " ".join(phonemes))
+
+
 def expected_program_cbar(program: bytes) -> int:
     """Derive the launch CBAR exactly as BS.ASM::_execute_program does."""
     if len(program) < 10 or program[2:6] != b"BNS\0":
@@ -424,7 +671,16 @@ def main() -> None:
     parser.add_argument("rom", type=Path)
     parser.add_argument("state", type=Path)
     parser.add_argument("program", type=Path)
+    parser.add_argument(
+        "--stdio",
+        action="store_true",
+        help="verify through the shipped JSONL CLI process boundary",
+    )
     args = parser.parse_args()
+
+    if args.stdio:
+        verify_through_stdio(args.rom, args.state, args.program)
+        return
 
     with redirect_stdout(io.StringIO()):
         harness = BS2Harness(

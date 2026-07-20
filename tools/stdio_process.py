@@ -195,6 +195,10 @@ class BNSStdioProcess:
         timeout: float = 30.0,
     ) -> None:
         """Wait until non-pause speech ends with an exact phoneme suffix."""
+        if not suffix:
+            raise ValueError("speech suffix must not be empty")
+        if tuple(self.speech_names[-len(suffix):]) == suffix:
+            return
         self.wait_for(
             lambda _event: tuple(self.speech_names[-len(suffix):]) == suffix,
             description,
@@ -211,12 +215,46 @@ class BNSStdioProcess:
         timeout: float = 30.0,
     ) -> int:
         """Wait for exact ASCI bytes after ``start`` and return the new cursor."""
+        if not suffix:
+            raise ValueError("serial suffix must not be empty")
+        if bytes(self.serial[channel][start:]).endswith(suffix):
+            return len(self.serial[channel])
         self.wait_for(
             lambda _event: bytes(self.serial[channel][start:]).endswith(suffix),
             description,
             timeout=timeout,
         )
         return len(self.serial[channel])
+
+    def arm_pc_watch(self, address: int, *, timeout: float = 30.0) -> None:
+        """Arm the native logical-PC watch and require its causal acknowledgment."""
+        self.send_event("cpu", watch_pc=address)
+        self.wait_for(
+            lambda event: (
+                event.get("device") == "cpu"
+                and event.get("event") == "watch-armed"
+                and event.get("pc") == address
+            ),
+            f"PC {address:04X} watch acknowledgment",
+            timeout=timeout,
+        )
+
+    def wait_for_pc_watch(
+        self,
+        address: int,
+        *,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Wait for the exact native hit event for a previously armed PC watch."""
+        return self.wait_for(
+            lambda event: (
+                event.get("device") == "cpu"
+                and event.get("event") == "pc-watch"
+                and event.get("pc") == address
+            ),
+            f"PC {address:04X} watch hit",
+            timeout=timeout,
+        )
 
     def stop(self) -> None:
         """Stop the verification subprocess without saving its disposable state."""

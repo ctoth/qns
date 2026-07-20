@@ -45,3 +45,19 @@ def test_stdio_process_requires_one_keyboard_representation(tmp_path):
             bns.send_keyboard()
         with pytest.raises(ValueError, match="exactly one"):
             bns.send_keyboard(text="a", chord=1)
+
+
+def test_stdio_process_arms_and_observes_native_pc_watch(tmp_path):
+    watch_rom = tmp_path / "watch.bin"
+    watch_rom.write_bytes(
+        bytes((0xC3, 0x10, 0x00))
+        + bytes(13)
+        + bytes((0x18, 0xFE))
+    )
+
+    with BNSStdioProcess(watch_rom, model="bsp", cycles=500_000) as bns:
+        bns.arm_pc_watch(0x10, timeout=10)
+        event = bns.wait_for_pc_watch(0x10, timeout=10)
+
+        assert event["cycle"] > 0
+        assert event["cbar"] == 0xF0
