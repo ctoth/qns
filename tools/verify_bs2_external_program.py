@@ -7,6 +7,7 @@ import io
 from contextlib import redirect_stdout
 from pathlib import Path
 
+from qns.memory import Memory
 from tools.bs2_harness import BS2Harness
 from tools.stdio_process import BNSStdioProcess
 
@@ -243,6 +244,29 @@ BSNAME_SPEECH_MARKER = (
     "D",
     "UH1",
     "N",
+)
+CALSORT_SPEECH_MARKER = (
+    "R",
+    "ER",
+    "ER",
+    "K",
+    "OO",
+    "D",
+    "N",
+    "AH",
+    "T",
+    "O",
+    "OU",
+    "P",
+    "EH1",
+    "N",
+    "D",
+    "A",
+    "E1",
+    "T",
+    "B",
+    "OO",
+    "K",
 )
 
 
@@ -554,9 +578,57 @@ def transfer_stdio_ymodem(
     )
 
 
+def receive_stdio_file(process: BNSStdioProcess, file_path: Path) -> None:
+    """Receive one host file through the firmware's file-menu YMODEM path."""
+    serial1_cursor = len(process.serial[1])
+    serial0_cursor = len(process.serial[0])
+    send_stdio_chord(process, T_CHORD, wait_ready=False)
+    serial1_cursor = process.wait_for_serial(
+        1,
+        serial1_cursor,
+        bytes((0x05,)),
+        "ASCI1 disk-drive ENQ",
+        timeout=60,
+    )
+    process.send_serial(1, bytes((NAK,)))
+    serial0_cursor = process.wait_for_serial(
+        0,
+        serial0_cursor,
+        bytes((0x05,)),
+        "ASCI0 disk-drive ENQ",
+        timeout=60,
+    )
+    process.send_serial(0, bytes((NAK,)))
+
+    process.wait_for_keyboard("ready", timeout=60)
+    send_stdio_chord(process, R_KEY)
+    send_stdio_chord(process, Y_KEY, wait_ready=False)
+    transfer_stdio_ymodem(process, serial0_cursor, file_path)
+    process.wait_for_speech_suffix(
+        FILE_COMMAND_PROMPT,
+        "post-import Enter file command prompt",
+        timeout=60,
+    )
+    process.wait_for_keyboard("ready", timeout=60)
+
+
+def require_persisted_resources(state: Path, resources: tuple[Path, ...]) -> None:
+    """Require each ordinary resource verbatim in saved BS2 RAM or flash."""
+    memory = Memory(flash_size=2 * 1024 * 1024)
+    memory.load_state(state)
+    regions = (bytes(memory.ram), bytes(memory.flash))
+    for resource in resources:
+        payload = resource.read_bytes()
+        if not payload or not any(payload in region for region in regions):
+            raise RuntimeError(
+                f"persisted BS2 state lacks exact payload for {resource.name}"
+            )
+
+
 def execute_selected_stdio_program(
     process: BNSStdioProcess,
     expected_cbar: int,
+    speech_marker: tuple[str, ...] | None,
 ) -> dict[str, object]:
     """Execute the selected external program and prove native entry and speech."""
     process.arm_pc_watch(0x1000, timeout=60)
@@ -567,12 +639,21 @@ def execute_selected_stdio_program(
             f"external program entered with CBAR {entry.get('cbar'):02X}; "
             f"expected {expected_cbar:02X}"
         )
-    process.wait_for_speech_suffix(
-        BSNAME_SPEECH_MARKER,
-        "BSNAME program speech",
-        timeout=60,
-    )
+    if speech_marker is not None:
+        process.wait_for_speech_suffix(
+            speech_marker,
+            "external program speech",
+            timeout=60,
+        )
     return entry
+
+
+def _program_speech_marker(program: Path) -> tuple[str, ...] | None:
+    """Return the observed speech authority for a supplied external program."""
+    return {
+        "bsname.bns": BSNAME_SPEECH_MARKER,
+        "calsort.bns": CALSORT_SPEECH_MARKER,
+    }.get(program.name.lower())
 
 
 def verify_through_stdio(
@@ -581,6 +662,7 @@ def verify_through_stdio(
     program: Path,
     *,
     persist: bool = False,
+    resources: tuple[Path, ...] = (),
 ) -> None:
     """Import and execute a program through the shipped CLI subprocess."""
     expected_cbar = expected_program_cbar(program.read_bytes())
@@ -602,45 +684,24 @@ def verify_through_stdio(
             timeout=60,
         )
 
-        serial1_cursor = len(process.serial[1])
-        serial0_cursor = len(process.serial[0])
-        send_stdio_chord(process, T_CHORD, wait_ready=False)
-        serial1_cursor = process.wait_for_serial(
-            1,
-            serial1_cursor,
-            bytes((0x05,)),
-            "ASCI1 disk-drive ENQ",
-            timeout=60,
-        )
-        process.send_serial(1, bytes((NAK,)))
-        serial0_cursor = process.wait_for_serial(
-            0,
-            serial0_cursor,
-            bytes((0x05,)),
-            "ASCI0 disk-drive ENQ",
-            timeout=60,
-        )
-        process.send_serial(0, bytes((NAK,)))
-
-        process.wait_for_keyboard("ready", timeout=60)
-        send_stdio_chord(process, R_KEY)
-        send_stdio_chord(process, Y_KEY, wait_ready=False)
-        transfer_stdio_ymodem(process, serial0_cursor, program)
-
-        process.wait_for_speech_suffix(
-            FILE_COMMAND_PROMPT,
-            "post-import Enter file command prompt",
-            timeout=60,
-        )
-        process.wait_for_keyboard("ready", timeout=60)
+        for file_path in (*resources, program):
+            receive_stdio_file(process, file_path)
         send_stdio_chord(process, DOT5_CHORD)
 
-        entry = execute_selected_stdio_program(process, expected_cbar)
+        entry = execute_selected_stdio_program(
+            process,
+            expected_cbar,
+            _program_speech_marker(program),
+        )
         phonemes = process.speech_names[speech_start:]
         if persist:
             process.request_stop(timeout=60)
 
-    print(f"imported: {program.name} ({program.stat().st_size} bytes)")
+    if persist and resources:
+        require_persisted_resources(state, resources)
+
+    for file_path in (*resources, program):
+        print(f"imported: {file_path.name} ({file_path.stat().st_size} bytes)")
     print(
         f"entry: cycle={entry['cycle']} pc={entry['pc']:04X} "
         f"cbar={entry['cbar']:02X}"
@@ -668,7 +729,11 @@ def verify_persisted_stdio_program(rom: Path, state: Path, program: Path) -> Non
             timeout=60,
         )
         send_stdio_chord(process, DOT5_CHORD)
-        entry = execute_selected_stdio_program(process, expected_cbar)
+        entry = execute_selected_stdio_program(
+            process,
+            expected_cbar,
+            _program_speech_marker(program),
+        )
         phonemes = process.speech_names[speech_start:]
         process.request_stop(timeout=60)
 
@@ -719,6 +784,13 @@ def main() -> None:
     parser.add_argument("state", type=Path)
     parser.add_argument("program", type=Path)
     parser.add_argument(
+        "--resource",
+        action="append",
+        type=Path,
+        default=[],
+        help="import a required ordinary file before the external program",
+    )
+    parser.add_argument(
         "--stdio",
         action="store_true",
         help="verify through the shipped JSONL CLI process boundary",
@@ -738,6 +810,7 @@ def main() -> None:
             args.state,
             args.program,
             persist=args.persist,
+            resources=tuple(args.resource),
         )
         if args.persist:
             verify_persisted_stdio_program(args.rom, args.state, args.program)

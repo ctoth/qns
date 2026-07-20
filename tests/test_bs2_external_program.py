@@ -8,6 +8,8 @@ from hypothesis import strategies as st
 
 from qns.bns import _ASCII_TO_BNS_KEY
 from tools.verify_bs2_external_program import (
+    BSNAME_SPEECH_MARKER,
+    CALSORT_SPEECH_MARKER,
     DOT5_CHORD,
     F_KEY,
     FILE_INITIALIZATION_PROMPT,
@@ -16,10 +18,14 @@ from tools.verify_bs2_external_program import (
     FLASH_INITIALIZATION_Y_KEY,
     FOLDER_INITIALIZATION_PROMPT,
     O_CHORD,
+    R_KEY,
     SOH,
     STX,
+    T_CHORD,
     WIPEOUT_PROMPT,
     X_CHORD,
+    Y_KEY,
+    _program_speech_marker,
     crc16_xmodem,
     expected_program_cbar,
     is_file_initialization_prompt,
@@ -28,7 +34,10 @@ from tools.verify_bs2_external_program import (
     is_folder_initialization_prompt,
     is_wipeout_prompt,
     reach_editor_command_loop,
+    receive_stdio_file,
+    require_persisted_resources,
     verify_persisted_stdio_program,
+    verify_through_stdio,
     ymodem_packet,
 )
 
@@ -137,6 +146,165 @@ def test_bsname_header_requires_entry_cbar_81():
     """The supplied BSNAME length 0x6205 maps common area 1 at page 8."""
     header = b"\x18\x0cBNS\0\xef\x1a\x05\x62"
     assert expected_program_cbar(header) == 0x81
+
+
+def test_supplied_programs_use_their_own_real_speech_authority(tmp_path):
+    assert _program_speech_marker(tmp_path / "bsname.bns") == BSNAME_SPEECH_MARKER
+    assert _program_speech_marker(tmp_path / "CALSORT.BNS") == CALSORT_SPEECH_MARKER
+    assert _program_speech_marker(tmp_path / "other.bns") is None
+
+
+def test_persisted_resource_authority_requires_each_exact_payload(tmp_path):
+    from qns.memory import Memory
+
+    state = tmp_path / "assets.state"
+    first = tmp_path / "help.hlp"
+    second = tmp_path / "calsort.msg"
+    first.write_bytes(b"full help payload")
+    second.write_bytes(b"message resource payload")
+    memory = Memory(flash_size=2 * 1024 * 1024)
+    memory.flash[100:117] = first.read_bytes()
+    memory.ram[200:224] = second.read_bytes()
+    memory.save_state(state)
+
+    require_persisted_resources(state, (first, second))
+
+    missing = tmp_path / "spell.dic"
+    missing.write_bytes(b"dictionary payload not present")
+    with pytest.raises(RuntimeError, match="spell.dic"):
+        require_persisted_resources(state, (first, missing))
+
+
+def test_receive_stdio_file_uses_real_file_menu_and_ymodem_sequence(
+    monkeypatch,
+    tmp_path,
+):
+    file_path = tmp_path / "calsort.msg"
+    file_path.write_bytes(b"messages")
+    chords = []
+    transfers = []
+
+    class Process:
+        serial = (bytearray(b"zero"), bytearray(b"one"))
+
+        @staticmethod
+        def wait_for_serial(channel, cursor, suffix, _description, **_kwargs):
+            if channel == 1:
+                assert cursor == 3
+                assert suffix == bytes((0x05,))
+                return 4
+            assert cursor == 4
+            assert suffix == bytes((0x05,))
+            return 5
+
+        @staticmethod
+        def send_serial(channel, data):
+            assert data == bytes((0x15,))
+            assert channel in (0, 1)
+
+        @staticmethod
+        def wait_for_keyboard(state, **_kwargs):
+            assert state == "ready"
+
+        @staticmethod
+        def wait_for_speech_suffix(_suffix, description, **_kwargs):
+            assert description == "post-import Enter file command prompt"
+
+    monkeypatch.setattr(
+        "tools.verify_bs2_external_program.send_stdio_chord",
+        lambda _process, chord, **kwargs: chords.append((chord, kwargs)),
+    )
+    monkeypatch.setattr(
+        "tools.verify_bs2_external_program.transfer_stdio_ymodem",
+        lambda process, cursor, path: transfers.append((process, cursor, path)),
+    )
+    process = Process()
+
+    receive_stdio_file(process, file_path)
+
+    assert chords == [
+        (T_CHORD, {"wait_ready": False}),
+        (R_KEY, {}),
+        (Y_KEY, {"wait_ready": False}),
+    ]
+    assert transfers == [(process, 5, file_path)]
+
+
+def test_stdio_resources_precede_program_and_share_persistence_authority(
+    monkeypatch,
+    tmp_path,
+):
+    rom = tmp_path / "bs2eng.bns"
+    state = tmp_path / "assets.state"
+    message = tmp_path / "calsort.msg"
+    help_file = tmp_path / "bs2eng.hlp"
+    program = tmp_path / "calsort.bns"
+    message.write_bytes(b"messages")
+    help_file.write_bytes(b"help")
+    program.write_bytes(b"\x18\x0cBNS\0\xef\x1a\x05\x62")
+    received = []
+    persisted = []
+
+    class Process:
+        speech_names = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _error_type, _error, _traceback):
+            return False
+
+        @staticmethod
+        def send_keyboard(*, chord):
+            assert chord == 0x4A
+
+        @staticmethod
+        def wait_for_speech_suffix(*_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def wait_for_keyboard(*_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def request_stop(**_kwargs):
+            pass
+
+    monkeypatch.setattr(
+        "tools.verify_bs2_external_program.BNSStdioProcess",
+        lambda *_args, **_kwargs: Process(),
+    )
+    monkeypatch.setattr(
+        "tools.verify_bs2_external_program.reach_stdio_editor_command_loop",
+        lambda _process: None,
+    )
+    monkeypatch.setattr(
+        "tools.verify_bs2_external_program.send_stdio_chord",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "tools.verify_bs2_external_program.receive_stdio_file",
+        lambda _process, path: received.append(path),
+    )
+    monkeypatch.setattr(
+        "tools.verify_bs2_external_program.execute_selected_stdio_program",
+        lambda *_args, **_kwargs: {"cycle": 1, "pc": 0x1000, "cbar": 0x81},
+    )
+    monkeypatch.setattr(
+        "tools.verify_bs2_external_program.require_persisted_resources",
+        lambda saved, paths: persisted.append((saved, paths)),
+    )
+
+    verify_through_stdio(
+        rom,
+        state,
+        program,
+        persist=True,
+        resources=(message, help_file),
+    )
+
+    assert received == [message, help_file, program]
+    assert persisted == [(state, (message, help_file))]
 
 
 @pytest.mark.parametrize("program", [b"", b"\0" * 10, b"\0\0BNS"])
