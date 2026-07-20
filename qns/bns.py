@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from .cpu import Z180
-from .io import (
+from .devices import (
     MSM6242RTC,
     BQ2010GasGauge,
     BrailleDisplay,

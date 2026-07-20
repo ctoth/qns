@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from hypothesis import given
 from hypothesis import strategies as st
 
-from qns.io import (
+from qns.devices import (
     MSM6242RTC,
     BQ2010GasGauge,
     BrailleDisplay,
