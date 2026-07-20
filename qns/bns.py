@@ -589,6 +589,7 @@ class BNS:
         keyboard_input_queue: queue.Queue[str | int] | None = None
         input_phase: str | None = None
         input_chord: int | None = None
+        input_ready_reported = False
         key_wait_candidate: tuple[int, int] | None = None
         power_on_combyt_writes = self._combyt_writes
         power_on_bl4_key_samples = self._bl4_key_samples
@@ -712,9 +713,16 @@ class BNS:
                         )
                     )
                 ):
+                    accepted_chord = input_chord
                     self.keyboard.release()
                     input_phase = None
                     input_chord = None
+                    if self.stdio_output is not None:
+                        self.stdio_output.emit(
+                            "keyboard",
+                            state="accepted",
+                            chord=accepted_chord,
+                        )
                 elif (
                     input_phase == "down"
                     and not self.keyboard.latched
@@ -729,8 +737,15 @@ class BNS:
                     and not self.keyboard.latched
                     and self.memory.read(self._keyboard_input_buffer_physical) == 0
                 ):
+                    accepted_chord = input_chord
                     input_phase = None
                     input_chord = None
+                    if self.stdio_output is not None:
+                        self.stdio_output.emit(
+                            "keyboard",
+                            state="accepted",
+                            chord=accepted_chord,
+                        )
 
                 if (
                     keyboard_input_queue is not None
@@ -744,7 +759,9 @@ class BNS:
                     try:
                         character = keyboard_input_queue.get_nowait()
                     except queue.Empty:
-                        pass
+                        if self.stdio_output is not None and not input_ready_reported:
+                            self.stdio_output.emit("keyboard", state="ready")
+                            input_ready_reported = True
                     else:
                         try:
                             input_chord = _keyboard_input_chord(character)
@@ -753,6 +770,7 @@ class BNS:
                         else:
                             self.keyboard.press(input_chord)
                             input_phase = "down"
+                            input_ready_reported = False
                             input_command_loop_writes = (
                                 self._command_loop_write_count
                             )

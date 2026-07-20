@@ -18,6 +18,7 @@ from qns.bns import (
     _read_stdin_character,
 )
 from qns.bns import main as bns_main
+from qns.stdio import JSONLOutput
 
 
 def test_english_stdio_characters_use_firmware_keyboard_chords():
@@ -248,6 +249,7 @@ def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):
         )
     )
     monkeypatch.setattr(sys, "stdin", StringIO(events))
+    output_stream = StringIO()
 
     class ImmediateThread:
         def __init__(self, *, target, **_kwargs):
@@ -257,7 +259,11 @@ def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):
             self.target()
 
     monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
-    bns = BNS(model="bsp", stdin_device="jsonl")
+    bns = BNS(
+        model="bsp",
+        stdin_device="jsonl",
+        stdio_output=JSONLOutput(output_stream),
+    )
     observed = []
 
     class EventCPU:
@@ -293,6 +299,15 @@ def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):
 
     assert observed[0] == (0, 0x00, 0xFF)
     assert observed[2][0] == 0x01
+    keyboard_events = [
+        event
+        for line in output_stream.getvalue().splitlines()
+        if (event := json.loads(line))["device"] == "keyboard"
+    ]
+    assert keyboard_events == [
+        {"device": "keyboard", "state": "accepted", "chord": 0x01},
+        {"device": "keyboard", "state": "ready"},
+    ]
 
 
 def test_jsonl_power_on_input_accepts_raw_uppercase_i_chord(monkeypatch):
@@ -301,6 +316,7 @@ def test_jsonl_power_on_input_accepts_raw_uppercase_i_chord(monkeypatch):
         "stdin",
         StringIO('{"device":"keyboard","chord":74}\n'),
     )
+    output_stream = StringIO()
 
     class ImmediateThread:
         def __init__(self, *, target, **_kwargs):
@@ -310,7 +326,12 @@ def test_jsonl_power_on_input_accepts_raw_uppercase_i_chord(monkeypatch):
             self.target()
 
     monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
-    bns = BNS(model="bs2", stdin_device="jsonl", power_on_input=True)
+    bns = BNS(
+        model="bs2",
+        stdin_device="jsonl",
+        power_on_input=True,
+        stdio_output=JSONLOutput(output_stream),
+    )
     observed = []
 
     class PowerOnCPU:
@@ -331,6 +352,11 @@ def test_jsonl_power_on_input_accepts_raw_uppercase_i_chord(monkeypatch):
 
     assert observed == [0x4A]
     assert not bns.keyboard._key_down
+    assert json.loads(output_stream.getvalue()) == {
+        "device": "keyboard",
+        "state": "accepted",
+        "chord": 0x4A,
+    }
 
 
 def test_bsl_keyboard_stdin_uses_each_command_loop_epoch(monkeypatch):
