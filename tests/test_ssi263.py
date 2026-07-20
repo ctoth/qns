@@ -5,7 +5,7 @@ import sys
 import pytest
 
 from qns.bns import BNS
-from qns.bns import main as bns_main
+from qns.cli import main as bns_main
 from qns.ssi263 import SSI263, Phoneme
 
 

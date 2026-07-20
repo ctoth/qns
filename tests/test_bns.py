@@ -19,7 +19,7 @@ from qns.input_driver import (
     tns_input_scan,
 )
 from qns.profiles import PROFILES
-from qns.bns import main as bns_main
+from qns.cli import main as bns_main
 from qns.stdio import JSONLOutput
 
 
