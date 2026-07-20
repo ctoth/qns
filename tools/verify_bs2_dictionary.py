@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from qns.bns import _ASCII_TO_BNS_KEY
+from qns.input_driver import ASCII_TO_BNS_KEY
 from tools.stdio_process import BNSStdioProcess
 from tools.verify_bs2_external_program import (
     E_CHORD,
@@ -21,13 +21,13 @@ from tools.verify_bs2_external_program import (
 )
 from tools.verify_bs2_help import F_CHORD, send_stdio_text
 
-CREATE_KEY = _ASCII_TO_BNS_KEY[ord("c")]
-FLASH_FOLDER_KEY = _ASCII_TO_BNS_KEY[ord("1")]
-RAM_FOLDER_KEY = _ASCII_TO_BNS_KEY[ord("0")]
-SPACE_KEY = _ASCII_TO_BNS_KEY[ord(" ")]
+CREATE_KEY = ASCII_TO_BNS_KEY[ord("c")]
+FLASH_FOLDER_KEY = ASCII_TO_BNS_KEY[ord("1")]
+RAM_FOLDER_KEY = ASCII_TO_BNS_KEY[ord("0")]
+SPACE_KEY = ASCII_TO_BNS_KEY[ord(" ")]
 SPELLCHECK_KEY = 0x21
 STATUS_CHORD = 0x4C
-W_KEY = _ASCII_TO_BNS_KEY[ord("w")]
+W_KEY = ASCII_TO_BNS_KEY[ord("w")]
 DONE_SUFFIX = ("D", "UH1", "N")
 TEST_FILE_NAME = "spellchk.txt"
 TEST_WORD = "the"

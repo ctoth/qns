@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from qns.bns import _ASCII_TO_BNS_KEY
+from qns.input_driver import ASCII_TO_BNS_KEY
 from tools.stdio_process import BNSStdioProcess
 from tools.verify_bs2_external_program import (
     E_CHORD,
@@ -38,7 +38,7 @@ def send_stdio_text(process: BNSStdioProcess, text: str) -> None:
     for character in text:
         process.wait_for_keyboard(
             "accepted",
-            chord=_ASCII_TO_BNS_KEY[ord(character)],
+            chord=ASCII_TO_BNS_KEY[ord(character)],
             timeout=60,
         )
     process.wait_for_keyboard("ready", timeout=60)

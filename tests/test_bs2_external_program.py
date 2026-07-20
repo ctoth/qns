@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from qns.bns import _ASCII_TO_BNS_KEY
+from qns.input_driver import ASCII_TO_BNS_KEY
 from tools.verify_bs2_external_program import (
     BSNAME_SPEECH_MARKER,
     CALSORT_SPEECH_MARKER,
@@ -44,8 +44,8 @@ from tools.verify_bs2_external_program import (
 
 def test_flash_initialization_uses_firmware_brlyes_chord():
     """The English ROM's BRLYES is lowercase y, not uppercase Y."""
-    assert FLASH_INITIALIZATION_Y_KEY == _ASCII_TO_BNS_KEY[ord("y")]
-    assert FLASH_INITIALIZATION_Y_KEY != _ASCII_TO_BNS_KEY[ord("Y")]
+    assert FLASH_INITIALIZATION_Y_KEY == ASCII_TO_BNS_KEY[ord("y")]
+    assert FLASH_INITIALIZATION_Y_KEY != ASCII_TO_BNS_KEY[ord("Y")]
 
 
 def test_next_external_program_uses_dot5_chord_not_bare_dot5():

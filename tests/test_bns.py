@@ -9,12 +9,14 @@ from io import BytesIO, StringIO
 import pytest
 
 from qns.bns import (
-    _ASCII_TO_BNS_KEY,
     _COMBYT_PHYSICAL,
     BNS,
-    _keyboard_input_chord,
     _read_stdin_character,
-    _tns_input_scan,
+)
+from qns.input_driver import (
+    ASCII_TO_BNS_KEY,
+    keyboard_input_chord,
+    tns_input_scan,
 )
 from qns.profiles import PROFILES
 from qns.bns import main as bns_main
@@ -70,20 +72,20 @@ def test_load_rom_rejects_update_package_without_valid_image_crc(tmp_path):
 
 def test_english_stdio_characters_use_firmware_keyboard_chords():
     """Terminal characters map to the raw chords in the English ROM table."""
-    assert _ASCII_TO_BNS_KEY[ord("a")] == 0x01
-    assert _ASCII_TO_BNS_KEY[ord("z")] == 0x35
-    assert _ASCII_TO_BNS_KEY[ord("A")] == 0x41
-    assert _ASCII_TO_BNS_KEY[ord("0")] == 0x34
-    assert _ASCII_TO_BNS_KEY[ord(" ")] == 0x40
-    assert _ASCII_TO_BNS_KEY[ord("\n")] == 0x8D
-    assert _ASCII_TO_BNS_KEY[ord("\r")] == 0x8D
-    assert _ASCII_TO_BNS_KEY[0x7F] == 0x78
+    assert ASCII_TO_BNS_KEY[ord("a")] == 0x01
+    assert ASCII_TO_BNS_KEY[ord("z")] == 0x35
+    assert ASCII_TO_BNS_KEY[ord("A")] == 0x41
+    assert ASCII_TO_BNS_KEY[ord("0")] == 0x34
+    assert ASCII_TO_BNS_KEY[ord(" ")] == 0x40
+    assert ASCII_TO_BNS_KEY[ord("\n")] == 0x8D
+    assert ASCII_TO_BNS_KEY[ord("\r")] == 0x8D
+    assert ASCII_TO_BNS_KEY[0x7F] == 0x78
 
 
 def test_tns_stdio_uses_source_defined_qwerty_pic_codes():
-    assert _keyboard_input_chord("a", "tns") == 0x94
-    assert _keyboard_input_chord(" ", "tns") == 0xA9
-    assert _keyboard_input_chord("\n", "tns") == 0xDB
+    assert keyboard_input_chord("a", "tns") == 0x94
+    assert keyboard_input_chord(" ", "tns") == 0xA9
+    assert keyboard_input_chord("\n", "tns") == 0xDB
 
 
 @pytest.mark.parametrize(
@@ -128,7 +130,7 @@ def test_tns_stdio_selects_source_defined_scan_and_shift(
     scan,
     shifted,
 ):
-    assert _tns_input_scan(character) == (scan, shifted)
+    assert tns_input_scan(character) == (scan, shifted)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows console input")

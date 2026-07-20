@@ -1,6 +1,6 @@
 """Authorities for the supplied BS2 full-help stdio workflow."""
 
-from qns.bns import _ASCII_TO_BNS_KEY
+from qns.input_driver import ASCII_TO_BNS_KEY
 from tools.verify_bs2_external_program import E_CHORD, F_KEY, O_CHORD
 from tools.verify_bs2_help import (
     C_CHORD,
@@ -33,10 +33,10 @@ def test_stdio_text_waits_for_each_firmware_accepted_character():
 
     assert events == [
         ("send", {"text": "help"}),
-        ("accepted", {"chord": _ASCII_TO_BNS_KEY[ord("h")], "timeout": 60}),
-        ("accepted", {"chord": _ASCII_TO_BNS_KEY[ord("e")], "timeout": 60}),
-        ("accepted", {"chord": _ASCII_TO_BNS_KEY[ord("l")], "timeout": 60}),
-        ("accepted", {"chord": _ASCII_TO_BNS_KEY[ord("p")], "timeout": 60}),
+        ("accepted", {"chord": ASCII_TO_BNS_KEY[ord("h")], "timeout": 60}),
+        ("accepted", {"chord": ASCII_TO_BNS_KEY[ord("e")], "timeout": 60}),
+        ("accepted", {"chord": ASCII_TO_BNS_KEY[ord("l")], "timeout": 60}),
+        ("accepted", {"chord": ASCII_TO_BNS_KEY[ord("p")], "timeout": 60}),
         ("ready", {"timeout": 60}),
     ]
 

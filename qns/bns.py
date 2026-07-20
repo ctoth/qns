@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from .cpu import Z180
+from .input_driver import ChordInputDriver
 from .devices import (
     MSM6242RTC,
     BQ2010GasGauge,
@@ -34,57 +35,7 @@ from .stdio import (
 )
 from .synth import SSI263PCMSynth, SSI263Synth
 
-# Raw English BNS keyboard chords from BSTABLES.ASM's regular English TABLE.
-# A terminal newline represents the BNS carriage-return chord, and a terminal
-# space represents the physical space-bar chord before firmware translation.
-_ASCII_TO_BNS_KEY = bytes((
-    0x88, 0x81, 0x83, 0x89, 0x99, 0x91, 0x8B, 0x9B,
-    0x93, 0x8A, 0x8D, 0x85, 0x87, 0x8D, 0x9D, 0x95,
-    0x8F, 0x9F, 0x97, 0x8E, 0x9E, 0xA5, 0xA7, 0xBA,
-    0xAD, 0xBD, 0xB5, 0xAA, 0xB3, 0xBB, 0x98, 0xB8,
-    0x40, 0x2E, 0x10, 0x3C, 0x2B, 0x29, 0x2F, 0x04,
-    0x37, 0x3E, 0x21, 0x2C, 0x20, 0x24, 0x28, 0x0C,
-    0x34, 0x02, 0x06, 0x12, 0x32, 0x22, 0x16, 0x36,
-    0x26, 0x14, 0x31, 0x30, 0x23, 0x3F, 0x1C, 0x39,
-    0x48, 0x41, 0x43, 0x49, 0x59, 0x51, 0x4B, 0x5B,
-    0x53, 0x4A, 0x5A, 0x45, 0x47, 0x4D, 0x5D, 0x55,
-    0x4F, 0x5F, 0x57, 0x4E, 0x5E, 0x65, 0x67, 0x7A,
-    0x6D, 0x7D, 0x75, 0x6A, 0x73, 0x7B, 0x58, 0x38,
-    0x08, 0x01, 0x03, 0x09, 0x19, 0x11, 0x0B, 0x1B,
-    0x13, 0x0A, 0x1A, 0x05, 0x07, 0x0D, 0x1D, 0x15,
-    0x0F, 0x1F, 0x17, 0x0E, 0x1E, 0x25, 0x27, 0x3A,
-    0x2D, 0x3D, 0x35, 0x2A, 0x33, 0x3B, 0x18, 0x78,
-))
-
-_ASCII_TO_TNS_SCAN = {
-    "q": 0x90, "w": 0x98, "e": 0xB0, "r": 0xB8, "t": 0xB5,
-    "y": 0xBD, "u": 0xC5, "i": 0xCD, "o": 0xD5, "p": 0xDD,
-    "a": 0x94, "s": 0xAC, "d": 0xB4, "f": 0xBC, "g": 0xC0,
-    "h": 0xC8, "j": 0xC4, "k": 0xCC, "l": 0xD4,
-    "z": 0x92, "x": 0xAA, "c": 0xB2, "v": 0xAB, "b": 0xB3,
-    "n": 0xBB, "m": 0xC3,
-    "1": 0x8B, "2": 0x8D, "3": 0x95, "4": 0xAD, "5": 0x97,
-    "6": 0xAF, "7": 0xB7, "8": 0xBF, "9": 0xC7, "0": 0xCF,
-    "-": 0xD7, "=": 0xDF, "[": 0xD0, "]": 0xD8,
-    ";": 0xDC, "'": 0xD3, ",": 0xCB, ".": 0xC2,
-    "/": 0xCA, "\\": 0xE0, "`": 0xB9,
-    "\t": 0x91, "\b": 0xED, "\x7f": 0xED,
-    " ": 0xA9, "\n": 0xDB, "\r": 0xDB,
-}
-
-_SHIFTED_ASCII_TO_TNS_SCAN = {
-    "!": 0x8B, "@": 0x8D, "#": 0x95, "$": 0xAD, "%": 0x97,
-    "^": 0xAF, "&": 0xB7, "*": 0xBF, "(": 0xC7, ")": 0xCF,
-    "_": 0xD7, "+": 0xDF, "{": 0xD0, "}": 0xD8,
-    ":": 0xDC, '"': 0xD3, "<": 0xCB, ">": 0xC2,
-    "?": 0xCA, "|": 0xE0, "~": 0xB9,
-}
-
-_TNS_LEFT_SHIFT_SCAN = 0xE1
-_TNS_ALT_SCAN = 0xA1
-
 _COMBYT_PHYSICAL = 0x414B0
-_BS2_POWER_ON_INITIALIZE_CHORD = 0x4A
 
 
 def _read_stdin_character() -> str:
@@ -99,33 +50,6 @@ def _read_stdin_character() -> str:
                 continue
             return character
     return sys.stdin.read(1)
-
-
-def _keyboard_input_chord(value: str | int, model: str = "bsp") -> int:
-    """Convert one terminal character or raw JSONL chord to firmware dots."""
-    if isinstance(value, int):
-        return value
-    if model == "tns":
-        return _tns_input_scan(value)[0]
-    codepoint = ord(value)
-    if codepoint >= len(_ASCII_TO_BNS_KEY):
-        raise ValueError(f"unsupported input character: U+{codepoint:04X}")
-    return _ASCII_TO_BNS_KEY[codepoint]
-
-
-def _tns_input_scan(value: str) -> tuple[int, bool]:
-    """Return the TNS keyboard-PIC scan and physical shift state."""
-    scan = _ASCII_TO_TNS_SCAN.get(value)
-    if scan is not None:
-        return scan, False
-    if len(value) == 1:
-        scan = _ASCII_TO_TNS_SCAN.get(value.lower())
-        if scan is not None and value != value.lower():
-            return scan, True
-    scan = _SHIFTED_ASCII_TO_TNS_SCAN.get(value)
-    if scan is not None:
-        return scan, True
-    raise ValueError(f"unsupported TNS input character: {value!r}")
 
 
 class BNS:
@@ -701,20 +625,12 @@ class BNS:
             print("Audio: ENABLED")
             self.synth.start()
 
-        keyboard_input_queue: queue.Queue[str | int] | None = None
-        input_phase: str | None = None
-        input_chord: int | None = None
-        input_shifted = False
-        input_alt = False
-        input_ready_reported = False
+        input_driver: ChordInputDriver | None = None
         pc_watch_reported = False
         key_wait_candidate: tuple[int, int] | None = None
-        power_on_combyt_writes = self._combyt_writes
-        power_on_bl4_key_samples = self._bl4_key_samples
-        input_command_loop_writes = self._command_loop_write_count
         if self.stdin_device is not None:
             if self.stdin_device in ("keyboard", "jsonl"):
-                keyboard_input_queue = queue.Queue()
+                input_driver = ChordInputDriver(self)
                 if self.power_on_input:
                     if self.stdin_device == "jsonl":
                         line = sys.stdin.readline()
@@ -729,7 +645,7 @@ class BNS:
                             if isinstance(event.value, str):
                                 power_on_value = event.value[:1] or None
                                 for character in event.value[1:]:
-                                    keyboard_input_queue.put(character)
+                                    input_driver.queue.put(character)
                             else:
                                 power_on_value = event.value
                     else:
@@ -741,24 +657,12 @@ class BNS:
                                 "power-on input ended before uppercase I"
                             )
                         raise RuntimeError("power-on input ended before the initial chord")
-                    try:
-                        input_chord = _keyboard_input_chord(power_on_value, self.model)
-                    except ValueError as error:
-                        raise RuntimeError(str(error)) from error
-                    if (
-                        self.model == "bs2"
-                        and input_chord != _BS2_POWER_ON_INITIALIZE_CHORD
-                    ):
-                        raise RuntimeError(
-                            "power-on input must begin with uppercase I"
-                        )
-                    self.keyboard.press(input_chord)
-                    input_phase = "power-on"
+                    input_driver.hold_power_on_chord(power_on_value)
 
             def read_stdin() -> None:
                 if self.stdin_device == "keyboard":
                     while character := _read_stdin_character():
-                        keyboard_input_queue.put(character)
+                        input_driver.queue.put(character)
                 elif self.stdin_device == "jsonl":
                     for line in sys.stdin:
                         try:
@@ -769,9 +673,9 @@ class BNS:
                         if isinstance(event, KeyboardInput):
                             if isinstance(event.value, str):
                                 for character in event.value:
-                                    keyboard_input_queue.put(character)
+                                    input_driver.queue.put(character)
                             else:
-                                keyboard_input_queue.put(event.value)
+                                input_driver.queue.put(event.value)
                         elif isinstance(event, SerialInput):
                             for byte in event.data:
                                 self._stdio_serial_input_queues[event.channel].put(byte)
@@ -854,160 +758,8 @@ class BNS:
                 )
                 key_wait_candidate = key_wait_signature
 
-                if (
-                    input_phase == "power-on"
-                    and (
-                        (
-                            self.model == "bs2"
-                            and self._combyt_writes > power_on_combyt_writes
-                        )
-                        or (self.model == "bl2" and not self.keyboard.latched)
-                        or (
-                            self.model == "bl4"
-                            and self._bl4_key_samples > power_on_bl4_key_samples
-                        )
-                    )
-                ):
-                    accepted_chord = input_chord
-                    self.keyboard.release()
-                    input_phase = None
-                    input_chord = None
-                    if self.stdio_output is not None:
-                        self.stdio_output.emit(
-                            "keyboard",
-                            state="accepted",
-                            chord=accepted_chord,
-                        )
-                elif (
-                    input_phase == "tns-shift-down"
-                    and not self.keyboard.latched
-                    and input_chord is not None
-                ):
-                    if input_alt:
-                        self.keyboard.press(_TNS_ALT_SCAN)
-                        input_phase = "tns-alt-down"
-                    else:
-                        self.keyboard.press(input_chord)
-                        input_phase = "down"
-                elif (
-                    input_phase == "tns-alt-down"
-                    and not self.keyboard.latched
-                    and input_chord is not None
-                ):
-                    self.keyboard.press(input_chord)
-                    input_phase = "down"
-                elif (
-                    input_phase == "down"
-                    and not self.keyboard.latched
-                    and input_chord is not None
-                    and (
-                        self.model == "tns"
-                        or self.memory.read(self.profile.keyboard_input_buffer)
-                        == input_chord
-                    )
-                ):
-                    self.keyboard.release()
-                    input_phase = "up"
-                elif (
-                    input_phase == "up"
-                    and not self.keyboard.latched
-                    and (
-                        self.model == "tns"
-                        or self.memory.read(self.profile.keyboard_input_buffer) == 0
-                    )
-                ):
-                    if self.model == "tns" and input_alt:
-                        self.keyboard.release(_TNS_ALT_SCAN)
-                        input_phase = "tns-alt-up"
-                    elif self.model == "tns" and input_shifted:
-                        self.keyboard.release(_TNS_LEFT_SHIFT_SCAN)
-                        input_phase = "tns-shift-up"
-                    else:
-                        accepted_chord = input_chord
-                        input_phase = None
-                        input_chord = None
-                        input_shifted = False
-                        input_alt = False
-                        if self.stdio_output is not None:
-                            self.stdio_output.emit(
-                                "keyboard",
-                                state="accepted",
-                                chord=accepted_chord,
-                            )
-                elif (
-                    input_phase == "tns-alt-up"
-                    and not self.keyboard.latched
-                ):
-                    if input_shifted:
-                        self.keyboard.release(_TNS_LEFT_SHIFT_SCAN)
-                        input_phase = "tns-shift-up"
-                    else:
-                        accepted_chord = input_chord
-                        input_phase = None
-                        input_chord = None
-                        input_alt = False
-                        if self.stdio_output is not None:
-                            self.stdio_output.emit(
-                                "keyboard",
-                                state="accepted",
-                                chord=accepted_chord,
-                            )
-                elif (
-                    input_phase == "tns-shift-up"
-                    and not self.keyboard.latched
-                ):
-                    accepted_chord = input_chord
-                    input_phase = None
-                    input_chord = None
-                    input_shifted = False
-                    input_alt = False
-                    if self.stdio_output is not None:
-                        self.stdio_output.emit(
-                            "keyboard",
-                            state="accepted",
-                            chord=accepted_chord,
-                        )
-
-                if (
-                    keyboard_input_queue is not None
-                    and input_phase is None
-                    and (
-                        stable_key_wait
-                        or self._command_loop_write_count
-                        > input_command_loop_writes
-                    )
-                ):
-                    try:
-                        character = keyboard_input_queue.get_nowait()
-                    except queue.Empty:
-                        if self.stdio_output is not None and not input_ready_reported:
-                            self.stdio_output.emit("keyboard", state="ready")
-                            input_ready_reported = True
-                    else:
-                        try:
-                            if self.model == "tns" and isinstance(character, str):
-                                input_chord, input_shifted = _tns_input_scan(character)
-                                input_alt = character in ("`", "~")
-                            else:
-                                input_chord = _keyboard_input_chord(character, self.model)
-                                input_shifted = False
-                                input_alt = False
-                        except ValueError as error:
-                            print(f"[Input] {error}")
-                        else:
-                            if self.model == "tns" and input_shifted:
-                                self.keyboard.press(_TNS_LEFT_SHIFT_SCAN)
-                                input_phase = "tns-shift-down"
-                            elif self.model == "tns" and input_alt:
-                                self.keyboard.press(_TNS_ALT_SCAN)
-                                input_phase = "tns-alt-down"
-                            else:
-                                self.keyboard.press(input_chord)
-                                input_phase = "down"
-                            input_ready_reported = False
-                            input_command_loop_writes = (
-                                self._command_loop_write_count
-                            )
+                if input_driver is not None:
+                    input_driver.tick(stable_key_wait)
 
                 self.stats['phonemes'] = len(self.ssi263.phoneme_log)
 
