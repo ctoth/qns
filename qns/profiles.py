@@ -45,11 +45,6 @@ class HardwareProfile:
     command_loop_timer_pc: int
     """Linked address of the STARTA instruction that clears that timer."""
 
-    english_capture_addr: int
-    """Post-`LD HL,SPBUF` capture site for exact-English observation."""
-
-    spbuf: int
-    """Logical address of the fixed SPBUF pre-translation text buffer."""
 
 
 PROFILES: dict[str, HardwareProfile] = {
@@ -71,8 +66,6 @@ PROFILES: dict[str, HardwareProfile] = {
             keyboard_input_buffer=0x4327C,
             command_loop_timer=0x41653,
             command_loop_timer_pc=0x0A0D,
-            english_capture_addr=0xBC9B,
-            spbuf=0xD657,
         ),
         HardwareProfile(
             name="bs2",
@@ -90,8 +83,6 @@ PROFILES: dict[str, HardwareProfile] = {
             keyboard_input_buffer=0x4327D,
             command_loop_timer=0x41654,
             command_loop_timer_pc=0x0A7E,
-            english_capture_addr=0xBC9A,
-            spbuf=0xD658,
         ),
         HardwareProfile(
             name="bsl",
@@ -109,8 +100,6 @@ PROFILES: dict[str, HardwareProfile] = {
             keyboard_input_buffer=0x433E5,
             command_loop_timer=0x41653,
             command_loop_timer_pc=0x0A97,
-            english_capture_addr=0xAD86,
-            spbuf=0xD657,
         ),
         HardwareProfile(
             name="bl2",
@@ -128,8 +117,6 @@ PROFILES: dict[str, HardwareProfile] = {
             keyboard_input_buffer=0x433E6,
             command_loop_timer=0x41654,
             command_loop_timer_pc=0x0AF5,
-            english_capture_addr=0xBC4D,
-            spbuf=0xD658,
         ),
         HardwareProfile(
             name="bl4",
@@ -147,8 +134,6 @@ PROFILES: dict[str, HardwareProfile] = {
             keyboard_input_buffer=0x433F0,
             command_loop_timer=0x4165A,
             command_loop_timer_pc=0x0B36,
-            english_capture_addr=0xAD81,
-            spbuf=0xD65E,
         ),
         HardwareProfile(
             name="tns",
@@ -166,8 +151,6 @@ PROFILES: dict[str, HardwareProfile] = {
             keyboard_input_buffer=0x4329D,
             command_loop_timer=0x41659,
             command_loop_timer_pc=0x0AF9,
-            english_capture_addr=0xAD71,
-            spbuf=0xD65D,
         ),
     )
 }

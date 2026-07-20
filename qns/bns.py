@@ -4,13 +4,12 @@ import queue
 import sys
 import threading
 from collections.abc import Callable
-from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 from typing import BinaryIO
 
 from .cpu import Z180
 from .input_driver import ChordInputDriver
-from .loader import load_firmware
+from .loader import EnglishBoundary, find_english_boundary, load_firmware
 from .devices import (
     MSM6242RTC,
     BQ2010GasGauge,
@@ -127,6 +126,7 @@ class BNS:
         self.stdio_output = stdio_output
         self._stdio_watch_pc = stdio_watch_pc
         self._english_callback = english_callback
+        self._english_boundary: EnglishBoundary | None = None
         self._english_capture_cycle: int | None = None
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
         self._stdio_serial_input_queues = (queue.Queue(), queue.Queue())
@@ -239,34 +239,36 @@ class BNS:
 
     def _mem_read(self, addr: int) -> int:
         """Memory read callback for CPU."""
+        boundary = self._english_boundary
         if (
             self._english_callback is not None
-            and addr == self.profile.english_capture_addr
+            and boundary is not None
+            and addr == boundary.capture_addr
         ):
-                cycle = self.cpu.cycle_count
-                if cycle != self._english_capture_cycle:
-                    self._english_capture_cycle = cycle
-                    source = self.cpu.get_reg(Z180.HL)
-                    segment_length = self.cpu.get_reg(Z180.BC) & 0xFFFF
-                    common_page = self.cpu.cbar >> 4
-                    if (
-                        source == self.profile.spbuf
-                        and source >> 12 >= common_page
-                        and 0 < segment_length <= 0xFF
-                    ):
-                        physical = (source + (self.cpu.cbr << 12)) & 0xFFFFF
-                        message = bytearray()
-                        for offset in range(0x100):
-                            value = self.memory.read(physical + offset)
-                            if value == 0:
-                                text = bytes(message).decode(
-                                    "ascii",
-                                    errors="replace",
-                                ).strip()
-                                if text:
-                                    self._english_callback(text)
-                                break
-                            message.append(value)
+            cycle = self.cpu.cycle_count
+            if cycle != self._english_capture_cycle:
+                self._english_capture_cycle = cycle
+                source = self.cpu.get_reg(Z180.HL)
+                segment_length = self.cpu.get_reg(Z180.BC) & 0xFFFF
+                common_page = self.cpu.cbar >> 4
+                if (
+                    source == boundary.spbuf
+                    and source >> 12 >= common_page
+                    and 0 < segment_length <= 0xFF
+                ):
+                    physical = (source + (self.cpu.cbr << 12)) & 0xFFFFF
+                    message = bytearray()
+                    for offset in range(0x100):
+                        value = self.memory.read(physical + offset)
+                        if value == 0:
+                            text = bytes(message).decode(
+                                "ascii",
+                                errors="replace",
+                            ).strip()
+                            if text:
+                                self._english_callback(text)
+                            break
+                        message.append(value)
         return self.memory.read(addr)
 
     def _mem_write(self, addr: int, value: int) -> None:
@@ -554,6 +556,14 @@ class BNS:
             )
         self.memory.load_rom(image.data)
         print(f"Loaded ROM: {path.name} ({len(image.data)} bytes at physical 0x00000)")
+
+        self._english_boundary = find_english_boundary(image.data)
+        if self._english_boundary is not None:
+            print(
+                "English speech boundary: capture "
+                f"0x{self._english_boundary.capture_addr:04X}, "
+                f"SPBUF 0x{self._english_boundary.spbuf:04X}"
+            )
 
     def reset(self) -> None:
         """Reset the emulator."""

@@ -284,24 +284,37 @@ def test_keyboard_acceptance_addresses_match_each_linked_english_rom():
 
 
 @pytest.mark.parametrize(
-    ("model", "capture_site", "spbuf"),
+    ("model", "capture_site", "spbuf", "shape"),
     (
-        ("bsp", 0xBC9B, 0xD657),
-        ("bs2", 0xBC9A, 0xD658),
-        ("bsl", 0xAD86, 0xD657),
-        ("bl2", 0xBC4D, 0xD658),
-        ("bl4", 0xAD81, 0xD65E),
-        ("tns", 0xAD71, 0xD65D),
+        ("bsp", 0xBC9B, 0xD657, "bsp"),
+        ("bs2", 0xBC9A, 0xD658, "bsp"),
+        ("bsl", 0xAD86, 0xD657, "nfb99-braille-lite"),
+        ("bl2", 0xBC4D, 0xD658, "nfb99-braille-lite"),
+        ("bl4", 0xAD81, 0xD65E, "2003-braille-lite"),
+        ("tns", 0xAD71, 0xD65D, "bsp"),
     ),
 )
 def test_english_speech_observes_each_linked_pretranslation_buffer(
+    tmp_path,
     model,
     capture_site,
     spbuf,
+    shape,
 ):
-    """English output is exact firmware text, not inverse-phoneme guessing."""
+    """English output is exact firmware text, not inverse-phoneme guessing.
+
+    The capture site is discovered from the loaded image's MFULL3
+    signature, so each case loads a synthetic ROM carrying that
+    signature at the linked address.
+    """
+    from test_loader import make_mfull3_image
+
+    rom_path = tmp_path / "signature.rom"
+    rom_path.write_bytes(make_mfull3_image(capture_site, spbuf, shape))
+
     spoken = []
     bns = BNS(model=model, english_callback=spoken.append)
+    bns.load_rom(rom_path)
     hl_register = bns.cpu.HL
     bc_register = bns.cpu.BC
     message = b"enter file command"
