@@ -21,23 +21,35 @@ uv run pytest tests/test_synth.py::test_synth_speaks_phoneme -v -s
 ```
 qns/
 ├── qns/
-│   ├── synth/                # SSI-263 audio synthesis (working)
-│   │   ├── __init__.py       # Exports SSI263Synth, SSI263State
-│   │   ├── phonemes.py       # 62 phonemes, 156K samples @ 22050 Hz
-│   │   ├── dsp.py            # Amplitude, filter, pitch, time stretch
-│   │   ├── player.py         # sounddevice real-time audio
-│   │   └── ssi263_synth.py   # Main synthesizer class
+│   ├── synth/                # SSI-263 audio backends
+│   │   ├── __init__.py       # Exports SSI263Synth, SSI263PCMSynth, FormantSynth
+│   │   ├── phonemes.py       # AppleWin captures: 62 phonemes @ 22050 Hz
+│   │   ├── ssi263_pcm.py     # PCM-capture backend (default)
+│   │   ├── ssi263_synth.py   # Formant-synthesis backend
+│   │   ├── formant.py        # SC-01 formant model (from MAME votrax)
+│   │   ├── sc01_rom.py       # Decoded SC-01A ROM parameters
+│   │   ├── sc02_to_sc01.py   # SSI-263 -> SC-01 phoneme mapping
+│   │   └── player.py         # sounddevice real-time audio
+│   ├── devices/              # Peripherals: bus, keyboards, displays,
+│   │                         # rtc, clock_pic, gas_gauge, watchdog
 │   ├── _z180_cffi.*.pyd      # Z180 native extension (working)
 │   ├── cpu.py                # Z180 wrapper (CFFI bindings)
-│   ├── ssi263.py             # SSI-263 register emulation
+│   ├── ssi263.py             # SSI-263 chip: register decode, phoneme
+│   │                         # capture, INT1; SpeechBackend protocol
 │   ├── memory.py             # Memory + Z180 MMU (physical addressing)
-│   ├── io.py                 # I/O: keyboard w/INT2, display, keyclr
-│   └── bns.py                # Main emulator
+│   ├── profiles.py           # Per-model hardware profiles (all 6 models)
+│   ├── loader.py             # Firmware extraction (boundary discovery)
+│   ├── input_driver.py       # Stdin chord tables + press/release driver
+│   ├── stdio.py              # JSONL structured I/O events
+│   ├── cli.py                # argparse CLI (python -m qns.bns)
+│   └── bns.py                # Main emulator machine
 ├── tools/
 │   ├── build_ffi.py          # CFFI build script (with debug counters)
-│   └── extract_phonemes.py   # Extract phonemes from AppleWin
-├── tests/
-│   └── test_synth.py         # 20 tests (17 auto, 3 manual)
+│   ├── extract_phonemes.py   # Extract phonemes from AppleWin
+│   ├── decode_sc01_rom.py    # Regenerates qns/synth/sc01_rom.py
+│   ├── extract_firmware.py   # Package -> .bin extraction (uses qns.loader)
+│   └── rom_analyzer.py       # ROM bank/structure analysis
+├── tests/                    # pytest suite (uv run pytest tests/)
 ├── roms/NFB99/               # ROM images (update packages)
 └── prompts/
     ├── handoff.md                    # General handoff
@@ -71,9 +83,16 @@ uv run pytest tests/test_synth.py -v
 # Manual audio test (hear phoneme)
 uv run pytest tests/test_synth.py::test_synth_speaks_phoneme -v -s
 
-# Run emulator (boots, outputs pauses, enters main loop)
-uv run python -m qns.bns --audio roms/NFB99/BSPENG/bspeng.bns
+# Run emulator with audio - NEEDS ~40M CYCLES TO HEAR SPEECH
+uv run python -m qns.bns --audio --cycles 40000000 roms/bspeng.bns
+
+# Quick test (5M cycles) - only shows pauses during boot
+uv run python -m qns.bns --audio --cycles 5000000 roms/bspeng.bns
 ```
+
+**IMPORTANT**: The emulator needs approximately 40 million cycles before the firmware
+starts producing actual speech phonemes. Running with fewer cycles will only show
+pause phonemes (0x00) during the boot sequence.
 
 ## What Works
 
@@ -82,14 +101,18 @@ uv run python -m qns.bns --audio roms/NFB99/BSPENG/bspeng.bns
    - ~265K memory writes during boot
    - Keyboard interrupt (INT2) wired to CPU
 
-2. **ROM Loading** - Extracts firmware from update packages
+2. **ROM Loading** (`qns/loader.py`) - Extracts firmware from update packages
    - BNS files are update programs, not raw firmware
-   - Firmware at offset 0x3000 in .bns files
+   - The image boundary is discovered from the package's own length/CRC
+     metadata (0x3000 classic, 0x7000/0x8000 Millennium)
 
-3. **SSI-263 Synthesizer** - Complete standalone module
-   - Real PCM audio from AppleWin phoneme samples
-   - DSP: amplitude, filter, pitch shift, time stretch
-   - Integration with SSI263 chip via `set_synth()`
+3. **SSI-263 Synthesizer** - Two selectable audio backends (`--synth`)
+   - `pcm` (default): AppleWin phoneme captures
+   - `formant`: SC-01 formant synthesis ported from MAME's Votrax,
+     with the SC-02 to SC-01 mapping from the datasheet
+     (see `docs/sc02-phoneme-mapping.md` and `datasheet.pdf`)
+   - The chip (`qns/ssi263.py`) owns register decode and pushes decoded
+     `SSI263State` snapshots to a backend via `set_synth()`
 
 4. **Memory System** - Physical addressing works
    - z180emu handles MMU translation internally
