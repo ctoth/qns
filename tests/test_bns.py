@@ -15,6 +15,7 @@ from qns.bns import (
     _COMMAND_LOOP_TIMER_WRITE_PC,
     _KEYBOARD_INPUT_BUFFER_PHYSICAL,
     BNS,
+    _keyboard_input_chord,
     _read_stdin_character,
 )
 from qns.bns import main as bns_main
@@ -31,6 +32,12 @@ def test_english_stdio_characters_use_firmware_keyboard_chords():
     assert _ASCII_TO_BNS_KEY[ord("\n")] == 0x8D
     assert _ASCII_TO_BNS_KEY[ord("\r")] == 0x8D
     assert _ASCII_TO_BNS_KEY[0x7F] == 0x78
+
+
+def test_tns_stdio_uses_source_defined_qwerty_pic_codes():
+    assert _keyboard_input_chord("a", "tns") == 0x94
+    assert _keyboard_input_chord(" ", "tns") == 0xA9
+    assert _keyboard_input_chord("\n", "tns") == 0xDB
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows console input")

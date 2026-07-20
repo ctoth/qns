@@ -54,6 +54,15 @@ _ASCII_TO_BNS_KEY = bytes((
     0x2D, 0x3D, 0x35, 0x2A, 0x33, 0x3B, 0x18, 0x78,
 ))
 
+_ASCII_TO_TNS_SCAN = {
+    "q": 0x90, "w": 0x98, "e": 0xB0, "r": 0xB8, "t": 0xB5,
+    "y": 0xBD, "u": 0xC5, "i": 0xCD, "o": 0xD5, "p": 0xDD,
+    "a": 0x94, "s": 0xAC, "d": 0xB4, "f": 0xBC, "g": 0xC0,
+    "h": 0xC8, "j": 0xC4, "k": 0xCC, "l": 0xD4,
+    "z": 0x92, "x": 0xAA, "c": 0xB2, "v": 0xAB, "b": 0xB3,
+    "n": 0xBB, "m": 0xC3, " ": 0xA9, "\n": 0xDB, "\r": 0xDB,
+}
+
 _COMBYT_PHYSICAL = 0x414B0
 _BS2_POWER_ON_INITIALIZE_CHORD = 0x4A
 _KEYBOARD_INPUT_BUFFER_PHYSICAL = {
@@ -96,10 +105,15 @@ def _read_stdin_character() -> str:
     return sys.stdin.read(1)
 
 
-def _keyboard_input_chord(value: str | int) -> int:
+def _keyboard_input_chord(value: str | int, model: str = "bsp") -> int:
     """Convert one terminal character or raw JSONL chord to firmware dots."""
     if isinstance(value, int):
         return value
+    if model == "tns":
+        try:
+            return _ASCII_TO_TNS_SCAN[value]
+        except KeyError as error:
+            raise ValueError(f"unsupported TNS input character: {value!r}") from error
     codepoint = ord(value)
     if codepoint >= len(_ASCII_TO_BNS_KEY):
         raise ValueError(f"unsupported input character: U+{codepoint:04X}")
@@ -673,7 +687,7 @@ class BNS:
                             )
                         raise RuntimeError("power-on input ended before the initial chord")
                     try:
-                        input_chord = _keyboard_input_chord(power_on_value)
+                        input_chord = _keyboard_input_chord(power_on_value, self.model)
                     except ValueError as error:
                         raise RuntimeError(str(error)) from error
                     if (
@@ -813,15 +827,21 @@ class BNS:
                     input_phase == "down"
                     and not self.keyboard.latched
                     and input_chord is not None
-                    and self.memory.read(self._keyboard_input_buffer_physical)
-                    == input_chord
+                    and (
+                        self.model == "tns"
+                        or self.memory.read(self._keyboard_input_buffer_physical)
+                        == input_chord
+                    )
                 ):
                     self.keyboard.release()
                     input_phase = "up"
                 elif (
                     input_phase == "up"
                     and not self.keyboard.latched
-                    and self.memory.read(self._keyboard_input_buffer_physical) == 0
+                    and (
+                        self.model == "tns"
+                        or self.memory.read(self._keyboard_input_buffer_physical) == 0
+                    )
                 ):
                     accepted_chord = input_chord
                     input_phase = None
@@ -850,7 +870,7 @@ class BNS:
                             input_ready_reported = True
                     else:
                         try:
-                            input_chord = _keyboard_input_chord(character)
+                            input_chord = _keyboard_input_chord(character, self.model)
                         except ValueError as error:
                             print(f"[Input] {error}")
                         else:
