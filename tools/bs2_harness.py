@@ -109,20 +109,19 @@ class BS2Harness:
         start_cycle = self.bns.cpu.cycle_count
         while self.bns.cpu.cycle_count - start_cycle < self.cycle_limit:
             self.advance()
-            if self.bns.ssi263._pending_irq_cycle is not None or not self.bns.cpu.halted:
+            if self.bns.ssi263.irq_pending or not self.bns.cpu.halted:
                 continue
             candidate_pc = self.bns.cpu.pc
             candidate_phonemes = len(self.bns.ssi263.phoneme_log)
             self.advance()
             if (
-                self.bns.ssi263._pending_irq_cycle is None
+                not self.bns.ssi263.irq_pending
                 and self.bns.cpu.halted
                 and self.bns.cpu.pc == candidate_pc
                 and len(self.bns.ssi263.phoneme_log) == candidate_phonemes
             ):
                 return
-        pending_irq = self.bns.ssi263._pending_irq_cycle
-        pending_irq_text = "none" if pending_irq is None else str(pending_irq)
+        pending_irq_text = "yes" if self.bns.ssi263.irq_pending else "none"
         raise RuntimeError(
             f"stable key wait not reached within {self.cycle_limit:,} cycles; "
             f"cycle={self.bns.cpu.cycle_count} pc={self.bns.cpu.pc:04X} "
@@ -136,12 +135,12 @@ class BS2Harness:
         start_cycle = self.bns.cpu.cycle_count
         while self.bns.cpu.cycle_count - start_cycle < self.cycle_limit:
             self.advance()
-            if self.bns.ssi263._pending_irq_cycle is not None:
+            if self.bns.ssi263.irq_pending:
                 continue
             candidate_phonemes = len(self.bns.ssi263.phoneme_log)
             self.advance(100_000)
             if (
-                self.bns.ssi263._pending_irq_cycle is None
+                not self.bns.ssi263.irq_pending
                 and len(self.bns.ssi263.phoneme_log) == candidate_phonemes
             ):
                 return

@@ -31,7 +31,7 @@ from .stdio import (
     WatchPCInput,
     parse_input_event,
 )
-from .synth.ssi263_pcm import SSI263PCMSynth
+from .synth import SSI263PCMSynth, SSI263Synth
 
 # Raw English BNS keyboard chords from BSTABLES.ASM's regular English TABLE.
 # A terminal newline represents the BNS carriage-return chord, and a terminal
@@ -179,6 +179,7 @@ class BNS:
     PORT_ITC = 0x34
 
     def __init__(self, clock: int = 12_288_000, audio: bool = False,
+                 synth_backend: str = "pcm",
                  model: str = "bsp",
                  trace_io: bool = False, trace_writes: int | None = None,
                  trace_writes_range: tuple[int, int] | None = None,
@@ -197,6 +198,7 @@ class BNS:
         Args:
             clock: CPU clock frequency in Hz (default 12.288 MHz for BSPLUS)
             audio: Enable audio output for SSI-263 speech
+            synth_backend: Audio backend: pcm (AppleWin captures) or formant
             model: Hardware profile: bsp, bs2, bsl, bl2, or bl4
             trace_io: Log all I/O port reads/writes
             trace_writes: Physical address to trace writes to (None = disabled)
@@ -313,9 +315,13 @@ class BNS:
         self.high_bank_latch = 0
 
         # Audio synthesis
+        if synth_backend not in ("pcm", "formant"):
+            raise ValueError(f"Unsupported synth backend: {synth_backend}")
         self.synth = None
         if audio:
-            self.synth = SSI263PCMSynth()
+            self.synth = (
+                SSI263PCMSynth() if synth_backend == "pcm" else SSI263Synth()
+            )
             self.ssi263.set_synth(self.synth)
 
         self._setup_io()
@@ -883,7 +889,7 @@ class BNS:
                 key_wait_signature = None
                 if (
                     self.cpu.halted
-                    and self.ssi263._pending_irq_cycle is None
+                    and not self.ssi263.irq_pending
                 ):
                     key_wait_signature = (
                         self.cpu.pc,
@@ -1165,6 +1171,12 @@ def main() -> None:
     parser.add_argument("--audio", action="store_true",
                         help="Enable SSI-263 audio output")
     parser.add_argument(
+        "--synth",
+        choices=("pcm", "formant"),
+        default="pcm",
+        help="Audio backend: AppleWin PCM captures or SC-01 formant synthesis",
+    )
+    parser.add_argument(
         "--model",
         choices=("bsp", "bs2", "bsl", "bl2", "bl4", "tns"),
         default="bsp",
@@ -1293,6 +1305,7 @@ def main() -> None:
     with output_context:
         bns = BNS(
             audio=args.audio,
+            synth_backend=args.synth,
             model=args.model,
             trace_io=args.trace_io,
             trace_interrupts=args.trace_interrupts,

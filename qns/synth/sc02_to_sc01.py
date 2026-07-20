@@ -2,77 +2,11 @@
 
 Based on the VOTRAX SC-02 datasheet phoneme chart (page 2) and
 matching to SC-01 phonemes by name and example word similarity.
+SC-02 phoneme metadata (names, examples, IPA) lives in
+:data:`qns.ssi263.PHONEMES`.
 
 The SSI-263 is also known as the Votrax SC-02.
 """
-
-# SC-02/SSI-263 phoneme definitions from datasheet
-SC02_PHONEMES: dict[int, tuple[str, str]] = {
-    0x00: ("PA", "pause"),
-    0x01: ("E", "MEET"),
-    0x02: ("E1", "BENT"),
-    0x03: ("Y", "BEFORE"),
-    0x04: ("YI", "YEAR"),
-    0x05: ("AY", "PLEASE"),
-    0x06: ("IE", "ANY"),
-    0x07: ("I", "SIX"),
-    0x08: ("A", "MADE"),
-    0x09: ("AI", "CARE"),
-    0x0A: ("EH", "NEST"),
-    0x0B: ("EH1", "BELT"),
-    0x0C: ("AE", "DAD"),
-    0x0D: ("AE1", "AFTER"),
-    0x0E: ("AH", "GOT"),
-    0x0F: ("AH1", "FATHER"),
-    0x10: ("AW", "OFFICE"),
-    0x11: ("O", "STORE"),
-    0x12: ("OU", "BOAT"),
-    0x13: ("OO", "LOOK"),
-    0x14: ("IU", "YOU"),
-    0x15: ("IU1", "COULD"),
-    0x16: ("U", "TUNE"),
-    0x17: ("U1", "CARTOON"),
-    0x18: ("UH", "WONDER"),
-    0x19: ("UH1", "LOVE"),
-    0x1A: ("UH2", "WHAT"),
-    0x1B: ("UH3", "NUT"),
-    0x1C: ("ER", "BIRD"),
-    0x1D: ("R", "ROOF"),
-    0x1E: ("R1", "RUG"),
-    0x1F: ("R2", "MUTTER"),
-    0x20: ("L", "LIFT"),
-    0x21: ("L1", "PLAY"),
-    0x22: ("LF", "FALL"),
-    0x23: ("W", "WATER"),
-    0x24: ("B", "BAG"),
-    0x25: ("D", "PAID"),
-    0x26: ("KV", "TAG"),
-    0x27: ("P", "PEN"),
-    0x28: ("T", "TART"),
-    0x29: ("K", "KIT"),
-    0x2A: ("HV", "hold vocal"),
-    0x2B: ("HVC", "hold vocal closure"),
-    0x2C: ("HF", "HEART"),
-    0x2D: ("HFC", "hold fricative closure"),
-    0x2E: ("HN", "hold nasal"),
-    0x2F: ("Z", "ZERO"),
-    0x30: ("S", "SAME"),
-    0x31: ("J", "MEASURE"),
-    0x32: ("SCH", "SHIP"),
-    0x33: ("V", "VERY"),
-    0x34: ("F", "FOUR"),
-    0x35: ("THV", "THERE"),
-    0x36: ("TH", "WITH"),
-    0x37: ("M", "MORE"),
-    0x38: ("N", "NINE"),
-    0x39: ("NG", "RANG"),
-    0x3A: (":A", "MARCHEN"),
-    0x3B: (":OH", "LOWE"),
-    0x3C: (":U", "FUNF"),
-    0x3D: (":UH", "MENU"),
-    0x3E: ("E2", "BITTE"),
-    0x3F: ("LB", "LUBE"),
-}
 
 # SC-01 phoneme names for reference (from sc01_rom.py)
 # 0x00=EH3, 0x01=EH2, 0x02=EH1, 0x03=PA0, 0x04=DT, 0x05=A1, 0x06=A2, 0x07=ZH
@@ -163,9 +97,10 @@ SC02_TO_SC01: tuple[int, ...] = (
 
 def get_mapping_info(sc02_code: int) -> dict:
     """Get detailed mapping info for an SC-02 phoneme."""
+    from ..ssi263 import PHONEMES
     from .sc01_rom import PHONE_NAMES as SC01_NAMES
 
-    sc02_name, sc02_example = SC02_PHONEMES.get(sc02_code, ("?", "?"))
+    sc02_name, sc02_example, _ = PHONEMES.get(sc02_code, ("?", "?", ""))
     sc01_code = SC02_TO_SC01[sc02_code & 0x3F]
     sc01_name = SC01_NAMES[sc01_code] if sc01_code < len(SC01_NAMES) else "?"
 
@@ -180,8 +115,6 @@ def get_mapping_info(sc02_code: int) -> dict:
 
 def print_mapping_table():
     """Print the full mapping table for debugging."""
-    from .sc01_rom import PHONE_NAMES as SC01_NAMES
-
     print("SC-02 (SSI-263) to SC-01 Phoneme Mapping")
     print("=" * 70)
     print(f"{'SC-02':^25} | {'SC-01':^25}")

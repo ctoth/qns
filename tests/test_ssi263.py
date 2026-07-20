@@ -9,6 +9,56 @@ from qns.bns import main as bns_main
 from qns.ssi263 import SSI263, Phoneme
 
 
+def test_chip_decodes_all_register_fields() -> None:
+    chip = SSI263()
+
+    chip.write(chip.base_port + chip.REG_DURPHON, 0x85)
+    chip.write(chip.base_port + chip.REG_INFLECT, 0xA5)
+    chip.write(chip.base_port + chip.REG_RATEINF, 0xB3)
+    chip.write(chip.base_port + chip.REG_CTRLAMP, 0x6C)
+    chip.write(chip.base_port + chip.REG_FILTER, 0x42)
+
+    assert chip.phoneme == 5
+    assert chip.duration == 2
+    assert chip.inflection == 0x52B
+    assert chip.rate == 0x0B
+    assert chip.control is False
+    assert chip.articulation == 6
+    assert chip.amplitude == 12
+    assert chip.filter_freq == 0x42
+
+
+def test_chip_inflection_write_preserves_i11() -> None:
+    chip = SSI263()
+
+    chip.write(chip.base_port + chip.REG_RATEINF, 0x08)  # I11 = 1
+    chip.write(chip.base_port + chip.REG_INFLECT, 0x00)  # I10:I3 = 0
+
+    assert chip.inflection & 0x800
+
+
+def test_chip_snapshot_reaches_backend_play() -> None:
+    chip = SSI263()
+    states = []
+
+    class Backend:
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+        def play(self, state) -> None:
+            states.append(state)
+
+    chip.set_synth(Backend())
+    chip.write(chip.base_port + chip.REG_CTRLAMP, 0x0F)
+    chip.write(chip.base_port + chip.REG_DURPHON, 0xC1)
+
+    assert [state.phoneme for state in states] == [0, 1]
+    assert states[-1].amplitude == 15
+
+
 def test_chip_writes_are_silent_and_capture_named_phonemes(capsys) -> None:
     chip = SSI263()
 

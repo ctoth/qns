@@ -1,6 +1,5 @@
-"""SSI-263 Synthesizer Tests.
+"""Formant synth backend and phoneme-data tests.
 
-TDD test suite - tests are written before implementation.
 Run with: uv run pytest tests/test_synth.py -v
 """
 
@@ -9,13 +8,13 @@ import pytest
 
 
 # =============================================================================
-# Phase 1: Phoneme Data Tests
+# Phoneme sample data
 # =============================================================================
 
 
 def test_phoneme_data_exists():
     """Phoneme module exports required constants."""
-    from qns.synth.phonemes import PHONEME_DATA, PHONEME_INFO, SAMPLE_RATE
+    from qns.synth.phonemes import SAMPLE_RATE
 
     assert SAMPLE_RATE == 22050
 
@@ -63,74 +62,7 @@ def test_get_phoneme_samples():
 
 
 # =============================================================================
-# Phase 2: DSP Functions Tests
-# =============================================================================
-
-
-def test_amplitude_scaling():
-    """Amplitude scales samples linearly 0-15."""
-    from qns.synth.dsp import apply_amplitude
-
-    samples = np.array([1000, -1000, 0], dtype=np.int16)
-
-    # Full volume (15) = no change
-    result = apply_amplitude(samples, amplitude=15)
-    np.testing.assert_array_equal(result, samples)
-
-    # Half volume (7-8) ≈ half amplitude
-    result = apply_amplitude(samples, amplitude=7)
-    assert abs(result[0]) < abs(samples[0])
-    assert abs(result[0]) > 0  # Not silent
-
-    # Zero volume = silence
-    result = apply_amplitude(samples, amplitude=0)
-    np.testing.assert_array_equal(result, np.zeros(3, dtype=np.int16))
-
-
-def test_filter_silence():
-    """filter_freq=0xFF means silence."""
-    from qns.synth.dsp import apply_filter
-
-    samples = np.array([1000, -1000], dtype=np.int16)
-
-    # filter_freq=0xFF means silence
-    result = apply_filter(samples, filter_freq=0xFF)
-    np.testing.assert_array_equal(result, np.zeros(2, dtype=np.int16))
-
-    # Other values should pass audio through (possibly filtered)
-    result = apply_filter(samples, filter_freq=0x00)
-    assert len(result) == len(samples)
-
-
-def test_time_stretch_duration_modes():
-    """Duration modes control sample averaging/stretching."""
-    from qns.synth.dsp import time_stretch
-
-    samples = np.array([100, 200, 300, 400], dtype=np.int16)
-
-    # DUR=0: no averaging, same length
-    result = time_stretch(samples, rate=0, duration=0)
-    assert len(result) == len(samples)
-
-    # DUR=3: average 4 samples, shorter output
-    result = time_stretch(samples, rate=0, duration=3)
-    assert len(result) < len(samples)
-
-
-def test_pitch_shift_identity():
-    """Neutral inflection preserves sample count."""
-    from qns.synth.dsp import pitch_shift
-
-    samples = np.array([100, 200, 300, 400, 500, 600, 700, 800], dtype=np.int16)
-
-    # Neutral inflection (≈2048) = approximately same length
-    result = pitch_shift(samples, inflection=2048)
-    # Allow some tolerance due to resampling
-    assert abs(len(result) - len(samples)) <= 1
-
-
-# =============================================================================
-# Phase 3: Audio Player Tests
+# Audio player
 # =============================================================================
 
 
@@ -187,90 +119,62 @@ def test_audio_player_produces_sound():
 
 
 # =============================================================================
-# Phase 4: Synthesizer Core Tests
+# Formant backend
 # =============================================================================
 
 
-def test_synth_state_defaults():
-    """SSI263State has correct defaults."""
-    from qns.synth import SSI263State
-
-    state = SSI263State()
-    assert state.phoneme == 0
-    assert state.amplitude == 15
-    assert state.control == True  # Standby by default
-
-
-def test_synth_write_durphon():
-    """write_durphon extracts duration and phoneme."""
-    from qns.synth import SSI263Synth
-
-    synth = SSI263Synth(audio_enabled=False)
-
-    synth.write_durphon(0xC5)  # duration=3, phoneme=5
-    assert synth.state.duration == 3
-    assert synth.state.phoneme == 5
-
-    synth.write_durphon(0x81)  # duration=2, phoneme=1
-    assert synth.state.duration == 2
-    assert synth.state.phoneme == 1
-
-
-def test_synth_write_ctrlamp_wake():
-    """CTL 1->0 triggers phoneme playback."""
-    from qns.synth import SSI263Synth
-
-    synth = SSI263Synth(audio_enabled=False)
-
-    # Set phoneme first
-    synth.write_durphon(0xC1)  # phoneme 1
-
-    # Track phonemes played
-    phonemes_played = []
-    synth.set_phoneme_callback(lambda p: phonemes_played.append(p))
-
-    # CTL 1->0 should trigger speech
-    synth.write_ctrlamp(0x7F)  # CTL=0, amp=15
-
-    assert synth.state.control == False
-    assert 1 in phonemes_played
-
-
 def test_synth_get_phoneme_audio():
-    """get_phoneme_audio returns processed samples."""
+    """get_phoneme_audio returns synthesized samples."""
     from qns.synth import SSI263Synth
 
     synth = SSI263Synth(audio_enabled=False)
 
-    # Should return processed samples for a phoneme
     samples = synth.get_phoneme_audio(phoneme=1, amplitude=15)
     assert len(samples) > 0
     assert samples.dtype == np.float32
 
 
-# =============================================================================
-# Phase 5: Integration with Emulator Tests
-# =============================================================================
+def test_synth_amplitude_scales_audio():
+    """Amplitude scales output; zero amplitude is silent.
 
-
-def test_ssi263_set_synth():
-    """SSI263 chip can connect to synthesizer."""
-    from qns.ssi263 import SSI263
+    The formant model is stateful across phonemes, so each amplitude is
+    rendered on a fresh backend to compare like with like.
+    """
     from qns.synth import SSI263Synth
 
-    chip = SSI263(base_port=0xC0)
+    full = SSI263Synth(audio_enabled=False).get_phoneme_audio(1, amplitude=15)
+    half = SSI263Synth(audio_enabled=False).get_phoneme_audio(1, amplitude=5)
+    mute = SSI263Synth(audio_enabled=False).get_phoneme_audio(1, amplitude=0)
+
+    assert np.any(full)
+    np.testing.assert_allclose(half, full * (5 / 15))
+    assert not np.any(mute)
+
+
+def test_synth_standalone_speak_uses_settings():
+    """speak_phoneme emits the callback with the standalone settings."""
+    from qns.synth import SSI263Synth
+
     synth = SSI263Synth(audio_enabled=False)
+    played = []
+    synth.set_phoneme_callback(played.append)
 
-    chip.set_synth(synth)
+    synth.set_volume(1.0)
+    synth.set_pitch(1.0)
+    synth.speak_phonemes([0x01, 0x06])
 
-    # Write to chip should forward to synth
-    chip.write(0xC0, 0xC5)  # DURPHON: duration=3, phoneme=5
-    assert synth.state.phoneme == 5
-    assert synth.state.duration == 3
+    assert played == [0x01, 0x06]
+    assert synth.amplitude == 15
+    assert synth.inflection == 2048
 
 
-def test_ssi263_synth_plays_on_wake():
-    """SSI263 chip triggers synth on CTL wake."""
+# =============================================================================
+# Integration with the SSI-263 chip
+# =============================================================================
+
+
+def test_ssi263_chip_drives_formant_backend():
+    """Chip register writes produce decoded phoneme events on the backend."""
     from qns.ssi263 import SSI263
     from qns.synth import SSI263Synth
 
@@ -279,17 +183,18 @@ def test_ssi263_synth_plays_on_wake():
     chip.set_synth(synth)
 
     phonemes = []
-    synth.set_phoneme_callback(lambda p: phonemes.append(p))
+    synth.set_phoneme_callback(phonemes.append)
 
-    # Sequence: set phoneme, then wake
+    # Sequence: set phoneme while in standby, then wake
     chip.write(0xC0, 0xC1)  # DURPHON: phoneme 1
+    assert phonemes == []
     chip.write(0xC3, 0x7F)  # CTRLAMP: CTL=0, wake up
 
-    assert 1 in phonemes
+    assert phonemes == [1]
 
 
 # =============================================================================
-# Phase 6: End-to-End Audio Tests (Manual)
+# End-to-end audio tests (manual)
 # =============================================================================
 
 
