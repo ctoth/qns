@@ -9,14 +9,17 @@ from hypothesis import strategies as st
 from qns.bns import _ASCII_TO_BNS_KEY
 from tools.verify_bs2_external_program import (
     DOT5_CHORD,
+    F_KEY,
     FILE_INITIALIZATION_PROMPT,
     FLASH_CONFIRMATION_PROMPT,
     FLASH_INITIALIZATION_PROMPT,
     FLASH_INITIALIZATION_Y_KEY,
     FOLDER_INITIALIZATION_PROMPT,
+    O_CHORD,
     SOH,
     STX,
     WIPEOUT_PROMPT,
+    X_CHORD,
     crc16_xmodem,
     expected_program_cbar,
     is_file_initialization_prompt,
@@ -25,6 +28,7 @@ from tools.verify_bs2_external_program import (
     is_folder_initialization_prompt,
     is_wipeout_prompt,
     reach_editor_command_loop,
+    verify_persisted_stdio_program,
     ymodem_packet,
 )
 
@@ -39,6 +43,59 @@ def test_next_external_program_uses_dot5_chord_not_bare_dot5():
     """FILEP C5 is raw dot 5 plus the BNS chord/space bit."""
     assert DOT5_CHORD == 0x50
     assert DOT5_CHORD != 0x10
+
+
+def test_persisted_program_restart_uses_normal_power_on(monkeypatch, tmp_path):
+    """Reload must not cold-reset and erase the flash it is meant to verify."""
+    launches = []
+    instances = []
+
+    class Process:
+        speech_names = []
+
+        def __init__(self, rom, **kwargs):
+            launches.append((rom, kwargs))
+            self.chords = []
+            instances.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _error_type, _error, _traceback):
+            return False
+
+        def wait_for_keyboard(self, _state, **_kwargs):
+            return {}
+
+        def send_keyboard(self, *, chord):
+            self.chords.append(chord)
+
+        def wait_for_speech_suffix(self, _suffix, _description, **_kwargs):
+            pass
+
+        def arm_pc_watch(self, _address, **_kwargs):
+            pass
+
+        def wait_for_pc_watch(self, _address, **_kwargs):
+            return {"cycle": 1, "pc": 0x1000, "cbar": 0x81}
+
+        def request_stop(self, **_kwargs):
+            pass
+
+    monkeypatch.setattr(
+        "tools.verify_bs2_external_program.BNSStdioProcess",
+        Process,
+    )
+    rom = tmp_path / "bs2eng.bns"
+    state = tmp_path / "bs2.state"
+    program = tmp_path / "bsname.bns"
+    program.write_bytes(b"\x18\x0cBNS\0\xef\x1a\x05\x62")
+
+    verify_persisted_stdio_program(rom, state, program)
+
+    process = launches[0]
+    assert process == (rom, {"model": "bs2", "state": state})
+    assert instances[0].chords == [O_CHORD, F_KEY, DOT5_CHORD, X_CHORD]
 
 
 def test_editor_loop_accepts_exact_linked_command_loop_epoch():

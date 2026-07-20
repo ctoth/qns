@@ -554,7 +554,34 @@ def transfer_stdio_ymodem(
     )
 
 
-def verify_through_stdio(rom: Path, state: Path, program: Path) -> None:
+def execute_selected_stdio_program(
+    process: BNSStdioProcess,
+    expected_cbar: int,
+) -> dict[str, object]:
+    """Execute the selected external program and prove native entry and speech."""
+    process.arm_pc_watch(0x1000, timeout=60)
+    process.send_keyboard(chord=X_CHORD)
+    entry = process.wait_for_pc_watch(0x1000, timeout=60)
+    if entry.get("cbar") != expected_cbar:
+        raise RuntimeError(
+            f"external program entered with CBAR {entry.get('cbar'):02X}; "
+            f"expected {expected_cbar:02X}"
+        )
+    process.wait_for_speech_suffix(
+        BSNAME_SPEECH_MARKER,
+        "BSNAME program speech",
+        timeout=60,
+    )
+    return entry
+
+
+def verify_through_stdio(
+    rom: Path,
+    state: Path,
+    program: Path,
+    *,
+    persist: bool = False,
+) -> None:
     """Import and execute a program through the shipped CLI subprocess."""
     expected_cbar = expected_program_cbar(program.read_bytes())
     with BNSStdioProcess(
@@ -608,21 +635,10 @@ def verify_through_stdio(rom: Path, state: Path, program: Path) -> None:
         process.wait_for_keyboard("ready", timeout=60)
         send_stdio_chord(process, DOT5_CHORD)
 
-        process.arm_pc_watch(0x1000, timeout=60)
-        process.send_keyboard(chord=X_CHORD)
-        entry = process.wait_for_pc_watch(0x1000, timeout=60)
-        if entry.get("cbar") != expected_cbar:
-            raise RuntimeError(
-                f"external program entered with CBAR {entry.get('cbar'):02X}; "
-                f"expected {expected_cbar:02X}"
-            )
-        process.wait_for_speech_suffix(
-            BSNAME_SPEECH_MARKER,
-            "BSNAME program speech",
-            timeout=60,
-        )
-
+        entry = execute_selected_stdio_program(process, expected_cbar)
         phonemes = process.speech_names[speech_start:]
+        if persist:
+            process.request_stop(timeout=60)
 
     print(f"imported: {program.name} ({program.stat().st_size} bytes)")
     print(
@@ -631,6 +647,37 @@ def verify_through_stdio(rom: Path, state: Path, program: Path) -> None:
     )
     print("serial: ASCI1 ENQ/NAK; ASCI0 ENQ/NAK; YMODEM complete")
     print("phonemes:", " ".join(phonemes))
+
+
+def verify_persisted_stdio_program(rom: Path, state: Path, program: Path) -> None:
+    """Restart from saved flash and execute the program without retransferring it."""
+    expected_cbar = expected_program_cbar(program.read_bytes())
+    with BNSStdioProcess(
+        rom,
+        model="bs2",
+        state=state,
+    ) as process:
+        process.wait_for_keyboard("ready", timeout=60)
+        speech_start = len(process.speech_names)
+
+        send_stdio_chord(process, O_CHORD)
+        send_stdio_chord(process, F_KEY)
+        process.wait_for_speech_suffix(
+            FILE_COMMAND_PROMPT,
+            "persisted Enter file command prompt",
+            timeout=60,
+        )
+        send_stdio_chord(process, DOT5_CHORD)
+        entry = execute_selected_stdio_program(process, expected_cbar)
+        phonemes = process.speech_names[speech_start:]
+        process.request_stop(timeout=60)
+
+    print(f"reloaded: {program.name} from persisted flash")
+    print(
+        f"reentry: cycle={entry['cycle']} pc={entry['pc']:04X} "
+        f"cbar={entry['cbar']:02X}"
+    )
+    print("reloaded phonemes:", " ".join(phonemes))
 
 
 def expected_program_cbar(program: bytes) -> int:
@@ -676,10 +723,24 @@ def main() -> None:
         action="store_true",
         help="verify through the shipped JSONL CLI process boundary",
     )
+    parser.add_argument(
+        "--persist",
+        action="store_true",
+        help="save the imported program and execute it from a fresh process",
+    )
     args = parser.parse_args()
 
+    if args.persist and not args.stdio:
+        parser.error("--persist requires --stdio")
     if args.stdio:
-        verify_through_stdio(args.rom, args.state, args.program)
+        verify_through_stdio(
+            args.rom,
+            args.state,
+            args.program,
+            persist=args.persist,
+        )
+        if args.persist:
+            verify_persisted_stdio_program(args.rom, args.state, args.program)
         return
 
     with redirect_stdout(io.StringIO()):
