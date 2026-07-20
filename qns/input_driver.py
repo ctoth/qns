@@ -252,4 +252,6 @@ class ChordInputDriver:
 
     def _input_buffer(self) -> int:
         """Read the firmware's chord input buffer for acceptance checks."""
-        return self._bns.memory.read(self._bns.profile.keyboard_input_buffer)
+        boundary = self._bns._input_boundary
+        assert boundary is not None  # non-TNS drivers require discovery
+        return self._bns.memory.read(boundary.keyboard_input_buffer)

@@ -18,7 +18,20 @@ from qns.input_driver import (
     keyboard_input_chord,
     tns_input_scan,
 )
-from qns.profiles import PROFILES
+from qns.loader import InputBoundary
+
+# Chord-acceptance addresses of the linked NFB99 English ROMs, as
+# discovered by qns.loader.find_input_boundary and originally proven in
+# NOTES.md.  Behavioral tests install these directly instead of loading
+# the real packages.
+INPUT_BOUNDARIES: dict[str, InputBoundary] = {
+    "bsp": InputBoundary(0x4327C, 0x41653, 0x0A0D),
+    "bs2": InputBoundary(0x4327D, 0x41654, 0x0A7E),
+    "bsl": InputBoundary(0x433E5, 0x41653, 0x0A97),
+    "bl2": InputBoundary(0x433E6, 0x41654, 0x0AF5),
+    "bl4": InputBoundary(0x433F0, 0x4165A, 0x0B36),
+    "tns": InputBoundary(0x4329D, 0x41659, 0x0AF9),
+}
 from qns.cli import main as bns_main
 from qns.stdio import JSONLOutput
 
@@ -154,13 +167,14 @@ def test_interactive_windows_stdin_reads_one_key_without_newline(monkeypatch):
 def test_command_loop_gate_requires_linked_starta_instruction(model):
     """Early timer initialization cannot open stdin before linked STARTA."""
     bns = BNS(model=model)
+    bns._input_boundary = INPUT_BOUNDARIES[model]
     bns.cpu = type("InstructionCPU", (), {"instruction_pc": 0x1234})()
 
-    bns._mem_write(PROFILES[model].command_loop_timer, 0)
+    bns._mem_write(INPUT_BOUNDARIES[model].command_loop_timer, 0)
     assert bns._command_loop_write_count == 0
 
-    bns.cpu.instruction_pc = PROFILES[model].command_loop_timer_pc
-    bns._mem_write(PROFILES[model].command_loop_timer, 0)
+    bns.cpu.instruction_pc = INPUT_BOUNDARIES[model].command_loop_timer_pc
+    bns._mem_write(INPUT_BOUNDARIES[model].command_loop_timer, 0)
     assert bns._command_loop_write_count == 1
 
 
@@ -190,6 +204,7 @@ def test_power_on_stdin_holds_chord_until_profile_acceptance_boundary(
 
     monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
     bns = BNS(model=model, stdin_device="keyboard", power_on_input=True)
+    bns._input_boundary = INPUT_BOUNDARIES[model]
     observed = []
 
     class PowerOnCPU:
@@ -223,6 +238,7 @@ def test_power_on_stdin_requires_documented_uppercase_i(monkeypatch, character):
     """No nearby or missing stdin character may select the hard-reset path."""
     monkeypatch.setattr("qns.bns._read_stdin_character", lambda: character)
     bns = BNS(model="bs2", stdin_device="keyboard", power_on_input=True)
+    bns._input_boundary = INPUT_BOUNDARIES["bs2"]
 
     with pytest.raises(RuntimeError, match="uppercase I"):
         bns.run(max_cycles=1_000)
@@ -231,6 +247,7 @@ def test_power_on_stdin_requires_documented_uppercase_i(monkeypatch, character):
 def test_bl2_power_on_stdin_requires_an_initial_chord(monkeypatch):
     monkeypatch.setattr("qns.bns._read_stdin_character", lambda: "")
     bns = BNS(model="bl2", stdin_device="keyboard", power_on_input=True)
+    bns._input_boundary = INPUT_BOUNDARIES["bl2"]
 
     with pytest.raises(RuntimeError, match="initial chord"):
         bns.run(max_cycles=1_000)
@@ -247,40 +264,6 @@ def test_power_on_stdin_rejects_profiles_without_proven_reset_boundary(model):
     """A power-on release event cannot be applied to unproven firmware."""
     with pytest.raises(ValueError, match="proven BS2, BL2, or BL4 boundary"):
         BNS(model=model, stdin_device="keyboard", power_on_input=True)
-
-
-def test_keyboard_acceptance_addresses_match_each_linked_english_rom():
-    """Each profile owns the physical `_IIB` reached under command-loop CBR=34."""
-    assert {
-        name: profile.keyboard_input_buffer for name, profile in PROFILES.items()
-    } == {
-        "bsp": 0x4327C,
-        "bs2": 0x4327D,
-        "bsl": 0x433E5,
-        "bl2": 0x433E6,
-        "bl4": 0x433F0,
-        "tns": 0x4329D,
-    }
-    assert {
-        name: profile.command_loop_timer for name, profile in PROFILES.items()
-    } == {
-        "bsp": 0x41653,
-        "bs2": 0x41654,
-        "bsl": 0x41653,
-        "bl2": 0x41654,
-        "bl4": 0x4165A,
-        "tns": 0x41659,
-    }
-    assert {
-        name: profile.command_loop_timer_pc for name, profile in PROFILES.items()
-    } == {
-        "bsp": 0x0A0D,
-        "bs2": 0x0A7E,
-        "bsl": 0x0A97,
-        "bl2": 0x0AF5,
-        "bl4": 0x0B36,
-        "tns": 0x0AF9,
-    }
 
 
 @pytest.mark.parametrize(
@@ -394,6 +377,7 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
 
     monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
     bns = BNS(model=model, stdin_device="keyboard")
+    bns._input_boundary = INPUT_BOUNDARIES[model]
     observed = []
 
     class KeyPhaseCPU:
@@ -419,12 +403,12 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
             )
             if self.calls == 3:
                 bns.memory.write(
-                    PROFILES[model].keyboard_input_buffer,
+                    INPUT_BOUNDARIES[model].keyboard_input_buffer,
                     0x3D,
                 )
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             elif self.calls == 4:
-                bns.memory.write(PROFILES[model].keyboard_input_buffer, 0)
+                bns.memory.write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             return cycles
 
@@ -437,7 +421,7 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
         (0x3D, True, True),
         (0x3D, False, True),
     ]
-    assert bns.memory.read(PROFILES[model].keyboard_input_buffer) == 0
+    assert bns.memory.read(INPUT_BOUNDARIES[model].keyboard_input_buffer) == 0
     assert not bns.keyboard.latched
 
 
@@ -466,6 +450,7 @@ def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):
         stdin_device="jsonl",
         stdio_output=JSONLOutput(output_stream),
     )
+    bns._input_boundary = INPUT_BOUNDARIES["bsp"]
     observed = []
 
     class EventCPU:
@@ -489,10 +474,10 @@ def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):
                 )
             )
             if self.calls == 3:
-                bns.memory.write(PROFILES["bsp"].keyboard_input_buffer, 0x01)
+                bns.memory.write(INPUT_BOUNDARIES["bsp"].keyboard_input_buffer, 0x01)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             elif self.calls == 4:
-                bns.memory.write(PROFILES["bsp"].keyboard_input_buffer, 0)
+                bns.memory.write(INPUT_BOUNDARIES["bsp"].keyboard_input_buffer, 0)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             return cycles
 
@@ -534,6 +519,7 @@ def test_jsonl_power_on_input_accepts_raw_uppercase_i_chord(monkeypatch):
         power_on_input=True,
         stdio_output=JSONLOutput(output_stream),
     )
+    bns._input_boundary = INPUT_BOUNDARIES["bs2"]
     observed = []
 
     class PowerOnCPU:
@@ -578,6 +564,7 @@ def test_bsl_keyboard_stdin_uses_each_command_loop_epoch(monkeypatch):
 
     monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
     bns = BNS(model="bsl", stdin_device="keyboard")
+    bns._input_boundary = INPUT_BOUNDARIES["bsl"]
     observed = []
 
     class TimerWokenCPU:
@@ -602,16 +589,16 @@ def test_bsl_keyboard_stdin_uses_each_command_loop_epoch(monkeypatch):
                 )
             )
             if self.calls == 1:
-                self.instruction_pc = PROFILES["bsl"].command_loop_timer_pc
-                bns._mem_write(PROFILES["bsl"].command_loop_timer, 0)
+                self.instruction_pc = INPUT_BOUNDARIES["bsl"].command_loop_timer_pc
+                bns._mem_write(INPUT_BOUNDARIES["bsl"].command_loop_timer, 0)
             elif self.calls == 2:
                 bns.memory.write(
-                    PROFILES["bsl"].keyboard_input_buffer,
+                    INPUT_BOUNDARIES["bsl"].keyboard_input_buffer,
                     0x01,
                 )
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             elif self.calls == 3:
-                bns.memory.write(PROFILES["bsl"].keyboard_input_buffer, 0)
+                bns.memory.write(INPUT_BOUNDARIES["bsl"].keyboard_input_buffer, 0)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             return cycles
 
@@ -659,6 +646,7 @@ def test_tns_modified_stdin_preserves_physical_modifier_sequence(
         stdin_device="jsonl",
         stdio_output=JSONLOutput(output_stream),
     )
+    bns._input_boundary = INPUT_BOUNDARIES["tns"]
     observed = []
 
     class KeyboardPICCPU:
@@ -678,8 +666,8 @@ def test_tns_modified_stdin_preserves_physical_modifier_sequence(
             if bns.keyboard.latched:
                 observed.append(bns.keyboard.read(0xD0))
             if self.calls == 1:
-                self.instruction_pc = PROFILES["tns"].command_loop_timer_pc
-                bns._mem_write(PROFILES["tns"].command_loop_timer, 0)
+                self.instruction_pc = INPUT_BOUNDARIES["tns"].command_loop_timer_pc
+                bns._mem_write(INPUT_BOUNDARIES["tns"].command_loop_timer, 0)
             return cycles
 
     bns.cpu = KeyboardPICCPU()

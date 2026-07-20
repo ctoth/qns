@@ -9,7 +9,13 @@ from typing import BinaryIO
 
 from .cpu import Z180
 from .input_driver import ChordInputDriver
-from .loader import EnglishBoundary, find_english_boundary, load_firmware
+from .loader import (
+    EnglishBoundary,
+    InputBoundary,
+    find_english_boundary,
+    find_input_boundary,
+    load_firmware,
+)
 from .devices import (
     MSM6242RTC,
     BQ2010GasGauge,
@@ -127,6 +133,7 @@ class BNS:
         self._stdio_watch_pc = stdio_watch_pc
         self._english_callback = english_callback
         self._english_boundary: EnglishBoundary | None = None
+        self._input_boundary: InputBoundary | None = None
         self._english_capture_cycle: int | None = None
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
         self._stdio_serial_input_queues = (queue.Queue(), queue.Queue())
@@ -280,10 +287,12 @@ class BNS:
 
         # Count only the linked STARTA instruction that opens another command-loop
         # epoch.  The same timer is also cleared during early RAM initialization.
+        input_boundary = self._input_boundary
         if (
-            addr == self.profile.command_loop_timer
+            input_boundary is not None
+            and addr == input_boundary.command_loop_timer
             and value == 0
-            and self.cpu.instruction_pc == self.profile.command_loop_timer_pc
+            and self.cpu.instruction_pc == input_boundary.command_loop_timer_pc
         ):
             self._command_loop_write_count += 1
 
@@ -564,6 +573,14 @@ class BNS:
                 f"0x{self._english_boundary.capture_addr:04X}, "
                 f"SPBUF 0x{self._english_boundary.spbuf:04X}"
             )
+        self._input_boundary = find_input_boundary(image.data)
+        if self._input_boundary is not None:
+            print(
+                "Chord acceptance boundary: buffer "
+                f"0x{self._input_boundary.keyboard_input_buffer:05X}, "
+                f"timer 0x{self._input_boundary.command_loop_timer:05X} "
+                f"@ PC 0x{self._input_boundary.command_loop_timer_pc:04X}"
+            )
 
     def reset(self) -> None:
         """Reset the emulator."""
@@ -592,8 +609,22 @@ class BNS:
         key_wait_candidate: tuple[int, int] | None = None
         if self.stdin_device is not None:
             if self.stdin_device in ("keyboard", "jsonl"):
-                input_driver = ChordInputDriver(self)
-                if self.power_on_input:
+                if (
+                    self.profile.family != "tns"
+                    and self._input_boundary is None
+                ):
+                    if self.power_on_input:
+                        raise RuntimeError(
+                            "chord-acceptance addresses were not discovered "
+                            "in this firmware; power-on input is unavailable"
+                        )
+                    print(
+                        "[Input] chord-acceptance addresses not discovered "
+                        "in this firmware; keyboard input disabled"
+                    )
+                else:
+                    input_driver = ChordInputDriver(self)
+                if input_driver is not None and self.power_on_input:
                     if self.stdin_device == "jsonl":
                         line = sys.stdin.readline()
                         if not line:

@@ -1,8 +1,9 @@
 """Per-model hardware profiles for the BNS device family.
 
-Each profile captures the static wiring of one hardware model — ports,
-peripherals, power-latch family — plus the firmware addresses recovered
-from the supplied update packages (see NOTES.md for the derivations).
+Each profile captures the static wiring of one hardware model: ports,
+peripheral presence, and power-latch family.  Firmware addresses are
+not profile data; they are revision-specific and discovered from the
+loaded image by qns.loader.
 """
 
 from dataclasses import dataclass
@@ -35,15 +36,6 @@ class HardwareProfile:
     """Whether the power-on input dialogue boundary is proven for this
     model, enabling --power-on-input."""
 
-    # Firmware addresses recovered from the supplied update packages.
-    keyboard_input_buffer: int
-    """Physical address of the firmware chord input buffer."""
-
-    command_loop_timer: int
-    """Physical address of the timer cleared at each command-loop epoch."""
-
-    command_loop_timer_pc: int
-    """Linked address of the STARTA instruction that clears that timer."""
 
 
 
@@ -63,9 +55,6 @@ PROFILES: dict[str, HardwareProfile] = {
             has_gas_gauge=False,
             parallel_port_base=0x80,
             power_on_input_proven=False,
-            keyboard_input_buffer=0x4327C,
-            command_loop_timer=0x41653,
-            command_loop_timer_pc=0x0A0D,
         ),
         HardwareProfile(
             name="bs2",
@@ -80,9 +69,6 @@ PROFILES: dict[str, HardwareProfile] = {
             has_gas_gauge=True,
             parallel_port_base=0x80,
             power_on_input_proven=True,
-            keyboard_input_buffer=0x4327D,
-            command_loop_timer=0x41654,
-            command_loop_timer_pc=0x0A7E,
         ),
         HardwareProfile(
             name="bsl",
@@ -97,9 +83,6 @@ PROFILES: dict[str, HardwareProfile] = {
             has_gas_gauge=False,
             parallel_port_base=0x80,
             power_on_input_proven=False,
-            keyboard_input_buffer=0x433E5,
-            command_loop_timer=0x41653,
-            command_loop_timer_pc=0x0A97,
         ),
         HardwareProfile(
             name="bl2",
@@ -114,9 +97,6 @@ PROFILES: dict[str, HardwareProfile] = {
             has_gas_gauge=True,
             parallel_port_base=0x80,
             power_on_input_proven=True,
-            keyboard_input_buffer=0x433E6,
-            command_loop_timer=0x41654,
-            command_loop_timer_pc=0x0AF5,
         ),
         HardwareProfile(
             name="bl4",
@@ -131,9 +111,6 @@ PROFILES: dict[str, HardwareProfile] = {
             has_gas_gauge=True,
             parallel_port_base=0xA0,
             power_on_input_proven=True,
-            keyboard_input_buffer=0x433F0,
-            command_loop_timer=0x4165A,
-            command_loop_timer_pc=0x0B36,
         ),
         HardwareProfile(
             name="tns",
@@ -148,9 +125,6 @@ PROFILES: dict[str, HardwareProfile] = {
             has_gas_gauge=False,
             parallel_port_base=0xC0,
             power_on_input_proven=False,
-            keyboard_input_buffer=0x4329D,
-            command_loop_timer=0x41659,
-            command_loop_timer_pc=0x0AF9,
         ),
     )
 }

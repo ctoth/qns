@@ -31,8 +31,12 @@ _XOR_A = _Insn("xor a", (0xAF,))
 _LD_B_A = _Insn("ld b,a", (0x47,))
 _LD_A_C = _Insn("ld a,c", (0x79,))
 _OR_A = _Insn("or a", (0xB7,))
+_JR = _Insn("jr d", (0x18,), operand_bytes=1)
 _JR_Z = _Insn("jr z,d", (0x28,), operand_bytes=1)
 _LD_A_MEMORY = _Insn("ld a,(nn)", (0x3A,), operand_bytes=2)
+_LD_MEMORY_A = _Insn("ld (nn),a", (0x32,), operand_bytes=2)
+_LD_A_7D = _Insn("ld a,7dh", (0x3E, 0x7D))
+_LD_HL_INDIRECT_ZERO = _Insn("ld (hl),0", (0x36, 0x00))
 _BIT_3_A = _Insn("bit 3,a", (0xCB, 0x5F))
 _CALL_Z = _Insn("call z,nn", (0xCC,), operand_bytes=2)
 _CALL = _Insn("call nn", (0xCD,), operand_bytes=2)
@@ -138,6 +142,90 @@ def find_english_boundary(firmware: bytes) -> EnglishBoundary | None:
     return EnglishBoundary(
         capture_addr=offset + len(_LD_HL_IMMEDIATE.tokens()),
         spbuf=firmware[offset + 1] | (firmware[offset + 2] << 8),
+    )
+
+
+# BS.ASM::STARTA's command-loop epoch open: the timer address is the
+# LD HL operand and the linked write instruction is the LD (HL),0.
+_STARTA_SIGNATURE = (
+    _XOR_A,
+    _LD_MEMORY_A,
+    _LD_HL_IMMEDIATE,
+    _LD_HL_INDIRECT_ZERO,
+    _CALL,
+)
+
+# The keyboard ISR's chord-accept tail: the accepted chord is stored to
+# the firmware input buffer (_IIB), whose address is the first LD (nn),A
+# operand.  The LD A,7DH marker constant precedes it in every supplied
+# link, classic and 2003 alike.
+_CHORD_ACCEPT_SIGNATURE = (
+    _LD_A_7D,
+    _JR,
+    _LD_MEMORY_A,
+    _XOR_A,
+    _LD_MEMORY_A,
+    _JR,
+)
+
+# Every supplied runtime maps the command-loop common area with CBR=34
+# (see NOTES.md's live MMU records), which converts the logical operand
+# addresses above into the physical addresses our callbacks receive.
+_COMMON_AREA_CBR = 0x34
+
+
+def _sequence_offset(signature: tuple[_Insn, ...], insn: _Insn) -> int:
+    """Byte offset of an instruction's first occurrence in a sequence."""
+    offset = 0
+    for candidate in signature:
+        if candidate is insn:
+            return offset
+        offset += len(candidate.tokens())
+    raise ValueError(f"{insn.mnemonic} not in signature")
+
+
+@dataclass(frozen=True)
+class InputBoundary:
+    """The firmware's chord-acceptance addresses (see NOTES.md)."""
+
+    keyboard_input_buffer: int
+    """Physical address of the firmware chord input buffer (_IIB)."""
+
+    command_loop_timer: int
+    """Physical address of the timer cleared at each command-loop epoch."""
+
+    command_loop_timer_pc: int
+    """Linked address of the STARTA instruction that clears that timer."""
+
+
+def find_input_boundary(firmware: bytes) -> InputBoundary | None:
+    """Locate this firmware revision's chord-acceptance addresses.
+
+    Both signatures must match exactly once in bank zero; otherwise no
+    boundary is reported rather than a wrong one.
+    """
+    bank = firmware[:0x10000]
+    starta = _find_signature(bank, _STARTA_SIGNATURE)
+    accept = _find_signature(bank, _CHORD_ACCEPT_SIGNATURE)
+    if len(starta) != 1 or len(accept) != 1:
+        return None
+
+    timer_operand = starta[0] + _sequence_offset(
+        _STARTA_SIGNATURE, _LD_HL_IMMEDIATE
+    ) + 1
+    timer_logical = bank[timer_operand] | (bank[timer_operand + 1] << 8)
+    buffer_operand = accept[0] + _sequence_offset(
+        _CHORD_ACCEPT_SIGNATURE, _LD_MEMORY_A
+    ) + 1
+    buffer_logical = bank[buffer_operand] | (bank[buffer_operand + 1] << 8)
+
+    common_base = _COMMON_AREA_CBR << 12
+    return InputBoundary(
+        keyboard_input_buffer=common_base + buffer_logical,
+        command_loop_timer=common_base + timer_logical,
+        command_loop_timer_pc=starta[0] + _sequence_offset(
+            _STARTA_SIGNATURE, _LD_HL_INDIRECT_ZERO
+        ),
     )
 
 
