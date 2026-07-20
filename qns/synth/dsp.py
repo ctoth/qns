@@ -65,9 +65,6 @@ def time_stretch(samples: np.ndarray, rate: int, duration: int) -> np.ndarray:
     Returns:
         Time-stretched samples (int16)
     """
-    # HACK: Disable time stretching for now - dur=3 causes too much compression
-    return samples.copy()
-
     if duration == 0 or duration == 1:
         # No averaging
         return samples.copy()
