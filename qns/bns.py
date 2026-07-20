@@ -25,6 +25,7 @@ from .stdio import (
     JSONLOutput,
     KeyboardInput,
     SerialInput,
+    StopInput,
     WatchPCInput,
     parse_input_event,
 )
@@ -185,6 +186,7 @@ class BNS:
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
         self._stdio_serial_input_queues = (queue.Queue(), queue.Queue())
         self._stdio_watch_queue: queue.Queue[int] = queue.Queue()
+        self._stdio_stop_requested = threading.Event()
         self._stdin_error_queue: queue.Queue[ValueError] = queue.Queue()
 
         # Debugging options
@@ -672,6 +674,8 @@ class BNS:
                                 self._stdio_serial_input_queues[event.channel].put(byte)
                         elif isinstance(event, WatchPCInput):
                             self._stdio_watch_queue.put(event.address)
+                        elif isinstance(event, StopInput):
+                            self._stdio_stop_requested.set()
                 else:
                     while data := sys.stdin.buffer.read(1):
                         self._serial_input_queue.put(data[0])
@@ -688,6 +692,9 @@ class BNS:
                     pass
                 else:
                     raise RuntimeError(f"invalid JSONL stdin event: {stdin_error}")
+
+                if self._stdio_stop_requested.is_set():
+                    break
 
                 try:
                     watch_pc = self._stdio_watch_queue.get_nowait()
@@ -1146,6 +1153,9 @@ def main() -> None:
 
         if args.stats:
             bns.print_stats()
+
+        if stdio_output is not None:
+            stdio_output.emit("system", state="exited")
 
 
 if __name__ == "__main__":

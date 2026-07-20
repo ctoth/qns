@@ -768,7 +768,10 @@ def test_cli_jsonl_round_trip_keeps_binary_serial_separate_from_diagnostics(tmp_
     )
 
     assert result.returncode == 0, result.stderr.decode(errors="replace")
-    assert json.loads(result.stdout) == {"device": "serial0", "data": "Wg=="}
+    assert [json.loads(line) for line in result.stdout.splitlines()] == [
+        {"device": "serial0", "data": "Wg=="},
+        {"device": "system", "state": "exited"},
+    ]
     assert b"Input: STDIN (jsonl)" in result.stderr
 
 
@@ -801,13 +804,14 @@ def test_cli_jsonl_reports_existing_native_pc_watch(tmp_path):
 
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     events = [json.loads(line) for line in result.stdout.splitlines()]
-    assert len(events) == 1
+    assert len(events) == 2
     event = events[0]
     assert event["device"] == "cpu"
     assert event["event"] == "pc-watch"
     assert event["pc"] == 0x10
     assert event["cycle"] > 0
     assert event["cbar"] == 0xF0
+    assert events[1] == {"device": "system", "state": "exited"}
 
 
 def test_cli_jsonl_arms_native_pc_watch_during_execution(tmp_path):
@@ -908,6 +912,7 @@ def test_cli_jsonl_emits_complete_speech_and_display_events(
             "example": "pause",
         },
         {"device": "display", "cells": list(frame)},
+        {"device": "system", "state": "exited"},
     ]
     assert "Loaded ROM" in captured.err
 

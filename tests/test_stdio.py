@@ -12,6 +12,7 @@ from qns.stdio import (
     JSONLOutput,
     KeyboardInput,
     SerialInput,
+    StopInput,
     WatchPCInput,
     parse_input_event,
 )
@@ -23,6 +24,7 @@ from qns.stdio import (
         ('{"device":"keyboard","text":"Of"}', KeyboardInput("Of")),
         ('{"device":"keyboard","chord":74}', KeyboardInput(0x4A)),
         ('{"device":"cpu","watch_pc":4096}', WatchPCInput(0x1000)),
+        ('{"device":"system","action":"stop"}', StopInput()),
     ),
 )
 def test_keyboard_events_preserve_text_and_raw_chords(line, expected):
@@ -54,6 +56,7 @@ def test_serial_events_preserve_arbitrary_binary_data(channel: int, data: bytes)
         ('{"device":"serial0","data":"%%%"}', "valid base64"),
         ('{"device":"serial2","data":""}', "device must be"),
         ('{"device":"cpu","watch_pc":65536}', "logical address"),
+        ('{"device":"system","action":"reset"}', "action must be stop"),
     ),
 )
 def test_input_events_reject_ambiguous_or_invalid_values(line: str, message: str):

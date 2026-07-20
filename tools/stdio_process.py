@@ -256,6 +256,26 @@ class BNSStdioProcess:
             timeout=timeout,
         )
 
+    def request_stop(self, *, timeout: float = 30.0) -> None:
+        """Request orderly exit and require confirmation after post-run work."""
+        self.send_event("system", action="stop")
+        self.wait_for(
+            lambda event: (
+                event.get("device") == "system"
+                and event.get("state") == "exited"
+            ),
+            "graceful system exit",
+            timeout=timeout,
+        )
+        try:
+            returncode = self.process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            raise TimeoutError("BNS did not exit after graceful-stop confirmation") from error
+        if returncode != 0:
+            raise RuntimeError(
+                f"BNS graceful stop exited with {returncode}; stderr=[{self.stderr()}]"
+            )
+
     def stop(self) -> None:
         """Stop the verification subprocess without saving its disposable state."""
         if self.process.poll() is not None:

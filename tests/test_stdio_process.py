@@ -2,6 +2,7 @@
 
 import pytest
 
+from qns.memory import Memory
 from tools.stdio_process import BNSStdioProcess
 
 
@@ -61,3 +62,29 @@ def test_stdio_process_arms_and_observes_native_pc_watch(tmp_path):
 
         assert event["cycle"] > 0
         assert event["cbar"] == 0xF0
+
+
+def test_stdio_process_graceful_stop_persists_state_before_exit(tmp_path):
+    state = tmp_path / "bsp.state"
+    writer_rom = tmp_path / "state-writer.bin"
+    writer_rom.write_bytes(bytes((
+        0x3E, 0x5A,
+        0x32, 0x00, 0xF0,
+        0x18, 0xFE,
+    )))
+
+    with BNSStdioProcess(
+        writer_rom,
+        model="bsp",
+        state=state,
+    ) as bns:
+        bns.arm_pc_watch(0x0005, timeout=10)
+        bns.wait_for_pc_watch(0x0005, timeout=10)
+        bns.request_stop(timeout=10)
+
+        assert bns.process.returncode == 0
+        assert "Saved nonvolatile RAM state" in bns.stderr()
+
+    restored = Memory()
+    restored.load_state(state)
+    assert restored.read(0xF000) == 0x5A

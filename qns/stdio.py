@@ -30,7 +30,14 @@ class WatchPCInput:
     address: int
 
 
-def parse_input_event(line: str) -> KeyboardInput | SerialInput | WatchPCInput:
+@dataclass(frozen=True)
+class StopInput:
+    """Request an orderly emulator return and post-run state save."""
+
+
+def parse_input_event(
+    line: str,
+) -> KeyboardInput | SerialInput | WatchPCInput | StopInput:
     """Parse and validate one newline-delimited JSON input event."""
     try:
         event = json.loads(line)
@@ -77,7 +84,14 @@ def parse_input_event(line: str) -> KeyboardInput | SerialInput | WatchPCInput:
             raise ValueError("CPU watch_pc must be a logical address from 0 through 65535")
         return WatchPCInput(address)
 
-    raise ValueError("input event device must be keyboard, serial0, serial1, or cpu")
+    if device == "system":
+        if event.get("action") != "stop":
+            raise ValueError("system action must be stop")
+        return StopInput()
+
+    raise ValueError(
+        "input event device must be keyboard, serial0, serial1, cpu, or system"
+    )
 
 
 class JSONLOutput:
