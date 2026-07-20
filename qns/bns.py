@@ -60,8 +60,26 @@ _ASCII_TO_TNS_SCAN = {
     "a": 0x94, "s": 0xAC, "d": 0xB4, "f": 0xBC, "g": 0xC0,
     "h": 0xC8, "j": 0xC4, "k": 0xCC, "l": 0xD4,
     "z": 0x92, "x": 0xAA, "c": 0xB2, "v": 0xAB, "b": 0xB3,
-    "n": 0xBB, "m": 0xC3, " ": 0xA9, "\n": 0xDB, "\r": 0xDB,
+    "n": 0xBB, "m": 0xC3,
+    "1": 0x8B, "2": 0x8D, "3": 0x95, "4": 0xAD, "5": 0x97,
+    "6": 0xAF, "7": 0xB7, "8": 0xBF, "9": 0xC7, "0": 0xCF,
+    "-": 0xD7, "=": 0xDF, "[": 0xD0, "]": 0xD8,
+    ";": 0xDC, "'": 0xD3, ",": 0xCB, ".": 0xC2,
+    "/": 0xCA, "\\": 0xE0, "`": 0xB9,
+    "\t": 0x91, "\b": 0xED, "\x7f": 0xED,
+    " ": 0xA9, "\n": 0xDB, "\r": 0xDB,
 }
+
+_SHIFTED_ASCII_TO_TNS_SCAN = {
+    "!": 0x8B, "@": 0x8D, "#": 0x95, "$": 0xAD, "%": 0x97,
+    "^": 0xAF, "&": 0xB7, "*": 0xBF, "(": 0xC7, ")": 0xCF,
+    "_": 0xD7, "+": 0xDF, "{": 0xD0, "}": 0xD8,
+    ":": 0xDC, '"': 0xD3, "<": 0xCB, ">": 0xC2,
+    "?": 0xCA, "|": 0xE0, "~": 0xB9,
+}
+
+_TNS_LEFT_SHIFT_SCAN = 0xE1
+_TNS_ALT_SCAN = 0xA1
 
 _COMBYT_PHYSICAL = 0x414B0
 _BS2_POWER_ON_INITIALIZE_CHORD = 0x4A
@@ -110,14 +128,26 @@ def _keyboard_input_chord(value: str | int, model: str = "bsp") -> int:
     if isinstance(value, int):
         return value
     if model == "tns":
-        try:
-            return _ASCII_TO_TNS_SCAN[value]
-        except KeyError as error:
-            raise ValueError(f"unsupported TNS input character: {value!r}") from error
+        return _tns_input_scan(value)[0]
     codepoint = ord(value)
     if codepoint >= len(_ASCII_TO_BNS_KEY):
         raise ValueError(f"unsupported input character: U+{codepoint:04X}")
     return _ASCII_TO_BNS_KEY[codepoint]
+
+
+def _tns_input_scan(value: str) -> tuple[int, bool]:
+    """Return the TNS keyboard-PIC scan and physical shift state."""
+    scan = _ASCII_TO_TNS_SCAN.get(value)
+    if scan is not None:
+        return scan, False
+    if len(value) == 1:
+        scan = _ASCII_TO_TNS_SCAN.get(value.lower())
+        if scan is not None and value != value.lower():
+            return scan, True
+    scan = _SHIFTED_ASCII_TO_TNS_SCAN.get(value)
+    if scan is not None:
+        return scan, True
+    raise ValueError(f"unsupported TNS input character: {value!r}")
 
 
 class BNS:
@@ -651,6 +681,8 @@ class BNS:
         keyboard_input_queue: queue.Queue[str | int] | None = None
         input_phase: str | None = None
         input_chord: int | None = None
+        input_shifted = False
+        input_alt = False
         input_ready_reported = False
         pc_watch_reported = False
         key_wait_candidate: tuple[int, int] | None = None
@@ -824,6 +856,24 @@ class BNS:
                             chord=accepted_chord,
                         )
                 elif (
+                    input_phase == "tns-shift-down"
+                    and not self.keyboard.latched
+                    and input_chord is not None
+                ):
+                    if input_alt:
+                        self.keyboard.press(_TNS_ALT_SCAN)
+                        input_phase = "tns-alt-down"
+                    else:
+                        self.keyboard.press(input_chord)
+                        input_phase = "down"
+                elif (
+                    input_phase == "tns-alt-down"
+                    and not self.keyboard.latched
+                    and input_chord is not None
+                ):
+                    self.keyboard.press(input_chord)
+                    input_phase = "down"
+                elif (
                     input_phase == "down"
                     and not self.keyboard.latched
                     and input_chord is not None
@@ -843,9 +893,51 @@ class BNS:
                         or self.memory.read(self._keyboard_input_buffer_physical) == 0
                     )
                 ):
+                    if self.model == "tns" and input_alt:
+                        self.keyboard.release(_TNS_ALT_SCAN)
+                        input_phase = "tns-alt-up"
+                    elif self.model == "tns" and input_shifted:
+                        self.keyboard.release(_TNS_LEFT_SHIFT_SCAN)
+                        input_phase = "tns-shift-up"
+                    else:
+                        accepted_chord = input_chord
+                        input_phase = None
+                        input_chord = None
+                        input_shifted = False
+                        input_alt = False
+                        if self.stdio_output is not None:
+                            self.stdio_output.emit(
+                                "keyboard",
+                                state="accepted",
+                                chord=accepted_chord,
+                            )
+                elif (
+                    input_phase == "tns-alt-up"
+                    and not self.keyboard.latched
+                ):
+                    if input_shifted:
+                        self.keyboard.release(_TNS_LEFT_SHIFT_SCAN)
+                        input_phase = "tns-shift-up"
+                    else:
+                        accepted_chord = input_chord
+                        input_phase = None
+                        input_chord = None
+                        input_alt = False
+                        if self.stdio_output is not None:
+                            self.stdio_output.emit(
+                                "keyboard",
+                                state="accepted",
+                                chord=accepted_chord,
+                            )
+                elif (
+                    input_phase == "tns-shift-up"
+                    and not self.keyboard.latched
+                ):
                     accepted_chord = input_chord
                     input_phase = None
                     input_chord = None
+                    input_shifted = False
+                    input_alt = False
                     if self.stdio_output is not None:
                         self.stdio_output.emit(
                             "keyboard",
@@ -870,12 +962,25 @@ class BNS:
                             input_ready_reported = True
                     else:
                         try:
-                            input_chord = _keyboard_input_chord(character, self.model)
+                            if self.model == "tns" and isinstance(character, str):
+                                input_chord, input_shifted = _tns_input_scan(character)
+                                input_alt = character in ("`", "~")
+                            else:
+                                input_chord = _keyboard_input_chord(character, self.model)
+                                input_shifted = False
+                                input_alt = False
                         except ValueError as error:
                             print(f"[Input] {error}")
                         else:
-                            self.keyboard.press(input_chord)
-                            input_phase = "down"
+                            if self.model == "tns" and input_shifted:
+                                self.keyboard.press(_TNS_LEFT_SHIFT_SCAN)
+                                input_phase = "tns-shift-down"
+                            elif self.model == "tns" and input_alt:
+                                self.keyboard.press(_TNS_ALT_SCAN)
+                                input_phase = "tns-alt-down"
+                            else:
+                                self.keyboard.press(input_chord)
+                                input_phase = "down"
                             input_ready_reported = False
                             input_command_loop_writes = (
                                 self._command_loop_write_count

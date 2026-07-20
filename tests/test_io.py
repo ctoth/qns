@@ -50,6 +50,20 @@ def test_tns_keyboard_pic_interrupts_for_distinct_down_and_up_codes():
     assert interrupts == [1, 0, 1, 0]
 
 
+def test_tns_keyboard_pic_releases_nested_key_then_modifier():
+    """Shift remains firmware-held until its own key-up byte is presented."""
+    keyboard = TNSKeyboard()
+
+    keyboard.press(0xE1)
+    assert keyboard.read(0xD0) == 0xE1
+    keyboard.press(0x94)
+    assert keyboard.read(0xD0) == 0x94
+    keyboard.release(0x94)
+    assert keyboard.read(0xD0) == 0x14
+    keyboard.release(0xE1)
+    assert keyboard.read(0xD0) == 0x61
+
+
 @given(cells=st.binary(min_size=1, max_size=18))
 def test_braille_lite_display_captures_command_prefixed_cells(cells: bytes):
     """Each 0x83 command makes exactly the following byte one display cell."""

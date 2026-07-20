@@ -17,6 +17,7 @@ from qns.bns import (
     BNS,
     _keyboard_input_chord,
     _read_stdin_character,
+    _tns_input_scan,
 )
 from qns.bns import main as bns_main
 from qns.stdio import JSONLOutput
@@ -38,6 +39,51 @@ def test_tns_stdio_uses_source_defined_qwerty_pic_codes():
     assert _keyboard_input_chord("a", "tns") == 0x94
     assert _keyboard_input_chord(" ", "tns") == 0xA9
     assert _keyboard_input_chord("\n", "tns") == 0xDB
+
+
+@pytest.mark.parametrize(
+    ("character", "scan", "shifted"),
+    (
+        ("a", 0x94, False),
+        ("A", 0x94, True),
+        ("1", 0x8B, False),
+        ("!", 0x8B, True),
+        ("0", 0xCF, False),
+        (")", 0xCF, True),
+        ("-", 0xD7, False),
+        ("_", 0xD7, True),
+        ("=", 0xDF, False),
+        ("+", 0xDF, True),
+        ("[", 0xD0, False),
+        ("{", 0xD0, True),
+        ("]", 0xD8, False),
+        ("}", 0xD8, True),
+        (";", 0xDC, False),
+        (":", 0xDC, True),
+        ("'", 0xD3, False),
+        ('"', 0xD3, True),
+        (",", 0xCB, False),
+        ("<", 0xCB, True),
+        (".", 0xC2, False),
+        (">", 0xC2, True),
+        ("/", 0xCA, False),
+        ("?", 0xCA, True),
+        ("\\", 0xE0, False),
+        ("|", 0xE0, True),
+        ("`", 0xB9, False),
+        ("~", 0xB9, True),
+        ("\t", 0x91, False),
+        ("\b", 0xED, False),
+        ("\n", 0xDB, False),
+        (" ", 0xA9, False),
+    ),
+)
+def test_tns_stdio_selects_source_defined_scan_and_shift(
+    character,
+    scan,
+    shifted,
+):
+    assert _tns_input_scan(character) == (scan, shifted)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows console input")
@@ -452,6 +498,76 @@ def test_bsl_keyboard_stdin_uses_each_command_loop_epoch(monkeypatch):
         (0x01, False, True),
     ]
     assert not bns.keyboard.latched
+
+
+@pytest.mark.parametrize(
+    ("character", "expected", "accepted"),
+    (
+        ("A", [0xE1, 0x94, 0x14, 0x61], 0x94),
+        ("~", [0xE1, 0xA1, 0xB9, 0x39, 0x21, 0x61], 0xB9),
+    ),
+)
+def test_tns_modified_stdin_preserves_physical_modifier_sequence(
+    monkeypatch,
+    character,
+    expected,
+    accepted,
+):
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        StringIO(json.dumps({"device": "keyboard", "text": character}) + "\n"),
+    )
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
+    output_stream = StringIO()
+    bns = BNS(
+        model="tns",
+        stdin_device="jsonl",
+        stdio_output=JSONLOutput(output_stream),
+    )
+    observed = []
+
+    class KeyboardPICCPU:
+        halted = False
+        pc = 0xD65C
+        instruction_pc = 0
+
+        def __init__(self):
+            self.calls = 0
+
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
+
+        def run(self, cycles):
+            self.calls += 1
+            if bns.keyboard.latched:
+                observed.append(bns.keyboard.read(0xD0))
+            if self.calls == 1:
+                self.instruction_pc = _COMMAND_LOOP_TIMER_WRITE_PC["tns"]
+                bns._mem_write(_COMMAND_LOOP_TIMER_PHYSICAL["tns"], 0)
+            return cycles
+
+    bns.cpu = KeyboardPICCPU()
+    bns.run(max_cycles=8_000)
+
+    assert observed == expected
+    keyboard_events = [
+        event
+        for line in output_stream.getvalue().splitlines()
+        if (event := json.loads(line))["device"] == "keyboard"
+    ]
+    assert keyboard_events == [
+        {"device": "keyboard", "state": "accepted", "chord": accepted},
+    ]
 
 
 def test_address_trace_retains_causal_write_event_once():

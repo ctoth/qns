@@ -522,13 +522,15 @@ class TNSKeyboard:
         self._down_code = code | 0x80
         self._present(self._down_code)
 
-    def release(self) -> None:
-        """Present the matching key-up scan code."""
-        if not self._down_code:
+    def release(self, code: int | None = None) -> None:
+        """Present a named key-up scan, or release the latest key-down."""
+        if code is None:
+            code = self._down_code
+        if not code:
             return
-        code = self._down_code & 0x7F
-        self._down_code = 0
-        self._present(code)
+        if code | 0x80 == self._down_code:
+            self._down_code = 0
+        self._present(code & 0x7F)
 
     def _present(self, code: int) -> None:
         self.code = code & 0xFF
