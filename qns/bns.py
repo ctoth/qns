@@ -4,6 +4,7 @@ import argparse
 import queue
 import sys
 import threading
+from collections.abc import Callable
 from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 from typing import BinaryIO
@@ -107,6 +108,14 @@ _COMMAND_LOOP_TIMER_WRITE_PC = {
     "bl4": 0x0B36,
     "tns": 0x0AF9,
 }
+_ENGLISH_SPEECH_BOUNDARY = {
+    "bsp": (0xBC9B, 0xD657),
+    "bs2": (0xBC9A, 0xD658),
+    "bsl": (0xAD86, 0xD657),
+    "bl2": (0xBC4D, 0xD658),
+    "bl4": (0xAD81, 0xD65E),
+    "tns": (0xAD71, 0xD65D),
+}
 
 
 def _read_stdin_character() -> str:
@@ -181,7 +190,8 @@ class BNS:
                  serial_output: BinaryIO | None = None,
                  serial_output_channel: int | None = None,
                  stdio_output: JSONLOutput | None = None,
-                 stdio_watch_pc: int | None = None):
+                 stdio_watch_pc: int | None = None,
+                 english_callback: Callable[[str], None] | None = None):
         """Initialize the BNS emulator.
 
         Args:
@@ -200,6 +210,7 @@ class BNS:
             serial_output_channel: ASCI channel routed to serial_output
             stdio_output: Structured output for all emulated device events
             stdio_watch_pc: Program counter reported through structured output
+            english_callback: Observer for exact pre-translation firmware text
         """
         if model not in ("bsp", "bs2", "bsl", "bl2", "bl4", "tns"):
             raise ValueError(f"Unsupported BNS model: {model}")
@@ -231,6 +242,8 @@ class BNS:
         self.serial_output_channel = serial_output_channel
         self.stdio_output = stdio_output
         self._stdio_watch_pc = stdio_watch_pc
+        self._english_callback = english_callback
+        self._english_capture_cycle: int | None = None
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
         self._stdio_serial_input_queues = (queue.Queue(), queue.Queue())
         self._stdio_watch_queue: queue.Queue[int] = queue.Queue()
@@ -346,6 +359,33 @@ class BNS:
 
     def _mem_read(self, addr: int) -> int:
         """Memory read callback for CPU."""
+        if self._english_callback is not None:
+            capture_site, spbuf = _ENGLISH_SPEECH_BOUNDARY[self.model]
+            if addr == capture_site:
+                cycle = self.cpu.cycle_count
+                if cycle != self._english_capture_cycle:
+                    self._english_capture_cycle = cycle
+                    source = self.cpu.get_reg(Z180.HL)
+                    segment_length = self.cpu.get_reg(Z180.BC) & 0xFFFF
+                    common_page = self.cpu.cbar >> 4
+                    if (
+                        source == spbuf
+                        and source >> 12 >= common_page
+                        and 0 < segment_length <= 0xFF
+                    ):
+                        physical = (source + (self.cpu.cbr << 12)) & 0xFFFFF
+                        message = bytearray()
+                        for offset in range(0x100):
+                            value = self.memory.read(physical + offset)
+                            if value == 0:
+                                text = bytes(message).decode(
+                                    "ascii",
+                                    errors="replace",
+                                ).strip()
+                                if text:
+                                    self._english_callback(text)
+                                break
+                            message.append(value)
         return self.memory.read(addr)
 
     def _mem_write(self, addr: int, value: int) -> None:
@@ -1128,13 +1168,19 @@ def main() -> None:
     )
     parser.add_argument(
         "--speech",
-        choices=("codes", "names", "ipa", "examples"),
-        help="Print retained speech as codes, phoneme names, IPA, or datasheet example words",
+        choices=("codes", "names", "ipa", "examples", "english"),
+        help=(
+            "Print retained speech as codes, phoneme names, IPA, "
+            "datasheet example words, or exact firmware English"
+        ),
     )
     parser.add_argument(
         "--speech-stream",
-        choices=("codes", "names", "ipa", "examples"),
-        help="Stream each non-pause phoneme as codes, names, IPA, or datasheet example words",
+        choices=("codes", "names", "ipa", "examples", "english"),
+        help=(
+            "Stream speech as phoneme codes, names, IPA, datasheet example "
+            "words, or exact firmware English"
+        ),
     )
     parser.add_argument(
         "--display",
@@ -1199,6 +1245,20 @@ def main() -> None:
     serial_output_channel = int(args.output[-1]) if raw_serial_output else None
     serial_output = sys.stdout.buffer if raw_serial_output else None
     stdio_output = JSONLOutput(sys.stdout) if structured_stdio else None
+    english_chunks: list[str] = []
+    english_callback: Callable[[str], None] | None = None
+    if stdio_output is not None:
+        def emit_stdio_english(text: str) -> None:
+            stdio_output.emit("speech", text=text)
+
+        english_callback = emit_stdio_english
+    elif args.speech_stream == "english":
+        def stream_english(text: str) -> None:
+            print(f"Speech english: {text}", flush=True)
+
+        english_callback = stream_english
+    elif args.speech == "english":
+        english_callback = english_chunks.append
     output_context = (
         redirect_stdout(sys.stderr)
         if raw_serial_output or structured_stdio
@@ -1222,6 +1282,7 @@ def main() -> None:
             serial_output_channel=serial_output_channel,
             stdio_output=stdio_output,
             stdio_watch_pc=args.watch_pc,
+            english_callback=english_callback,
         )
         if stdio_output is not None:
             def emit_stdio_speech(_code: int, _name: str) -> None:
@@ -1240,7 +1301,7 @@ def main() -> None:
                     lambda frame: stdio_output.emit("display", cells=list(frame))
                 )
 
-        elif args.speech_stream:
+        elif args.speech_stream and args.speech_stream != "english":
             def emit_speech_phoneme(code: int, _name: str) -> None:
                 if code == 0:
                     return
@@ -1289,12 +1350,19 @@ def main() -> None:
             bns.run(max_cycles=args.cycles)
 
         if args.speech:
-            phonemes = bns.ssi263.get_phonemes(include_pauses=False)
-            if args.speech == "codes":
-                speech = " ".join(f"{phoneme.code:02X}" for phoneme in phonemes)
+            if args.speech == "english":
+                speech = " ".join(english_chunks)
             else:
-                field = {"names": "name", "ipa": "ipa", "examples": "example"}[args.speech]
-                speech = " ".join(getattr(phoneme, field) for phoneme in phonemes)
+                phonemes = bns.ssi263.get_phonemes(include_pauses=False)
+                if args.speech == "codes":
+                    speech = " ".join(f"{phoneme.code:02X}" for phoneme in phonemes)
+                else:
+                    field = {
+                        "names": "name",
+                        "ipa": "ipa",
+                        "examples": "example",
+                    }[args.speech]
+                    speech = " ".join(getattr(phoneme, field) for phoneme in phonemes)
             print(f"Speech {args.speech}: {speech}")
 
         if args.display and not display_frame_emitted:

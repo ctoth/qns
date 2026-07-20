@@ -230,6 +230,66 @@ def test_keyboard_acceptance_addresses_match_each_linked_english_rom():
     }
 
 
+@pytest.mark.parametrize(
+    ("model", "capture_site", "spbuf"),
+    (
+        ("bsp", 0xBC9B, 0xD657),
+        ("bs2", 0xBC9A, 0xD658),
+        ("bsl", 0xAD86, 0xD657),
+        ("bl2", 0xBC4D, 0xD658),
+        ("bl4", 0xAD81, 0xD65E),
+        ("tns", 0xAD71, 0xD65D),
+    ),
+)
+def test_english_speech_observes_each_linked_pretranslation_buffer(
+    model,
+    capture_site,
+    spbuf,
+):
+    """English output is exact firmware text, not inverse-phoneme guessing."""
+    spoken = []
+    bns = BNS(model=model, english_callback=spoken.append)
+    hl_register = bns.cpu.HL
+    bc_register = bns.cpu.BC
+    message = b"enter file command"
+    physical_spbuf = (0x34 << 12) + spbuf
+    for offset, value in enumerate(message):
+        bns.memory.write(physical_spbuf + offset, value)
+
+    class SpeechBoundaryCPU:
+        cycle_count = 1234
+        cbr = 0x34
+        cbar = 0xC6
+
+        @staticmethod
+        def get_reg(register):
+            return {
+                hl_register: spbuf,
+                bc_register: 4,
+            }[register]
+
+    bns.cpu = SpeechBoundaryCPU()
+
+    bns._mem_read(capture_site)
+    bns._mem_read(capture_site + 1)
+
+    assert spoken == ["enter file command"]
+
+
+def test_english_speech_ignores_unrelated_instruction_fetches():
+    spoken = []
+    bns = BNS(model="bsp", english_callback=spoken.append)
+    bns.cpu = type(
+        "UnrelatedCPU",
+        (),
+        {"instruction_pc": 0x1234, "cycle_count": 1},
+    )()
+
+    bns._mem_read(0x1234)
+
+    assert spoken == []
+
+
 def test_tns_owns_source_defined_hardware_ports():
     """TNS must not inherit the incompatible BSPLUS or BL4 port map."""
     bns = BNS(model="tns")
@@ -1036,6 +1096,7 @@ def test_cli_jsonl_emits_complete_speech_and_display_events(
     frame = bytes(range(18))
 
     def emit_devices(bns: BNS, max_cycles: int = 0) -> None:
+        bns._english_callback("help is open")
         bns.ssi263.write(bns.ssi263.base_port + bns.ssi263.REG_CTRLAMP, 0x0F)
         bns.display._frame_callback(frame)
 
@@ -1050,6 +1111,7 @@ def test_cli_jsonl_emits_complete_speech_and_display_events(
 
     captured = capsys.readouterr()
     assert [json.loads(line) for line in captured.out.splitlines()] == [
+        {"device": "speech", "text": "help is open"},
         {
             "device": "speech",
             "code": 0,

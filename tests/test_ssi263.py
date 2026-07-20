@@ -72,6 +72,32 @@ def test_cli_can_print_retained_phonemes(
     assert capsys.readouterr().out.endswith(f"Speech {speech_format}: {expected}\n")
 
 
+def test_cli_can_print_retained_english_firmware_speech(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    rom_path = tmp_path / "test.bns"
+    rom_path.write_bytes(b"\x00")
+
+    def capture_speech(bns: BNS, max_cycles: int = 0) -> None:
+        bns._english_callback("help is open")
+        bns._english_callback("enter file command")
+
+    monkeypatch.setattr(BNS, "run", capture_speech)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["qns.bns", str(rom_path), "--cycles", "1", "--speech", "english"],
+    )
+
+    bns_main()
+
+    assert capsys.readouterr().out.endswith(
+        "Speech english: help is open enter file command\n"
+    )
+
+
 @pytest.mark.parametrize(
     ("speech_format", "expected"),
     (
@@ -114,4 +140,37 @@ def test_cli_streams_each_non_pause_phoneme_before_run_returns(
 
     assert capsys.readouterr().out.endswith(
         f"Speech {speech_format}: {expected}\nRun returned\n"
+    )
+
+
+def test_cli_streams_english_firmware_speech_before_run_returns(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    rom_path = tmp_path / "test.bns"
+    rom_path.write_bytes(b"\x00")
+
+    def produce_speech(bns: BNS, max_cycles: int = 0) -> None:
+        bns._english_callback("enter file command")
+        print("Run returned")
+
+    monkeypatch.setattr(BNS, "run", produce_speech)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "qns.bns",
+            str(rom_path),
+            "--cycles",
+            "1",
+            "--speech-stream",
+            "english",
+        ],
+    )
+
+    bns_main()
+
+    assert capsys.readouterr().out.endswith(
+        "Speech english: enter file command\nRun returned\n"
     )
