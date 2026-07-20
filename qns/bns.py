@@ -125,7 +125,8 @@ class BNS:
                  power_on_input: bool = False,
                  serial_output: BinaryIO | None = None,
                  serial_output_channel: int | None = None,
-                 stdio_output: JSONLOutput | None = None):
+                 stdio_output: JSONLOutput | None = None,
+                 stdio_watch_pc: int | None = None):
         """Initialize the BNS emulator.
 
         Args:
@@ -143,6 +144,7 @@ class BNS:
             serial_output: Raw byte stream for the selected serial output channel
             serial_output_channel: ASCI channel routed to serial_output
             stdio_output: Structured output for all emulated device events
+            stdio_watch_pc: Program counter reported through structured output
         """
         if model not in ("bsp", "bs2", "bsl", "bl2", "bl4"):
             raise ValueError(f"Unsupported BNS model: {model}")
@@ -173,6 +175,7 @@ class BNS:
         self.serial_output = serial_output
         self.serial_output_channel = serial_output_channel
         self.stdio_output = stdio_output
+        self._stdio_watch_pc = stdio_watch_pc
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
         self._stdio_serial_input_queues = (queue.Queue(), queue.Queue())
         self._stdin_error_queue: queue.Queue[ValueError] = queue.Queue()
@@ -254,6 +257,8 @@ class BNS:
             csio_rx=csio_device.receive if csio_device else None,
             csio_tx=csio_device.transmit if csio_device else None,
         )
+        if stdio_watch_pc is not None:
+            self.cpu.watch_pc(stdio_watch_pc)
 
         # Connect keyboard interrupt (INT2) to CPU
         self.keyboard.set_irq_callback(self._make_irq_callback(2, "keyboard"))
@@ -590,6 +595,7 @@ class BNS:
         input_phase: str | None = None
         input_chord: int | None = None
         input_ready_reported = False
+        pc_watch_reported = False
         key_wait_candidate: tuple[int, int] | None = None
         power_on_combyt_writes = self._combyt_writes
         power_on_bl4_key_samples = self._bl4_key_samples
@@ -679,6 +685,21 @@ class BNS:
                 actual = self.cpu.run(chunk)
                 cycles_run += actual
                 self.stats['cycles'] = cycles_run
+
+                if (
+                    self.stdio_output is not None
+                    and self._stdio_watch_pc is not None
+                    and self.cpu.pc_watch_count > 0
+                    and not pc_watch_reported
+                ):
+                    self.stdio_output.emit(
+                        "cpu",
+                        event="pc-watch",
+                        pc=self._stdio_watch_pc,
+                        cycle=self.cpu.pc_watch_cycle,
+                        cbar=self.cpu.pc_watch_cbar,
+                    )
+                    pc_watch_reported = True
 
                 # Update SSI-263 cycle count and check for pending phoneme completion IRQ
                 self.ssi263.set_cycle_count(cycles_run)
@@ -940,6 +961,12 @@ def main() -> None:
                         help="Log interrupt activity (IRQ lines, ITC register)")
     parser.add_argument("--trace-writes", type=parse_hex_address, metavar="ADDR",
                         help="Log writes to specific physical address (hex, e.g., 0xD468)")
+    parser.add_argument(
+        "--watch-pc",
+        type=parse_hex_address,
+        metavar="ADDR",
+        help="Emit one JSONL CPU event when execution reaches this logical address",
+    )
     parser.add_argument("--trace-writes-range", nargs=2, type=parse_hex_address,
                         metavar=("START", "END"),
                         help="Log writes to physical address range (hex, e.g., 0xD000 0xE000)")
@@ -967,6 +994,10 @@ def main() -> None:
             "--stdio jsonl cannot be combined with --input, --output, "
             "--speech, --speech-stream, or --display"
         )
+    if args.watch_pc is not None and not args.stdio:
+        parser.error("--watch-pc requires --stdio jsonl")
+    if args.watch_pc is not None and not 0 <= args.watch_pc <= 0xFFFF:
+        parser.error("--watch-pc must be a logical address from 0x0000 through 0xFFFF")
 
     # Convert range args to tuple if provided
     trace_range = None
@@ -1000,6 +1031,7 @@ def main() -> None:
             serial_output=serial_output,
             serial_output_channel=serial_output_channel,
             stdio_output=stdio_output,
+            stdio_watch_pc=args.watch_pc,
         )
         if stdio_output is not None:
             def emit_stdio_speech(_code: int, _name: str) -> None:
