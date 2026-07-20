@@ -1,8 +1,10 @@
 """Tests for BNS firmware-facing behavior."""
 
+import base64
+import json
 import subprocess
 import sys
-from io import BytesIO
+from io import BytesIO, StringIO
 
 import pytest
 
@@ -15,6 +17,7 @@ from qns.bns import (
     BNS,
     _read_stdin_character,
 )
+from qns.bns import main as bns_main
 
 
 def test_english_stdio_characters_use_firmware_keyboard_chords():
@@ -233,6 +236,101 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
     ]
     assert bns.memory.read(_KEYBOARD_INPUT_BUFFER_PHYSICAL[model]) == 0
     assert not bns.keyboard.latched
+
+
+def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):
+    events = "\n".join(
+        (
+            json.dumps({"device": "keyboard", "text": "a"}),
+            json.dumps({"device": "serial0", "data": "AA=="}),
+            json.dumps({"device": "serial1", "data": "/w=="}),
+            "",
+        )
+    )
+    monkeypatch.setattr(sys, "stdin", StringIO(events))
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
+    bns = BNS(model="bsp", stdin_device="jsonl")
+    observed = []
+
+    class EventCPU:
+        halted = True
+        pc = 0xD656
+
+        def __init__(self):
+            self.calls = 0
+
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
+
+        def run(self, cycles):
+            self.calls += 1
+            observed.append(
+                (
+                    bns.keyboard.dots,
+                    bns._serial_receive(0),
+                    bns._serial_receive(1),
+                )
+            )
+            if self.calls == 3:
+                bns.memory.write(_KEYBOARD_INPUT_BUFFER_PHYSICAL["bsp"], 0x01)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 4:
+                bns.memory.write(_KEYBOARD_INPUT_BUFFER_PHYSICAL["bsp"], 0)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            return cycles
+
+    bns.cpu = EventCPU()
+    bns.run(max_cycles=4_000)
+
+    assert observed[0] == (0, 0x00, 0xFF)
+    assert observed[2][0] == 0x01
+
+
+def test_jsonl_power_on_input_accepts_raw_uppercase_i_chord(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        StringIO('{"device":"keyboard","chord":74}\n'),
+    )
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
+    bns = BNS(model="bs2", stdin_device="jsonl", power_on_input=True)
+    observed = []
+
+    class PowerOnCPU:
+        halted = False
+        pc = 0
+
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
+
+        def run(self, cycles):
+            observed.append(bns.keyboard.dots)
+            bns._mem_write(_COMBYT_PHYSICAL, 0x64)
+            return cycles
+
+    bns.cpu = PowerOnCPU()
+    bns.run(max_cycles=1_000)
+
+    assert observed == [0x4A]
+    assert not bns.keyboard._key_down
 
 
 def test_bsl_keyboard_stdin_uses_each_command_loop_epoch(monkeypatch):
@@ -605,6 +703,49 @@ def test_cli_serial_standard_io_round_trip(tmp_path):
     assert b"Input: STDIN (serial0)" in result.stderr
 
 
+def test_cli_jsonl_round_trip_keeps_binary_serial_separate_from_diagnostics(tmp_path):
+    echo_rom = tmp_path / "serial-echo.bin"
+    echo_rom.write_bytes(bytes((
+        0x3E, 0x64,
+        0xED, 0x39, 0x00,
+        0x3E, 0x02,
+        0xED, 0x39, 0x02,
+        0xED, 0x38, 0x04,
+        0xE6, 0x80,
+        0x28, 0xF9,
+        0xED, 0x38, 0x08,
+        0xED, 0x39, 0x06,
+        0x18, 0xF0,
+    )))
+    input_event = json.dumps(
+        {
+            "device": "serial0",
+            "data": base64.b64encode(b"Z").decode("ascii"),
+        }
+    ).encode()
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "qns.bns",
+            str(echo_rom),
+            "--cycles",
+            "200000",
+            "--stdio",
+            "jsonl",
+        ),
+        input=input_event + b"\n",
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert json.loads(result.stdout) == {"device": "serial0", "data": "Wg=="}
+    assert b"Input: STDIN (jsonl)" in result.stderr
+
+
 def test_cli_prints_retained_bl2_display_to_standard_output(tmp_path):
     """The built-in display is observable without a hardware adapter."""
     idle_rom = tmp_path / "idle.rom"
@@ -630,6 +771,42 @@ def test_cli_prints_retained_bl2_display_to_standard_output(tmp_path):
 
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     assert "Display codes: " + " ".join(["00"] * 18) in result.stdout.decode()
+
+
+def test_cli_jsonl_emits_complete_speech_and_display_events(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    idle_rom = tmp_path / "idle.rom"
+    idle_rom.write_bytes(bytes((0x18, 0xFE)))
+    frame = bytes(range(18))
+
+    def emit_devices(bns: BNS, max_cycles: int = 0) -> None:
+        bns.ssi263.write(bns.ssi263.base_port + bns.ssi263.REG_CTRLAMP, 0x0F)
+        bns.display._frame_callback(frame)
+
+    monkeypatch.setattr(BNS, "run", emit_devices)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["qns.bns", str(idle_rom), "--model", "bl2", "--stdio", "jsonl"],
+    )
+
+    bns_main()
+
+    captured = capsys.readouterr()
+    assert [json.loads(line) for line in captured.out.splitlines()] == [
+        {
+            "device": "speech",
+            "code": 0,
+            "name": "PA",
+            "ipa": "",
+            "example": "pause",
+        },
+        {"device": "display", "cells": list(frame)},
+    ]
+    assert "Loaded ROM" in captured.err
 
 
 def test_cli_state_round_trip_preserves_rom_shadow_ram(tmp_path):

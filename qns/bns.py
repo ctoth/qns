@@ -21,6 +21,7 @@ from .io import (
 )
 from .memory import Memory
 from .ssi263 import SSI263
+from .stdio import JSONLOutput, KeyboardInput, SerialInput, parse_input_event
 from .synth.ssi263_pcm import SSI263PCMSynth
 
 # Raw English BNS keyboard chords from BSTABLES.ASM's regular English TABLE.
@@ -84,6 +85,16 @@ def _read_stdin_character() -> str:
     return sys.stdin.read(1)
 
 
+def _keyboard_input_chord(value: str | int) -> int:
+    """Convert one terminal character or raw JSONL chord to firmware dots."""
+    if isinstance(value, int):
+        return value
+    codepoint = ord(value)
+    if codepoint >= len(_ASCII_TO_BNS_KEY):
+        raise ValueError(f"unsupported input character: U+{codepoint:04X}")
+    return _ASCII_TO_BNS_KEY[codepoint]
+
+
 class BNS:
     """Braille 'N Speak emulator."""
 
@@ -113,7 +124,8 @@ class BNS:
                  stdin_device: str | None = None,
                  power_on_input: bool = False,
                  serial_output: BinaryIO | None = None,
-                 serial_output_channel: int | None = None):
+                 serial_output_channel: int | None = None,
+                 stdio_output: JSONLOutput | None = None):
         """Initialize the BNS emulator.
 
         Args:
@@ -126,14 +138,15 @@ class BNS:
             trace_first_writes: Number of first writes to log
             dump_writes_file: File to dump all write addresses to (CSV format)
             trace_interrupts: Log interrupt-related activity (IRQ lines, ITC register)
-            stdin_device: Standard-input target: keyboard, serial0, or serial1
+            stdin_device: Standard-input target: keyboard, serial0, serial1, or jsonl
             power_on_input: Hold the first keyboard stdin chord during power-on
             serial_output: Raw byte stream for the selected serial output channel
             serial_output_channel: ASCI channel routed to serial_output
+            stdio_output: Structured output for all emulated device events
         """
         if model not in ("bsp", "bs2", "bsl", "bl2", "bl4"):
             raise ValueError(f"Unsupported BNS model: {model}")
-        if power_on_input and stdin_device != "keyboard":
+        if power_on_input and stdin_device not in ("keyboard", "jsonl"):
             raise ValueError("power-on input requires keyboard stdin")
         if power_on_input and model not in ("bs2", "bl2", "bl4"):
             raise ValueError(
@@ -159,7 +172,10 @@ class BNS:
         self._command_loop_timer_write_pc = _COMMAND_LOOP_TIMER_WRITE_PC[model]
         self.serial_output = serial_output
         self.serial_output_channel = serial_output_channel
+        self.stdio_output = stdio_output
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
+        self._stdio_serial_input_queues = (queue.Queue(), queue.Queue())
+        self._stdin_error_queue: queue.Queue[ValueError] = queue.Queue()
 
         # Debugging options
         self.trace_writes_addr = trace_writes
@@ -485,15 +501,21 @@ class BNS:
 
     def _serial_receive(self, channel: int) -> int:
         """Return the next stdin byte for the selected ASCI channel."""
-        if self.stdin_device != f"serial{channel}":
+        if self.stdin_device == "jsonl":
+            input_queue = self._stdio_serial_input_queues[channel]
+        elif self.stdin_device == f"serial{channel}":
+            input_queue = self._serial_input_queue
+        else:
             return -1
         try:
-            return self._serial_input_queue.get_nowait()
+            return input_queue.get_nowait()
         except queue.Empty:
             return -1
 
     def _serial_transmit(self, channel: int, value: int) -> None:
         """Write an ASCI byte only to its explicitly selected raw stream."""
+        if self.stdio_output is not None:
+            self.stdio_output.emit_serial(channel, bytes((value,)))
         if self.serial_output is not None:
             if channel != self.serial_output_channel:
                 return
@@ -564,7 +586,7 @@ class BNS:
             print("Audio: ENABLED")
             self.synth.start()
 
-        keyboard_input_queue: queue.Queue[str] | None = None
+        keyboard_input_queue: queue.Queue[str | int] | None = None
         input_phase: str | None = None
         input_chord: int | None = None
         key_wait_candidate: tuple[int, int] | None = None
@@ -572,22 +594,38 @@ class BNS:
         power_on_bl4_key_samples = self._bl4_key_samples
         input_command_loop_writes = self._command_loop_write_count
         if self.stdin_device is not None:
-            if self.stdin_device == "keyboard":
+            if self.stdin_device in ("keyboard", "jsonl"):
                 keyboard_input_queue = queue.Queue()
                 if self.power_on_input:
-                    power_on_character = _read_stdin_character()
-                    if not power_on_character:
+                    if self.stdin_device == "jsonl":
+                        line = sys.stdin.readline()
+                        if not line:
+                            power_on_value = None
+                        else:
+                            event = parse_input_event(line)
+                            if not isinstance(event, KeyboardInput):
+                                raise RuntimeError(
+                                    "power-on input requires a keyboard JSONL event"
+                                )
+                            if isinstance(event.value, str):
+                                power_on_value = event.value[:1] or None
+                                for character in event.value[1:]:
+                                    keyboard_input_queue.put(character)
+                            else:
+                                power_on_value = event.value
+                    else:
+                        power_on_value = _read_stdin_character() or None
+
+                    if power_on_value is None:
                         if self.model == "bs2":
                             raise RuntimeError(
                                 "power-on input ended before uppercase I"
                             )
                         raise RuntimeError("power-on input ended before the initial chord")
-                    codepoint = ord(power_on_character)
-                    if codepoint >= len(_ASCII_TO_BNS_KEY):
-                        raise RuntimeError(
-                            f"unsupported power-on character: U+{codepoint:04X}"
-                        )
-                    input_chord = _ASCII_TO_BNS_KEY[codepoint]
+                    try:
+                        input_chord = _keyboard_input_chord(power_on_value)
+                    except ValueError as error:
+                        raise RuntimeError(str(error)) from error
                     if (
                         self.model == "bs2"
                         and input_chord != _BS2_POWER_ON_INITIALIZE_CHORD
@@ -602,6 +640,22 @@ class BNS:
                 if self.stdin_device == "keyboard":
                     while character := _read_stdin_character():
                         keyboard_input_queue.put(character)
+                elif self.stdin_device == "jsonl":
+                    for line in sys.stdin:
+                        try:
+                            event = parse_input_event(line)
+                        except ValueError as error:
+                            self._stdin_error_queue.put(error)
+                            return
+                        if isinstance(event, KeyboardInput):
+                            if isinstance(event.value, str):
+                                for character in event.value:
+                                    keyboard_input_queue.put(character)
+                            else:
+                                keyboard_input_queue.put(event.value)
+                        elif isinstance(event, SerialInput):
+                            for byte in event.data:
+                                self._stdio_serial_input_queues[event.channel].put(byte)
                 else:
                     while data := sys.stdin.buffer.read(1):
                         self._serial_input_queue.put(data[0])
@@ -612,6 +666,13 @@ class BNS:
         cycles_run = 0
         try:
             while max_cycles == 0 or cycles_run < max_cycles:
+                try:
+                    stdin_error = self._stdin_error_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                else:
+                    raise RuntimeError(f"invalid JSONL stdin event: {stdin_error}")
+
                 # Run in chunks of 1000 cycles
                 chunk = 1000 if max_cycles == 0 else min(1000, max_cycles - cycles_run)
                 actual = self.cpu.run(chunk)
@@ -685,16 +746,16 @@ class BNS:
                     except queue.Empty:
                         pass
                     else:
-                        codepoint = ord(character)
-                        if codepoint < len(_ASCII_TO_BNS_KEY):
-                            input_chord = _ASCII_TO_BNS_KEY[codepoint]
+                        try:
+                            input_chord = _keyboard_input_chord(character)
+                        except ValueError as error:
+                            print(f"[Input] {error}")
+                        else:
                             self.keyboard.press(input_chord)
                             input_phase = "down"
                             input_command_loop_writes = (
                                 self._command_loop_write_count
                             )
-                        else:
-                            print(f"[Input] Unsupported character: U+{codepoint:04X}")
 
                 self.stats['phonemes'] = len(self.ssi263.phoneme_log)
 
@@ -819,7 +880,6 @@ def main() -> None:
     parser.add_argument("--trace", action="store_true",
                         help="Show boot trace instead of running")
     parser.add_argument("--input", choices=("keyboard", "serial0", "serial1"),
-                        default="keyboard",
                         help="Route standard input to the BNS keyboard or an ASCI channel")
     parser.add_argument(
         "--power-on-input",
@@ -832,6 +892,11 @@ def main() -> None:
     parser.add_argument("--output", choices=("console", "serial0", "serial1"),
                         default="console",
                         help="Show console logs or route one raw ASCI channel to standard output")
+    parser.add_argument(
+        "--stdio",
+        choices=("jsonl",),
+        help="Multiplex keyboard, serial, speech, and display events as JSON Lines",
+    )
     parser.add_argument(
         "--speech",
         choices=("codes", "names", "ipa", "examples"),
@@ -873,15 +938,33 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.stdio and (
+        args.input is not None
+        or args.output != "console"
+        or args.speech is not None
+        or args.speech_stream is not None
+        or args.display is not None
+    ):
+        parser.error(
+            "--stdio jsonl cannot be combined with --input, --output, "
+            "--speech, --speech-stream, or --display"
+        )
+
     # Convert range args to tuple if provided
     trace_range = None
     if args.trace_writes_range:
         trace_range = tuple(args.trace_writes_range)
 
-    raw_serial_output = args.output != "console"
+    structured_stdio = args.stdio == "jsonl"
+    raw_serial_output = not structured_stdio and args.output != "console"
     serial_output_channel = int(args.output[-1]) if raw_serial_output else None
     serial_output = sys.stdout.buffer if raw_serial_output else None
-    output_context = redirect_stdout(sys.stderr) if raw_serial_output else nullcontext()
+    stdio_output = JSONLOutput(sys.stdout) if structured_stdio else None
+    output_context = (
+        redirect_stdout(sys.stderr)
+        if raw_serial_output or structured_stdio
+        else nullcontext()
+    )
     display_frame_emitted = False
 
     with output_context:
@@ -894,12 +977,30 @@ def main() -> None:
             trace_writes_range=trace_range,
             trace_first_writes=args.trace_first_writes,
             dump_writes_file=args.dump_writes,
-            stdin_device=args.input,
+            stdin_device="jsonl" if structured_stdio else (args.input or "keyboard"),
             power_on_input=args.power_on_input,
             serial_output=serial_output,
             serial_output_channel=serial_output_channel,
+            stdio_output=stdio_output,
         )
-        if args.speech_stream:
+        if stdio_output is not None:
+            def emit_stdio_speech(_code: int, _name: str) -> None:
+                phoneme = bns.ssi263.get_phonemes(start=-1)[0]
+                stdio_output.emit(
+                    "speech",
+                    code=phoneme.code,
+                    name=phoneme.name,
+                    ipa=phoneme.ipa,
+                    example=phoneme.example,
+                )
+
+            bns.ssi263.set_phoneme_callback(emit_stdio_speech)
+            if hasattr(bns, "display"):
+                bns.display.set_frame_callback(
+                    lambda frame: stdio_output.emit("display", cells=list(frame))
+                )
+
+        elif args.speech_stream:
             def emit_speech_phoneme(code: int, _name: str) -> None:
                 if code == 0:
                     return
