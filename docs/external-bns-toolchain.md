@@ -1,13 +1,14 @@
 # Building external `.bns` programs for Blazie note takers
 
 Status: active implementation plan and verified assembly-program guide,
-2026-07-20. Phases 1 through 4 are complete: a clean checkout installs the
+2026-07-20. Phases 1 through 5 are complete: a clean checkout installs the
 pinned Z180 backend, the format authority deterministically packs external
 programs from linker facts, and a newly built assembly program imports, runs,
 speaks, exits, and returns control to real BS2 firmware under QNS. The proven
-runtime workflow now has one reusable helper owner. The C SDK is the active
-next phase, and physical-device validation is not complete. Commands marked
-**planned** do not exist yet.
+runtime workflow now has one reusable helper owner, and the minimal C SDK
+passes the same real-ROM gate. Repeatable integration is the active next phase,
+and physical-device validation is not complete. Commands marked **planned** do
+not exist yet.
 
 ## Goal
 
@@ -277,6 +278,59 @@ accepted the file and installed its application MMU map. Requiring E-chord
 `accepted` and `ready` after the phrase proves the program executed its exit
 path and returned control to the firmware; entry alone is not sufficient.
 
+## Verified C build and run
+
+The C target uses z88dk's current default `z88dk-sccz80` compiler. Run these
+commands from the repository root in PowerShell:
+
+```powershell
+& .\toolchain\setup-z88dk.ps1
+$taskZ88dkBin = (Resolve-Path -LiteralPath '.toolchain\z88dk-2.4\bin').Path
+$env:Path = "$taskZ88dkBin;$env:Path"
+$taskBuild = New-Item -ItemType Directory -Force '.toolchain\build\hello-c'
+Copy-Item -LiteralPath 'examples\hello-c\hello.c' -Destination $taskBuild -Force
+Copy-Item -LiteralPath 'sdk\bns_api.asm' -Destination $taskBuild -Force
+& (Join-Path $taskZ88dkBin 'zcc.exe') '+toolchain/bns.cfg' -m -s -g --list `
+    --codeseg=bns_code --constseg=bns_code '-Isdk/include' `
+    -o (Join-Path $taskBuild 'hello-c.bin') `
+    (Join-Path $taskBuild 'hello.c') `
+    (Join-Path $taskBuild 'bns_api.asm')
+uv run python tools/bns_external.py pack `
+    (Join-Path $taskBuild 'hello-c_bns_header.bin') `
+    (Join-Path $taskBuild 'hello-c.map') `
+    (Join-Path $taskBuild 'hello-c.bns')
+uv run python tools/bns_external.py inspect `
+    (Join-Path $taskBuild 'hello-c.bns')
+```
+
+That exact build produces 317 bytes with code size `0x002E`, program length
+`0x012E`, CRC `0xC03F`, and stack `0x113C`. The map places `_main` at `0x1018`,
+`_bns_exit` at `0x102F`, `_bns_say_wait` at `0x1034`, and
+`__bns_code_end` at `0x103C`.
+
+The generated caller loads and pushes the 16-bit string pointer, calls
+`_bns_say_wait`, and removes the argument with `pop bc`. The wrapper preserves
+that caller-owned stack layout with `pop de; pop hl; push hl; push de`, loads
+API function 2, and invokes `RST 38h`. The header rejects any compiler where a
+pointer or `unsigned int` is not 16 bits. The target links no host console or
+standard-I/O runtime.
+
+This command ran that exact C output through the same fresh-state firmware
+gate:
+
+```powershell
+uv run python tools/verify_bs2_external_program.py `
+    roms/NFB99/BS2ENG/bs2eng.bns `
+    .toolchain/build/hello-c/hello-c-marker.state `
+    .toolchain/build/hello-c/hello-c.bns `
+    --stdio --expected-speech `
+    K YI U U EH1 N EH1 S S E D UH1 N
+```
+
+It imported all 317 bytes, entered at `PC=0x1000` with `CBAR=0x21`, matched the
+complete observed marker for `QNS C DONE`, returned through crt0's `API_EXIT`,
+and proved post-exit firmware input with accepted/ready E-chord events.
+
 ## Reusing the QNS runtime harness
 
 `tools/stdio_process.py::BNSStdioProcess` owns the bounded JSONL subprocess and
@@ -434,6 +488,15 @@ still imports the freshly built program, enters it, observes the complete
 phrase, exits, and accepts the post-exit key.
 
 ### Phase 5: add the minimal C SDK
+
+Implementation status: complete. A verbose `zcc +toolchain/bns.cfg -S` probe
+proves the target currently selects `z88dk-sccz80`. Its generated call places a
+16-bit pointer on the stack, calls `_bns_say_wait`, and performs caller cleanup
+with `pop bc`; the callee sees that pointer at `SP+2`. A C `main` is emitted as
+`_main`, and `--codeseg=bns_code --constseg=bns_code` places both its code and
+string literal inside the CRC-covered section. The clean 317-byte C example
+passes the exact full-marker real-ROM import, entry, speech, exit, and
+post-exit-input gate documented above.
 
 1. Confirm the selected z88dk compiler's actual calling convention from its
    generated assembly.

@@ -1,7 +1,7 @@
-public hello_main
+public _main
 
 section bns_code
-hello_main:
+_main:
 ld hl, hello_message
 ld a, 2
 rst $38

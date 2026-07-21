@@ -264,6 +264,96 @@ def test_hello_asm_build_has_linked_layout_and_api_calls(tmp_path: Path) -> None
     assert listings.lower().count("rst $38") == 2
 
 
+def test_hello_c_build_matches_sccz80_api_contract(tmp_path: Path) -> None:
+    """The C example and API shims must match the measured Small-C ABI."""
+    assert Z88DK_ZCC.is_file(), "run toolchain/setup-z88dk.ps1 first"
+    source = tmp_path / "hello.c"
+    api_assembly = tmp_path / "bns_api.asm"
+    copyfile(REPO_ROOT / "examples" / "hello-c" / "hello.c", source)
+    copyfile(REPO_ROOT / "sdk" / "bns_api.asm", api_assembly)
+    environment = os.environ.copy()
+    environment["PATH"] = f"{Z88DK_BIN}{os.pathsep}{environment['PATH']}"
+
+    caller_assembly = tmp_path / "hello-c-caller.asm"
+    subprocess.run(
+        [
+            Z88DK_ZCC,
+            "+toolchain/bns.cfg",
+            "-S",
+            "--codeseg=bns_code",
+            "--constseg=bns_code",
+            f"-I{REPO_ROOT / 'sdk' / 'include'}",
+            "-o",
+            caller_assembly,
+            source,
+        ],
+        check=True,
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    caller_text = caller_assembly.read_text()
+    assert "SECTION\tbns_code" in caller_text
+    assert "._main" in caller_text
+    push_index = caller_text.index("push\thl")
+    call_index = caller_text.index("call\t_bns_say_wait")
+    cleanup_index = caller_text.index("pop\tbc", call_index)
+    assert push_index < call_index < cleanup_index
+
+    output = tmp_path / "hello-c.bin"
+    subprocess.run(
+        [
+            Z88DK_ZCC,
+            "+toolchain/bns.cfg",
+            "-m",
+            "-s",
+            "-g",
+            "--list",
+            "--codeseg=bns_code",
+            "--constseg=bns_code",
+            f"-I{REPO_ROOT / 'sdk' / 'include'}",
+            "-o",
+            output,
+            source,
+            api_assembly,
+        ],
+        check=True,
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    raw_image = tmp_path / "hello-c_bns_header.bin"
+    map_text = output.with_suffix(".map").read_text()
+    program = pack_external_program(raw_image.read_bytes(), map_text)
+    assert inspect_external_program(program) == ExternalProgramInfo(
+        file_size=317,
+        code_size=0x2E,
+        program_length=0x12E,
+        crc=0xC03F,
+        stack=0x113C,
+    )
+    assert "__bns_entry                     = $100E" in map_text
+    assert "__bns_code_end                  = $103C" in map_text
+    assert "__bns_end_marker                = $113C" in map_text
+    assert "__bns_stack_top                 = $113C" in map_text
+    assert "_main" in map_text
+    assert "_bns_exit" in map_text
+    assert "_bns_say_wait" in map_text
+
+    listings = "\n".join(path.read_text() for path in tmp_path.glob("*.lis"))
+    assert listings.lower().count("rst $38") == 3
+    api_listing = (tmp_path / "bns_api.asm.lis").read_text().lower()
+    say_wait_listing = api_listing[api_listing.index("_bns_say_wait:") :]
+    operation_indexes = [
+        say_wait_listing.index(operation)
+        for operation in ("pop de", "pop hl", "push hl", "push de", "ld a, 2", "rst $38")
+    ]
+    assert operation_indexes == sorted(operation_indexes)
+
+
 @pytest.mark.parametrize(
     "missing_symbol",
     [

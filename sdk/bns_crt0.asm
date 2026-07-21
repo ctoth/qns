@@ -1,4 +1,4 @@
-extern hello_main
+extern _main
 
 public __bns_entry
 public __bns_code_end
@@ -15,7 +15,7 @@ defw 0, 0, 0, 0
 section bns_code
 __bns_entry:
 ld sp, __bns_stack_top
-call hello_main
+call _main
 xor a
 ld h, a
 ld l, a
