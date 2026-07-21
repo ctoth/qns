@@ -1,14 +1,13 @@
 # Building external `.bns` programs for Blazie note takers
 
-Status: active implementation plan and verified assembly-program guide,
+Status: active implementation plan and verified assembly and C program guide,
 2026-07-20. Phases 1 through 6 are complete: a clean checkout installs the
 pinned Z180 backend, the format authority deterministically packs external
 programs from linker facts, and a newly built assembly program imports, runs,
 speaks, exits, and returns control to real BS2 firmware under QNS. The proven
 runtime workflow now has one reusable helper owner, and the minimal C SDK
 passes the same repeatable real-ROM integration gate. Physical-device
-validation is the active next phase and is not complete. Commands marked
-**planned** do not exist yet.
+validation is the active next phase and is not complete.
 
 ## Goal
 
@@ -545,6 +544,30 @@ behavior, and regains its command loop after exit.
 
 ### Phase 7: validate on physical hardware
 
+Implementation status: active. Repository-local transfer preparation is
+complete, but no physical-device run has been performed. The official v5.6.1
+release API confirms the portable x64 asset URL, its exact 16,140,346-byte
+size, and the SHA-256 recorded below. These preparation tasks are complete:
+
+1. Create `toolchain/teraterm.lock` with that official URL, size, and digest.
+2. Create `toolchain/setup-teraterm.ps1`; it must reject any size or checksum
+   mismatch, extract only under ignored `.toolchain/`, require `ttermpro.exe`,
+   and leave global installation and `PATH` unchanged.
+3. Run the setup script twice and require the same repository-local executable
+   path both times, proving an idempotent install.
+
+Both setup runs returned this exact path:
+
+```text
+C:\Users\Q\code\qns\.toolchain\teraterm-5.6.1-x64\ttermpro.exe
+```
+
+The installed executable reports product version `5.6.1 643bd0e`. The cached
+archive is exactly 16,140,346 bytes and has SHA-256
+`4cd4a75dc6614c7be8e19955fadadd4ceb0fc4c7ad4475913e2deecb37cbc656`.
+The setup tests require the exact lock contents and prove that a same-size
+archive with a different checksum is rejected before extraction.
+
 Before the first run, record the unit model, firmware revision, available RAM,
 serial parameters, and a backup. Use the assembly example first because it has
 the smallest runtime surface. Load it into RAM, not flash.
@@ -559,9 +582,10 @@ operation reports success or failure and preserves the transmitted file size.
 
 The July 1999 Blazie instructions give this transfer sequence:
 
-1. Run **planned** `toolchain/setup-teraterm.ps1`, open its repository-local
-   `ttermpro.exe`, select the unit's COM port, and configure both ends for
-   9600 baud, 8 data bits, no parity, one stop bit, and no flow control.
+1. Run `& .\toolchain\setup-teraterm.ps1`, open the repository-local
+   `ttermpro.exe` path it prints, select the unit's COM port, and configure both
+   ends for 9600 baud, 8 data bits, no parity, one stop bit, and no flow
+   control.
 2. On the note taker, enter the file menu, then T-chord.
 3. Enter `r` to receive and `y` for YMODEM.
 4. In Tera Term select **File > Transfer > YMODEM > Send**, choose the `.bns`

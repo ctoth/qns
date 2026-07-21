@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 from shutil import copyfile
 
@@ -18,6 +19,8 @@ Z88DK_BIN = REPO_ROOT / ".toolchain" / "z88dk-2.4" / "bin"
 Z88DK_ASSEMBLER = Z88DK_BIN / "z88dk-z80asm.exe"
 Z88DK_ZCC = Z88DK_BIN / "zcc.exe"
 BS2_FIXTURE_ROOT = REPO_ROOT / "roms" / "NFB99" / "BS2ENG"
+TERATERM_LOCK = REPO_ROOT / "toolchain" / "teraterm.lock"
+TERATERM_SETUP = REPO_ROOT / "toolchain" / "setup-teraterm.ps1"
 
 
 def minimal_external_program() -> bytearray:
@@ -31,6 +34,56 @@ def minimal_external_program() -> bytearray:
         b"\x00"
         b"\xaa"
     )
+
+
+def test_teraterm_lock_matches_official_portable_release() -> None:
+    """The physical-transfer dependency must remain pinned to the verified asset."""
+    lock = tomllib.loads(TERATERM_LOCK.read_text())
+    assert lock == {
+        "version": "5.6.1",
+        "asset": "teraterm-5.6.1-x64.zip",
+        "url": (
+            "https://github.com/TeraTermProject/teraterm/releases/download/"
+            "v5.6.1/teraterm-5.6.1-x64.zip"
+        ),
+        "sha256": "4cd4a75dc6614c7be8e19955fadadd4ceb0fc4c7ad4475913e2deecb37cbc656",
+        "size": 16_140_346,
+    }
+
+
+def test_teraterm_setup_rejects_cached_archive_checksum_mismatch(
+    tmp_path: Path,
+) -> None:
+    """A same-size corrupt cached archive must fail before extraction."""
+    toolchain = tmp_path / "toolchain"
+    toolchain.mkdir()
+    setup = toolchain / TERATERM_SETUP.name
+    copyfile(TERATERM_SETUP, setup)
+    archive = tmp_path / ".toolchain" / "downloads" / "fake.zip"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"bad")
+    (toolchain / TERATERM_LOCK.name).write_text(
+        '\n'.join(
+            (
+                'version = "test"',
+                'asset = "fake.zip"',
+                'url = "https://invalid.example/fake.zip"',
+                f'sha256 = "{"0" * 64}"',
+                'size = 3',
+            )
+        )
+        + '\n'
+    )
+
+    result = subprocess.run(
+        ["pwsh", "-NoLogo", "-NoProfile", "-File", setup],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "SHA-256 mismatch" in result.stderr
 
 
 def build_pack_fixture(build_root: Path) -> tuple[bytes, str]:
