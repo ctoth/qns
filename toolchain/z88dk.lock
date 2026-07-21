@@ -1,0 +1,5 @@
+version = "2.4"
+asset = "z88dk-win32-2.4.zip"
+url = "https://github.com/z88dk/z88dk/releases/download/v2.4/z88dk-win32-2.4.zip"
+sha256 = "26d9880ee2e43077808ac86a4b6247a81f5dadc30563ca7cedc58bc4fb5ccb57"
+size = 117797132
