@@ -1,10 +1,10 @@
 # Building external `.bns` programs for Blazie note takers
 
 Status: active implementation plan and verified format specification,
-2026-07-20. Phase 1 has qualified the pinned Z180 backend on this host. The
-repository can import and execute supplied external programs, but it cannot yet
-package and run a newly built external program. Commands marked **planned** do
-not exist yet.
+2026-07-20. Phase 1 is complete: a clean checkout installs the pinned Z180
+backend and reproduces the exact smoke artifact. The repository can import and
+execute supplied external programs, but it cannot yet package and run a newly
+built external program. Commands marked **planned** do not exist yet.
 
 ## Goal
 
@@ -185,8 +185,10 @@ The pinned release archive SHA-256 is
 The assembler smoke fixture contains `MLT BC`; in Z180 mode it emits exactly
 `ED 4C`, whose SHA-256 is
 `88506b69237ce638a5a69f79b7a97e82fa23c5a4137f25fc1170723afffab3ec`.
-This qualifies the backend on the current host. The clean-checkout gate remains
-pending until this Phase 1 slice is committed and tested from that commit.
+The committed Phase 1 snapshot was also tested from a detached clean checkout.
+It downloaded and installed the pinned archive, created a fresh `uv`
+environment, passed the smoke test, and reproduced the same smoke-output
+SHA-256. This closes the Phase 1 clean-checkout gate.
 
 ## Repository artifacts the plan must create
 
@@ -220,8 +222,8 @@ next phase begins.
 
 ### Phase 1: pin and qualify the backend
 
-Implementation status: all four tasks pass on the current host. The
-clean-checkout reproduction gate is still pending.
+Implementation status: complete. All four tasks pass on the current host, and
+the committed Phase 1 snapshot passes the clean-checkout reproduction gate.
 
 1. Create `toolchain/z88dk.lock` for official z88dk 2.4 Windows binaries,
    including SHA-256.
