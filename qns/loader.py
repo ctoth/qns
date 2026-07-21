@@ -27,19 +27,32 @@ class _Insn:
 
 
 _LD_HL_IMMEDIATE = _Insn("ld hl,nn", (0x21,), operand_bytes=2)
+_LD_HL_MEMORY = _Insn("ld hl,(nn)", (0x2A,), operand_bytes=2)
 _XOR_A = _Insn("xor a", (0xAF,))
+_DI = _Insn("di", (0xF3,))
+_LD_B_H = _Insn("ld b,h", (0x44,))
+_LD_C_L = _Insn("ld c,l", (0x4D,))
 _LD_B_A = _Insn("ld b,a", (0x47,))
 _LD_A_C = _Insn("ld a,c", (0x79,))
+_LD_A_IMMEDIATE = _Insn("ld a,n", (0x3E,), operand_bytes=1)
+_LD_A_HL_INDIRECT = _Insn("ld a,(hl)", (0x7E,))
 _OR_A = _Insn("or a", (0xB7,))
+_CP_HL_INDIRECT = _Insn("cp (hl)", (0xBE,))
 _JR = _Insn("jr d", (0x18,), operand_bytes=1)
 _JR_Z = _Insn("jr z,d", (0x28,), operand_bytes=1)
+_JR_NZ = _Insn("jr nz,d", (0x20,), operand_bytes=1)
 _LD_A_MEMORY = _Insn("ld a,(nn)", (0x3A,), operand_bytes=2)
 _LD_MEMORY_A = _Insn("ld (nn),a", (0x32,), operand_bytes=2)
 _LD_A_7D = _Insn("ld a,7dh", (0x3E, 0x7D))
 _LD_HL_INDIRECT_ZERO = _Insn("ld (hl),0", (0x36, 0x00))
+_INC_HL_INDIRECT = _Insn("inc (hl)", (0x34,))
+_LD_HL_INDIRECT_C = _Insn("ld (hl),c", (0x71,))
+_INC_HL = _Insn("inc hl", (0x23,))
+_LD_HL_INDIRECT_B = _Insn("ld (hl),b", (0x70,))
 _BIT_3_A = _Insn("bit 3,a", (0xCB, 0x5F))
 _CALL_Z = _Insn("call z,nn", (0xCC,), operand_bytes=2)
 _CALL = _Insn("call nn", (0xCD,), operand_bytes=2)
+_HALT = _Insn("halt", (0x76,))
 
 # BSSPEECH.ASM::MFULL3 around `LD HL,SPBUF` (see NOTES.md).  Every link
 # starts with the same prologue; the speech-enable test is always
@@ -168,6 +181,48 @@ _CHORD_ACCEPT_SIGNATURE = (
     _JR,
 )
 
+# BSKEY.ASM::_put_key's queue append prologue: the first LD HL operand is
+# queue_count.  The queue-size immediate differs by hardware family.
+_KEY_QUEUE_SIGNATURE = (
+    _DI,
+    _LD_B_H,
+    _LD_C_L,
+    _LD_HL_IMMEDIATE,
+    _LD_A_IMMEDIATE,
+    _CP_HL_INDIRECT,
+    _JR_Z,
+    _INC_HL_INDIRECT,
+    _LD_HL_MEMORY,
+    _LD_HL_INDIRECT_C,
+    _INC_HL,
+    _LD_HL_INDIRECT_B,
+)
+
+# BSKEY.ASM::_get_key's application wait.  Most links read the background
+# timer before HALT; BL2 omits that read.  The LD HL operand is queue_count,
+# and readiness is observed at the following LD A,(HL).
+_KEY_WAIT_SIGNATURES = (
+    (
+        _LD_HL_IMMEDIATE,
+        _LD_A_HL_INDIRECT,
+        _OR_A,
+        _JR_NZ,
+        _LD_A_MEMORY,
+        _HALT,
+        _CALL,
+        _JR,
+    ),
+    (
+        _LD_HL_IMMEDIATE,
+        _LD_A_HL_INDIRECT,
+        _OR_A,
+        _JR_NZ,
+        _HALT,
+        _CALL,
+        _JR,
+    ),
+)
+
 # Every supplied runtime maps the command-loop common area with CBR=34
 # (see NOTES.md's live MMU records), which converts the logical operand
 # addresses above into the physical addresses our callbacks receive.
@@ -191,6 +246,12 @@ class InputBoundary:
     keyboard_input_buffer: int
     """Physical address of the firmware chord input buffer (_IIB)."""
 
+    keyboard_queue_count: int
+    """Physical address of the firmware application's queued-key count."""
+
+    keyboard_wait_pc: int
+    """Linked `_get_key` instruction that reads the queued-key count."""
+
     command_loop_timer: int
     """Physical address of the timer cleared at each command-loop epoch."""
 
@@ -201,13 +262,14 @@ class InputBoundary:
 def find_input_boundary(firmware: bytes) -> InputBoundary | None:
     """Locate this firmware revision's chord-acceptance addresses.
 
-    Both signatures must match exactly once in bank zero; otherwise no
+    All signatures must match exactly once in bank zero; otherwise no
     boundary is reported rather than a wrong one.
     """
     bank = firmware[:0x10000]
     starta = _find_signature(bank, _STARTA_SIGNATURE)
     accept = _find_signature(bank, _CHORD_ACCEPT_SIGNATURE)
-    if len(starta) != 1 or len(accept) != 1:
+    key_queue = _find_signature(bank, _KEY_QUEUE_SIGNATURE)
+    if len(starta) != 1 or len(accept) != 1 or len(key_queue) != 1:
         return None
 
     timer_operand = starta[0] + _sequence_offset(
@@ -218,10 +280,24 @@ def find_input_boundary(firmware: bytes) -> InputBoundary | None:
         _CHORD_ACCEPT_SIGNATURE, _LD_MEMORY_A
     ) + 1
     buffer_logical = bank[buffer_operand] | (bank[buffer_operand + 1] << 8)
+    queue_operand = key_queue[0] + _sequence_offset(
+        _KEY_QUEUE_SIGNATURE, _LD_HL_IMMEDIATE
+    ) + 1
+    queue_logical = bank[queue_operand] | (bank[queue_operand + 1] << 8)
+    key_waits = [
+        offset
+        for signature in _KEY_WAIT_SIGNATURES
+        for offset in _find_signature(bank, signature)
+        if bank[offset + 1] | (bank[offset + 2] << 8) == queue_logical
+    ]
+    if len(key_waits) != 1:
+        return None
 
     common_base = _COMMON_AREA_CBR << 12
     return InputBoundary(
         keyboard_input_buffer=common_base + buffer_logical,
+        keyboard_queue_count=common_base + queue_logical,
+        keyboard_wait_pc=key_waits[0] + len(_LD_HL_IMMEDIATE.tokens()),
         command_loop_timer=common_base + timer_logical,
         command_loop_timer_pc=starta[0] + _sequence_offset(
             _STARTA_SIGNATURE, _LD_HL_INDIRECT_ZERO

@@ -153,6 +153,10 @@ class BNS:
         self.write_counts = {}  # Address -> occurrence count
         self.traced_writes: list[tuple[int, int, int, int]] = []
         self._command_loop_write_count = 0
+        self._keyboard_ready_epoch = 0
+        self._keyboard_accept_epoch = 0
+        self._keyboard_queue_epoch = 0
+        self._keyboard_consume_epoch = 0
         self._combyt_writes = 0
         self._bl4_key_samples = 0
 
@@ -246,6 +250,13 @@ class BNS:
 
     def _mem_read(self, addr: int) -> int:
         """Memory read callback for CPU."""
+        input_boundary = self._input_boundary
+        if input_boundary is not None and addr == input_boundary.keyboard_wait_pc:
+            if self.memory.read(input_boundary.keyboard_queue_count) == 0:
+                self._keyboard_ready_epoch += 1
+            else:
+                self._keyboard_consume_epoch += 1
+
         boundary = self._english_boundary
         if (
             self._english_callback is not None
@@ -290,11 +301,25 @@ class BNS:
         input_boundary = self._input_boundary
         if (
             input_boundary is not None
+            and addr == input_boundary.keyboard_input_buffer
+            and value != 0
+        ):
+            self._keyboard_accept_epoch = self._keyboard_ready_epoch
+        if (
+            input_boundary is not None
+            and addr == input_boundary.keyboard_queue_count
+            and value != 0
+        ):
+            self._keyboard_queue_epoch += 1
+        if (
+            input_boundary is not None
             and addr == input_boundary.command_loop_timer
             and value == 0
             and self.cpu.instruction_pc == input_boundary.command_loop_timer_pc
         ):
             self._command_loop_write_count += 1
+            if self.memory.read(input_boundary.keyboard_queue_count) == 0:
+                self._keyboard_ready_epoch += 1
 
         single_trace = self.trace_writes_addr is not None and addr == self.trace_writes_addr
         range_trace = (
@@ -578,6 +603,8 @@ class BNS:
             print(
                 "Chord acceptance boundary: buffer "
                 f"0x{self._input_boundary.keyboard_input_buffer:05X}, "
+                f"queue 0x{self._input_boundary.keyboard_queue_count:05X}, "
+                f"wait PC 0x{self._input_boundary.keyboard_wait_pc:04X}, "
                 f"timer 0x{self._input_boundary.command_loop_timer:05X} "
                 f"@ PC 0x{self._input_boundary.command_loop_timer_pc:04X}"
             )
@@ -606,13 +633,9 @@ class BNS:
 
         input_driver: ChordInputDriver | None = None
         pc_watch_reported = False
-        key_wait_candidate: tuple[int, int] | None = None
         if self.stdin_device is not None:
             if self.stdin_device in ("keyboard", "jsonl"):
-                if (
-                    self.profile.family != "tns"
-                    and self._input_boundary is None
-                ):
+                if self._input_boundary is None:
                     if self.power_on_input:
                         raise RuntimeError(
                             "chord-acceptance addresses were not discovered "
@@ -736,23 +759,8 @@ class BNS:
                 self.ssi263.set_cycle_count(cycles_run)
                 self.ssi263.check_pending_irq(cycles_run)
 
-                key_wait_signature = None
-                if (
-                    self.cpu.halted
-                    and not self.ssi263.irq_pending
-                ):
-                    key_wait_signature = (
-                        self.cpu.pc,
-                        len(self.ssi263.phoneme_log),
-                    )
-                stable_key_wait = (
-                    key_wait_signature is not None
-                    and key_wait_signature == key_wait_candidate
-                )
-                key_wait_candidate = key_wait_signature
-
                 if input_driver is not None:
-                    input_driver.tick(stable_key_wait)
+                    input_driver.tick()
 
                 self.stats['phonemes'] = len(self.ssi263.phoneme_log)
 

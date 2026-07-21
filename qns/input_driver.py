@@ -72,6 +72,8 @@ def keyboard_input_chord(value: str | int, model: str = "bsp") -> int:
         return value
     if model == "tns":
         return tns_input_scan(value)[0]
+    if value in ("\n", "\r"):
+        return 0x68
     codepoint = ord(value)
     if codepoint >= len(ASCII_TO_BNS_KEY):
         raise ValueError(f"unsupported input character: U+{codepoint:04X}")
@@ -96,11 +98,11 @@ def tns_input_scan(value: str) -> tuple[int, bool]:
 class ChordInputDriver:
     """Drive queued host input through the keyboard press/release handshake.
 
-    The firmware acknowledges a BNS chord by copying it into the
-    profile's chord input buffer and clearing that buffer once consumed;
-    TNS scans are acknowledged by the keyboard-PIC latch alone.  One
-    ``tick`` runs after each CPU chunk: it advances any in-flight chord,
-    then starts the next queued one when the firmware is ready.
+    The hardware ISR acknowledges a chord by adding it to the firmware queue.
+    The driver retains that host character until ``_get_key`` proves an
+    application consumed it; firmware initialization may otherwise clear a
+    queued chord before its intended input context reads it.  One ``tick`` runs
+    after each CPU chunk and advances at most one in-flight host character.
     """
 
     def __init__(self, bns: BNS) -> None:
@@ -114,7 +116,10 @@ class ChordInputDriver:
         self._ready_reported = False
         self._power_on_combyt_writes = bns._combyt_writes
         self._power_on_bl4_key_samples = bns._bl4_key_samples
-        self._command_loop_writes = bns._command_loop_write_count
+        self._ready_epoch = bns._keyboard_ready_epoch
+        self._queue_epoch = bns._keyboard_queue_epoch
+        self._consume_epoch = bns._keyboard_consume_epoch
+        self._has_consumed_input = False
 
     def hold_power_on_chord(self, value: str | int) -> None:
         """Convert the first chord and hold it down through power-on."""
@@ -129,15 +134,44 @@ class ChordInputDriver:
         bns.keyboard.press(chord)
         self._phase = "power-on"
 
-    def tick(self, stable_key_wait: bool) -> None:
+    def tick(self) -> None:
         """Advance the in-flight chord, then start the next queued one."""
         self._advance_phase()
         if self._phase is None:
-            self._start_next_chord(stable_key_wait)
+            self._start_next_chord()
 
     def _advance_phase(self) -> None:
         bns = self._bns
         keyboard = bns.keyboard
+
+        if self._phase == "queued":
+            if bns._keyboard_consume_epoch > self._consume_epoch:
+                self._consume_epoch = bns._keyboard_consume_epoch
+                self._has_consumed_input = True
+                self._accept()
+                return
+
+            boundary = bns._input_boundary
+            assert boundary is not None
+            if (
+                bns._keyboard_queue_epoch > self._queue_epoch
+                and bns.memory.read(boundary.keyboard_queue_count) == 0
+            ):
+                # Firmware cleared the queued key without `_get_key` consuming
+                # it.  Retain the host character and repeat its physical
+                # handshake for the input context that is still starting.
+                self._queue_epoch = bns._keyboard_queue_epoch
+                if self._tns and self._shifted:
+                    keyboard.press(TNS_LEFT_SHIFT_SCAN)
+                    self._phase = "tns-shift-down"
+                elif self._tns and self._alt:
+                    keyboard.press(TNS_ALT_SCAN)
+                    self._phase = "tns-alt-down"
+                else:
+                    assert self._chord is not None
+                    keyboard.press(self._chord)
+                    self._phase = "down"
+            return
 
         if self._phase == "power-on":
             # Each model proves power-on acceptance through a different
@@ -186,22 +220,27 @@ class ChordInputDriver:
                 keyboard.release(TNS_LEFT_SHIFT_SCAN)
                 self._phase = "tns-shift-up"
             else:
-                self._accept()
+                self._phase = "queued"
         elif self._phase == "tns-alt-up":
             if self._shifted:
                 keyboard.release(TNS_LEFT_SHIFT_SCAN)
                 self._phase = "tns-shift-up"
             else:
-                self._accept()
+                self._phase = "queued"
         elif self._phase == "tns-shift-up":
-            self._accept()
+            self._phase = "queued"
 
-    def _start_next_chord(self, stable_key_wait: bool) -> None:
+    def _start_next_chord(self) -> None:
         bns = self._bns
-        if not (
-            stable_key_wait
-            or bns._command_loop_write_count > self._command_loop_writes
+        boundary = bns._input_boundary
+        assert boundary is not None
+        if (
+            not self._has_consumed_input
+            and bns._keyboard_ready_epoch
+            <= max(self._ready_epoch, bns._keyboard_accept_epoch)
         ):
+            return
+        if bns.memory.read(boundary.keyboard_queue_count) != 0:
             return
 
         try:
@@ -224,6 +263,8 @@ class ChordInputDriver:
             print(f"[Input] {error}")
             return
 
+        self._queue_epoch = bns._keyboard_queue_epoch
+        self._consume_epoch = bns._keyboard_consume_epoch
         if self._tns and self._shifted:
             bns.keyboard.press(TNS_LEFT_SHIFT_SCAN)
             self._phase = "tns-shift-down"
@@ -234,7 +275,7 @@ class ChordInputDriver:
             bns.keyboard.press(self._chord)
             self._phase = "down"
         self._ready_reported = False
-        self._command_loop_writes = bns._command_loop_write_count
+        self._ready_epoch = bns._keyboard_ready_epoch
 
     def _accept(self) -> None:
         """Report the completed chord and return to the idle phase."""

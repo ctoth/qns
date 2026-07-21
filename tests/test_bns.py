@@ -27,12 +27,12 @@ from qns.stdio import JSONLOutput
 # NOTES.md.  Behavioral tests install these directly instead of loading
 # the real packages.
 INPUT_BOUNDARIES: dict[str, InputBoundary] = {
-    "bsp": InputBoundary(0x4327C, 0x41653, 0x0A0D),
-    "bs2": InputBoundary(0x4327D, 0x41654, 0x0A7E),
-    "bsl": InputBoundary(0x433E5, 0x41653, 0x0A97),
-    "bl2": InputBoundary(0x433E6, 0x41654, 0x0AF5),
-    "bl4": InputBoundary(0x433F0, 0x4165A, 0x0B36),
-    "tns": InputBoundary(0x4329D, 0x41659, 0x0AF9),
+    "bsp": InputBoundary(0x4327C, 0x41A32, 0x1AF5, 0x41653, 0x0A0D),
+    "bs2": InputBoundary(0x4327D, 0x41A33, 0x1BD3, 0x41654, 0x0A7E),
+    "bsl": InputBoundary(0x433E5, 0x41A34, 0x1CF9, 0x41653, 0x0A97),
+    "bl2": InputBoundary(0x433E6, 0x41A35, 0x1DB4, 0x41654, 0x0AF5),
+    "bl4": InputBoundary(0x433F0, 0x41A3B, 0x1FC0, 0x4165A, 0x0B36),
+    "tns": InputBoundary(0x4329D, 0x41A38, 0x1E16, 0x41659, 0x0AF9),
 }
 
 
@@ -84,7 +84,7 @@ def test_load_rom_rejects_update_package_without_valid_image_crc(tmp_path):
 
 
 def test_english_stdio_characters_use_firmware_keyboard_chords():
-    """Terminal characters map to the raw chords in the English ROM table."""
+    """Terminal characters map to physical English keyboard chords."""
     assert ASCII_TO_BNS_KEY[ord("a")] == 0x01
     assert ASCII_TO_BNS_KEY[ord("z")] == 0x35
     assert ASCII_TO_BNS_KEY[ord("A")] == 0x41
@@ -93,6 +93,8 @@ def test_english_stdio_characters_use_firmware_keyboard_chords():
     assert ASCII_TO_BNS_KEY[ord("\n")] == 0x8D
     assert ASCII_TO_BNS_KEY[ord("\r")] == 0x8D
     assert ASCII_TO_BNS_KEY[0x7F] == 0x78
+    assert keyboard_input_chord("\n") == 0x68
+    assert keyboard_input_chord("\r") == 0x68
 
 
 def test_tns_stdio_uses_source_defined_qwerty_pic_codes():
@@ -361,8 +363,8 @@ def test_tns_owns_source_defined_hardware_ports():
 
 @pytest.mark.parametrize("model", ["bsp", "bs2", "bsl", "bl2", "bl4"])
 def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
-    """Queued input starts at a stable wait and spans both `_IIB` ISR phases."""
-    characters = iter(("y", ""))
+    """An unconsumed queued key is retried before the next host key starts."""
+    characters = iter(("y", "b", ""))
     monkeypatch.setattr(
         "qns.bns._read_stdin_character",
         lambda: next(characters),
@@ -383,6 +385,7 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
     class KeyPhaseCPU:
         halted = False
         pc = 0x1BDA
+        instruction_pc = INPUT_BOUNDARIES[model].keyboard_wait_pc
 
         def __init__(self):
             self.calls = 0
@@ -393,7 +396,6 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
 
         def run(self, cycles):
             self.calls += 1
-            self.halted = True
             observed.append(
                 (
                     bns.keyboard.dots,
@@ -401,25 +403,68 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
                     bns.keyboard.latched,
                 )
             )
-            if self.calls == 3:
-                bns.memory.write(
+            if self.calls == 2:
+                bns._mem_read(INPUT_BOUNDARIES[model].keyboard_wait_pc)
+            elif self.calls == 3:
+                bns._mem_write(
                     INPUT_BOUNDARIES[model].keyboard_input_buffer,
                     0x3D,
                 )
+                bns._mem_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 1)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             elif self.calls == 4:
                 bns.memory.write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 5:
+                # Application initialization discards the queued key without
+                # `_get_key` observing it. The same host chord must be retried.
+                bns._mem_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 0)
+            elif self.calls == 6:
+                bns._mem_write(
+                    INPUT_BOUNDARIES[model].keyboard_input_buffer,
+                    0x3D,
+                )
+                bns._mem_write(
+                    INPUT_BOUNDARIES[model].keyboard_queue_count,
+                    1,
+                )
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 7:
+                bns.memory.write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 8:
+                bns._mem_read(INPUT_BOUNDARIES[model].keyboard_wait_pc)
+                bns._mem_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 0)
+            elif self.calls == 9:
+                bns._mem_write(
+                    INPUT_BOUNDARIES[model].keyboard_input_buffer,
+                    0x03,
+                )
+                bns._mem_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 1)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 10:
+                bns.memory.write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 11:
+                bns._mem_read(INPUT_BOUNDARIES[model].keyboard_wait_pc)
+                bns._mem_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 0)
             return cycles
 
     bns.cpu = KeyPhaseCPU()
-    bns.run(max_cycles=4_000)
+    bns.run(max_cycles=11_000)
 
     assert observed == [
         (0, False, False),
         (0, False, False),
         (0x3D, True, True),
         (0x3D, False, True),
+        (0, False, False),
+        (0x3D, True, True),
+        (0x3D, False, True),
+        (0, False, False),
+        (0x03, True, True),
+        (0x03, False, True),
+        (0, False, False),
     ]
     assert bns.memory.read(INPUT_BOUNDARIES[model].keyboard_input_buffer) == 0
     assert not bns.keyboard.latched
@@ -456,6 +501,7 @@ def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):
     class EventCPU:
         halted = True
         pc = 0xD656
+        instruction_pc = INPUT_BOUNDARIES["bsp"].keyboard_wait_pc
 
         def __init__(self):
             self.calls = 0
@@ -473,16 +519,21 @@ def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):
                     bns._serial_receive(1),
                 )
             )
-            if self.calls == 3:
-                bns.memory.write(INPUT_BOUNDARIES["bsp"].keyboard_input_buffer, 0x01)
+            if self.calls == 2:
+                bns._mem_read(INPUT_BOUNDARIES["bsp"].keyboard_wait_pc)
+            elif self.calls == 3:
+                bns._mem_write(INPUT_BOUNDARIES["bsp"].keyboard_input_buffer, 0x01)
+                bns._mem_write(INPUT_BOUNDARIES["bsp"].keyboard_queue_count, 1)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             elif self.calls == 4:
                 bns.memory.write(INPUT_BOUNDARIES["bsp"].keyboard_input_buffer, 0)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+                bns._mem_read(INPUT_BOUNDARIES["bsp"].keyboard_wait_pc)
+                bns._mem_write(INPUT_BOUNDARIES["bsp"].keyboard_queue_count, 0)
             return cycles
 
     bns.cpu = EventCPU()
-    bns.run(max_cycles=4_000)
+    bns.run(max_cycles=5_000)
 
     assert observed[0] == (0, 0x00, 0xFF)
     assert observed[2][0] == 0x01
@@ -547,8 +598,8 @@ def test_jsonl_power_on_input_accepts_raw_uppercase_i_chord(monkeypatch):
     }
 
 
-def test_bsl_keyboard_stdin_uses_each_command_loop_epoch(monkeypatch):
-    """Timer-woken BSL input need not remain halted for two host quanta."""
+def test_bsl_keyboard_stdin_uses_exact_command_loop_epoch(monkeypatch):
+    """Timer-woken top-level BSL input starts at linked STARTA."""
     characters = iter(("a", ""))
     monkeypatch.setattr(
         "qns.bns._read_stdin_character",
@@ -592,23 +643,28 @@ def test_bsl_keyboard_stdin_uses_each_command_loop_epoch(monkeypatch):
                 self.instruction_pc = INPUT_BOUNDARIES["bsl"].command_loop_timer_pc
                 bns._mem_write(INPUT_BOUNDARIES["bsl"].command_loop_timer, 0)
             elif self.calls == 2:
-                bns.memory.write(
+                bns._mem_write(
                     INPUT_BOUNDARIES["bsl"].keyboard_input_buffer,
                     0x01,
                 )
+                bns._mem_write(INPUT_BOUNDARIES["bsl"].keyboard_queue_count, 1)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
             elif self.calls == 3:
                 bns.memory.write(INPUT_BOUNDARIES["bsl"].keyboard_input_buffer, 0)
                 bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 4:
+                bns._mem_read(INPUT_BOUNDARIES["bsl"].keyboard_wait_pc)
+                bns._mem_write(INPUT_BOUNDARIES["bsl"].keyboard_queue_count, 0)
             return cycles
 
     bns.cpu = TimerWokenCPU()
-    bns.run(max_cycles=3_000)
+    bns.run(max_cycles=4_000)
 
     assert observed == [
         (0, False, False),
         (0x01, True, True),
         (0x01, False, True),
+        (0, False, False),
     ]
     assert not bns.keyboard.latched
 
@@ -656,6 +712,8 @@ def test_tns_modified_stdin_preserves_physical_modifier_sequence(
 
         def __init__(self):
             self.calls = 0
+            self.queued = False
+            self.consumed = False
 
         @staticmethod
         def set_irq(_line, _state):
@@ -663,11 +721,19 @@ def test_tns_modified_stdin_preserves_physical_modifier_sequence(
 
         def run(self, cycles):
             self.calls += 1
+            code = None
             if bns.keyboard.latched:
-                observed.append(bns.keyboard.read(0xD0))
+                code = bns.keyboard.read(0xD0)
+                observed.append(code)
             if self.calls == 1:
-                self.instruction_pc = INPUT_BOUNDARIES["tns"].command_loop_timer_pc
-                bns._mem_write(INPUT_BOUNDARIES["tns"].command_loop_timer, 0)
+                bns._mem_read(INPUT_BOUNDARIES["tns"].keyboard_wait_pc)
+            elif code == accepted and not self.queued:
+                bns._mem_write(INPUT_BOUNDARIES["tns"].keyboard_queue_count, 1)
+                self.queued = True
+            elif self.queued and not self.consumed:
+                bns._mem_read(INPUT_BOUNDARIES["tns"].keyboard_wait_pc)
+                bns._mem_write(INPUT_BOUNDARIES["tns"].keyboard_queue_count, 0)
+                self.consumed = True
             return cycles
 
     bns.cpu = KeyboardPICCPU()
@@ -681,6 +747,7 @@ def test_tns_modified_stdin_preserves_physical_modifier_sequence(
     ]
     assert keyboard_events == [
         {"device": "keyboard", "state": "accepted", "chord": accepted},
+        {"device": "keyboard", "state": "ready"},
     ]
 
 

@@ -74,9 +74,10 @@ def make_input_boundary_image(
     timer_pc: int,
     timer_logical: int,
     buffer_logical: int,
+    queue_logical: int = 0xDA32,
     size: int = 0x10000,
 ) -> bytes:
-    """Place the STARTA and chord-accept signatures into an empty image."""
+    """Place the input-boundary signatures into an empty image."""
     starta = bytes((
         0xAF,                                            # XOR A
         0x32, 0x4C, 0xD6,                                # LD (nn),A
@@ -92,10 +93,36 @@ def make_input_boundary_image(
         0x32, 0x68, 0xD4,                                  # LD (nn),A
         0x18, 0x0E,                                        # JR d
     ))
+    key_queue = bytes((
+        0xF3,                                                # DI
+        0x44,                                                # LD B,H
+        0x4D,                                                # LD C,L
+        0x21, queue_logical & 0xFF, queue_logical >> 8,      # LD HL,count
+        0x3E, 0x40,                                          # LD A,queue size
+        0xBE,                                                # CP (HL)
+        0x28, 0x18,                                          # JR Z,d
+        0x34,                                                # INC (HL)
+        0x2A, 0x33, 0xDA,                                    # LD HL,(queue in)
+        0x71,                                                # LD (HL),C
+        0x23,                                                # INC HL
+        0x70,                                                # LD (HL),B
+    ))
+    key_wait = bytes((
+        0x21, queue_logical & 0xFF, queue_logical >> 8,      # LD HL,count
+        0x7E,                                                # LD A,(HL)
+        0xB7,                                                # OR A
+        0x20, 0x09,                                          # JR NZ,d
+        0x3A, timer_logical & 0xFF, timer_logical >> 8,      # LD A,(timer)
+        0x76,                                                # HALT
+        0xCD, 0x2F, 0x13,                                    # CALL nn
+        0x18, 0xF0,                                          # JR d
+    ))
     image = bytearray(size)
     starta_offset = timer_pc - 7
     image[starta_offset:starta_offset + len(starta)] = starta
     image[0x0B00:0x0B00 + len(accept)] = accept
+    image[0x0C00:0x0C00 + len(key_queue)] = key_queue
+    image[0x0D00:0x0D00 + len(key_wait)] = key_wait
     return bytes(image)
 
 
@@ -109,15 +136,23 @@ def test_find_input_boundary_recovers_linked_addresses():
 
     assert find_input_boundary(image) == InputBoundary(
         keyboard_input_buffer=0x4327C,
+        keyboard_queue_count=0x41A32,
+        keyboard_wait_pc=0x0D03,
         command_loop_timer=0x41653,
         command_loop_timer_pc=0x0A0D,
     )
 
 
-def test_find_input_boundary_requires_both_signatures():
+def test_find_input_boundary_requires_all_signatures():
     complete = make_input_boundary_image(0x0A0D, 0xD653, 0xF27C)
     starta_only = bytearray(complete)
     starta_only[0x0B00:0x0B10] = bytes(0x10)
+    no_queue = bytearray(complete)
+    no_queue[0x0C00:0x0C20] = bytes(0x20)
+    no_wait = bytearray(complete)
+    no_wait[0x0D00:0x0D20] = bytes(0x20)
 
     assert find_input_boundary(bytes(starta_only)) is None
+    assert find_input_boundary(bytes(no_queue)) is None
+    assert find_input_boundary(bytes(no_wait)) is None
     assert find_input_boundary(bytes(0x10000)) is None
