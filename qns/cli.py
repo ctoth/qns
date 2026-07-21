@@ -121,6 +121,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Dump RAM contents to file after execution")
     parser.add_argument("--state", type=str, metavar="FILE",
                         help="Load nonvolatile RAM state before execution and save it afterward")
+    parser.add_argument(
+        "--pc-disk-dir",
+        type=str,
+        metavar="DIR",
+        help="Expose a host directory to the firmware as PC Disk on ASCI channel 0",
+    )
     parser.add_argument("--stats", action="store_true",
                         help="Show execution statistics at end")
     return parser
@@ -146,6 +152,13 @@ def main() -> None:
         parser.error("--watch-pc requires --stdio jsonl")
     if args.watch_pc is not None and not 0 <= args.watch_pc <= 0xFFFF:
         parser.error("--watch-pc must be a logical address from 0x0000 through 0xFFFF")
+
+    pc_disk_dir = None
+    if args.pc_disk_dir:
+        pc_disk_dir = Path(args.pc_disk_dir)
+        if pc_disk_dir.exists() and not pc_disk_dir.is_dir():
+            parser.error(f"--pc-disk-dir is not a directory: {pc_disk_dir}")
+        pc_disk_dir.mkdir(parents=True, exist_ok=True)
 
     # Convert range args to tuple if provided
     trace_range = None
@@ -193,6 +206,7 @@ def main() -> None:
             power_on_input=args.power_on_input,
             serial_output=serial_output,
             serial_output_channel=serial_output_channel,
+            pc_disk_dir=pc_disk_dir,
             stdio_output=stdio_output,
             stdio_watch_pc=args.watch_pc,
             english_callback=english_callback,

@@ -28,6 +28,7 @@ from .loader import (
     load_firmware,
 )
 from .memory import Memory
+from .pc_disk import PCDisk
 from .profiles import PROFILES
 from .ssi263 import SSI263
 from .stdio import (
@@ -85,6 +86,7 @@ class BNS:
                  power_on_input: bool = False,
                  serial_output: BinaryIO | None = None,
                  serial_output_channel: int | None = None,
+                 pc_disk_dir: Path | str | None = None,
                  stdio_output: JSONLOutput | None = None,
                  stdio_watch_pc: int | None = None,
                  english_callback: Callable[[str], None] | None = None):
@@ -105,6 +107,7 @@ class BNS:
             power_on_input: Hold the first keyboard stdin chord during power-on
             serial_output: Raw byte stream for the selected serial output channel
             serial_output_channel: ASCI channel routed to serial_output
+            pc_disk_dir: Host directory exposed to the firmware as PC Disk on ASCI0
             stdio_output: Structured output for all emulated device events
             stdio_watch_pc: Program counter reported through structured output
             english_callback: Observer for exact pre-translation firmware text
@@ -129,6 +132,7 @@ class BNS:
         self.power_on_input = power_on_input
         self.serial_output = serial_output
         self.serial_output_channel = serial_output_channel
+        self.pc_disk = PCDisk(pc_disk_dir) if pc_disk_dir is not None else None
         self.stdio_output = stdio_output
         self._stdio_watch_pc = stdio_watch_pc
         self._english_callback = english_callback
@@ -551,7 +555,11 @@ class BNS:
         self.memory.set_high_bank_latch(value)
 
     def _serial_receive(self, channel: int) -> int:
-        """Return the next stdin byte for the selected ASCI channel."""
+        """Return the next PC Disk or stdin byte for the selected ASCI channel."""
+        if channel == 0 and self.pc_disk is not None:
+            value = self.pc_disk.receive()
+            if value >= 0:
+                return value
         if self.stdin_device == "jsonl":
             input_queue = self._stdio_serial_input_queues[channel]
         elif self.stdin_device == f"serial{channel}":
@@ -564,7 +572,9 @@ class BNS:
             return -1
 
     def _serial_transmit(self, channel: int, value: int) -> None:
-        """Write an ASCI byte only to its explicitly selected raw stream."""
+        """Deliver an ASCI byte to PC Disk and explicitly selected observers."""
+        if channel == 0 and self.pc_disk is not None:
+            self.pc_disk.transmit(value)
         if self.stdio_output is not None:
             self.stdio_output.emit_serial(channel, bytes((value,)))
         if self.serial_output is not None:
