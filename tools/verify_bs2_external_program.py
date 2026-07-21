@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from qns.memory import Memory
+from tools import bs2_stdio_harness
 from tools.bs2_harness import BS2Harness
 from tools.stdio_process import BNSStdioProcess
 
@@ -15,194 +16,10 @@ CYCLE_LIMIT = 100_000_000
 
 O_CHORD = 0x55
 F_KEY = 0x0B
-T_CHORD = 0x5E
-R_KEY = 0x17
-Y_KEY = 0x3D
-E_CHORD = 0x51
 X_CHORD = 0x6D
 DOT5_CHORD = 0x50
-POWER_ON_INITIALIZE_CHORD = 0x4A
-
-SOH = 0x01
-STX = 0x02
-EOT = 0x04
-ACK = 0x06
-NAK = 0x15
-CRC_REQUEST = ord("C")
-CPM_EOF = 0x1A
 
 FLASH_INITIALIZATION_PC = 0x1BDA
-FLASH_INITIALIZATION_Y_KEY = 0x3D
-FLASH_INITIALIZATION_PROMPT = (
-    "I",
-    "N",
-    "I",
-    "SCH",
-    "AE1",
-    "L",
-    "AH",
-    "E1",
-    "Z",
-    "F",
-    "L",
-    "AE",
-    "SCH",
-    "S",
-    "I",
-    "S",
-    "T",
-    "EH",
-    "M",
-    "EH",
-    "N",
-    "T",
-    "ER",
-    "W",
-    "AH",
-    "E",
-    "OU",
-    "ER",
-    "EH",
-    "N",
-)
-FILE_INITIALIZATION_PROMPT = (
-    "I",
-    "N",
-    "I",
-    "SCH",
-    "AE1",
-    "L",
-    "AH",
-    "E1",
-    "Z",
-    "F",
-    "AH",
-    "E",
-    "L",
-    "S",
-    "I",
-    "S",
-    "T",
-    "EH",
-    "M",
-    "EH",
-    "N",
-    "T",
-    "ER",
-    "W",
-    "AH",
-    "E",
-    "OU",
-    "ER",
-    "EH",
-    "N",
-)
-FOLDER_INITIALIZATION_PROMPT = (
-    "I",
-    "N",
-    "I",
-    "SCH",
-    "AE1",
-    "L",
-    "AH",
-    "E1",
-    "Z",
-    "F",
-    "O",
-    "OU",
-    "L",
-    "D",
-    "ER",
-    "S",
-    "I",
-    "S",
-    "T",
-    "EH",
-    "M",
-    "EH",
-    "N",
-    "T",
-    "ER",
-    "W",
-    "AH",
-    "E",
-    "OU",
-    "ER",
-    "EH",
-    "N",
-)
-WIPEOUT_PROMPT = (
-    "D",
-    "I",
-    "L",
-    "E",
-    "T",
-    "AW",
-    "LF",
-    "D",
-    "A",
-    "E",
-    "T",
-    "UH1",
-    "I",
-    "N",
-    "F",
-    "AH",
-    "E",
-    "L",
-    "EH",
-    "R",
-    "E",
-    "UH1",
-    "EH",
-    "N",
-    "T",
-    "ER",
-    "W",
-    "AH",
-    "E",
-    "OU",
-    "ER",
-    "EH",
-    "N",
-)
-FLASH_CONFIRMATION_PROMPT = (
-    "AH",
-    "ER",
-    "YI",
-    "U",
-    "U",
-    "SCH",
-    "O",
-    "ER",
-    "EH",
-    "N",
-    "T",
-    "ER",
-    "W",
-    "AH",
-    "E",
-    "OU",
-    "ER",
-    "EH",
-    "N",
-)
-FILE_COMMAND_PROMPT = (
-    "EH",
-    "N",
-    "T",
-    "ER",
-    "F",
-    "AH",
-    "E",
-    "L",
-    "K",
-    "UH1",
-    "M",
-    "AE",
-    "N",
-    "D",
-)
 BSNAME_SPEECH_MARKER = (
     "A",
     "E1",
@@ -270,53 +87,34 @@ CALSORT_SPEECH_MARKER = (
 )
 
 
-def crc16_xmodem(data: bytes) -> int:
-    """Return the CRC-16/XMODEM value used by the firmware."""
-    crc = 0
-    for byte in data:
-        crc ^= byte << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
-    return crc
-
-
-def ymodem_packet(block_number: int, payload: bytes, block_size: int) -> bytes:
-    """Build one CRC-protected YMODEM packet."""
-    if len(payload) != block_size:
-        raise ValueError(f"payload is {len(payload)} bytes, expected {block_size}")
-    marker = SOH if block_size == 128 else STX
-    crc = crc16_xmodem(payload)
-    return bytes((marker, block_number, 0xFF - block_number)) + payload + crc.to_bytes(2, "big")
-
-
 def is_flash_initialization_prompt(names: list[str]) -> bool:
     """Return whether retained speech ends with the exact first-boot prompt."""
-    prompt_size = len(FLASH_INITIALIZATION_PROMPT)
-    return tuple(names[-prompt_size:]) == FLASH_INITIALIZATION_PROMPT
+    prompt_size = len(bs2_stdio_harness.FLASH_INITIALIZATION_PROMPT)
+    return tuple(names[-prompt_size:]) == bs2_stdio_harness.FLASH_INITIALIZATION_PROMPT
 
 
 def is_file_initialization_prompt(names: list[str]) -> bool:
     """Return whether retained speech ends with the exact cold-reset prompt."""
-    prompt_size = len(FILE_INITIALIZATION_PROMPT)
-    return tuple(names[-prompt_size:]) == FILE_INITIALIZATION_PROMPT
+    prompt_size = len(bs2_stdio_harness.FILE_INITIALIZATION_PROMPT)
+    return tuple(names[-prompt_size:]) == bs2_stdio_harness.FILE_INITIALIZATION_PROMPT
 
 
 def is_folder_initialization_prompt(names: list[str]) -> bool:
     """Return whether retained speech ends with the exact folder prompt."""
-    prompt_size = len(FOLDER_INITIALIZATION_PROMPT)
-    return tuple(names[-prompt_size:]) == FOLDER_INITIALIZATION_PROMPT
+    prompt_size = len(bs2_stdio_harness.FOLDER_INITIALIZATION_PROMPT)
+    return tuple(names[-prompt_size:]) == bs2_stdio_harness.FOLDER_INITIALIZATION_PROMPT
 
 
 def is_wipeout_prompt(names: list[str]) -> bool:
     """Return whether retained speech ends with the exact file-area prompt."""
-    prompt_size = len(WIPEOUT_PROMPT)
-    return tuple(names[-prompt_size:]) == WIPEOUT_PROMPT
+    prompt_size = len(bs2_stdio_harness.WIPEOUT_PROMPT)
+    return tuple(names[-prompt_size:]) == bs2_stdio_harness.WIPEOUT_PROMPT
 
 
 def is_flash_confirmation_prompt(names: list[str]) -> bool:
     """Return whether speech ends with the exact destructive-action confirmation."""
-    prompt_size = len(FLASH_CONFIRMATION_PROMPT)
-    return tuple(names[-prompt_size:]) == FLASH_CONFIRMATION_PROMPT
+    prompt_size = len(bs2_stdio_harness.FLASH_CONFIRMATION_PROMPT)
+    return tuple(names[-prompt_size:]) == bs2_stdio_harness.FLASH_CONFIRMATION_PROMPT
 
 
 def reach_editor_command_loop(harness: BS2Harness) -> None:
@@ -343,12 +141,12 @@ def reach_editor_command_loop(harness: BS2Harness) -> None:
         )
 
     if folder_initialization:
-        harness.chord(FLASH_INITIALIZATION_Y_KEY)
+        harness.chord(bs2_stdio_harness.FLASH_INITIALIZATION_Y_KEY)
         reach_editor_command_loop(harness)
         return
 
     speech_cursor = len(bns.ssi263.phoneme_log)
-    harness.chord(FLASH_INITIALIZATION_Y_KEY)
+    harness.chord(bs2_stdio_harness.FLASH_INITIALIZATION_Y_KEY)
     harness.run_until(
         lambda: is_flash_confirmation_prompt(
             [
@@ -391,7 +189,7 @@ def reach_editor_command_loop(harness: BS2Harness) -> None:
             f"response_speech=[{' '.join(response_names)}]"
         )
 
-    harness.chord(FLASH_INITIALIZATION_Y_KEY)
+    harness.chord(bs2_stdio_harness.FLASH_INITIALIZATION_Y_KEY)
     if wipeout:
         harness.run_until(
             lambda: bns._command_loop_write_count > 0 and bns.cpu.pc == 0xD657,
@@ -409,7 +207,7 @@ def reject_disk_probes(
     bns = harness.bns
     traces: list[str] = []
     cursor = harness.wait_for_serial(1, 0, bytes((0x05,)), "ASCI1 disk-drive ENQ")
-    harness.queue_serial(bytes((NAK,)))
+    harness.queue_serial(bytes((bs2_stdio_harness.NAK,)))
     traces.append(harness.wait_for_receive(1, "ASCI1 NAK", context=context))
 
     harness.select_serial(0)
@@ -423,7 +221,7 @@ def reject_disk_probes(
         "ASCI0 disk-drive ENQ",
         context=f"{context}; {'; '.join(traces)}; COMBYT=[{combyt_trace}]",
     )
-    harness.queue_serial(bytes((NAK,)))
+    harness.queue_serial(bytes((bs2_stdio_harness.NAK,)))
     traces.append(harness.wait_for_receive(0, "ASCI0 NAK"))
     return cursor, traces
 
@@ -437,232 +235,46 @@ def transfer_ymodem(harness: BS2Harness, cursor: int, program: Path) -> None:
     cursor = harness.wait_for_serial(
         0,
         cursor,
-        bytes((CRC_REQUEST,)),
+        bytes((bs2_stdio_harness.CRC_REQUEST,)),
         "initial YMODEM CRC request",
     )
-    harness.queue_serial(ymodem_packet(0, header, 128))
+    harness.queue_serial(bs2_stdio_harness.ymodem_packet(0, header, 128))
     cursor = harness.wait_for_serial(
         0,
         cursor,
-        bytes((ACK, CRC_REQUEST)),
+        bytes((bs2_stdio_harness.ACK, bs2_stdio_harness.CRC_REQUEST)),
         "header ACK and data CRC request",
     )
 
     for block_number, offset in enumerate(range(0, len(program_data), 1_024), start=1):
-        payload = program_data[offset : offset + 1_024].ljust(1_024, bytes((CPM_EOF,)))
-        harness.queue_serial(ymodem_packet(block_number & 0xFF, payload, 1_024))
+        payload = program_data[offset : offset + 1_024].ljust(
+            1_024,
+            bytes((bs2_stdio_harness.CPM_EOF,)),
+        )
+        harness.queue_serial(
+            bs2_stdio_harness.ymodem_packet(block_number & 0xFF, payload, 1_024)
+        )
         cursor = harness.wait_for_serial(
             0,
             cursor,
-            bytes((ACK,)),
+            bytes((bs2_stdio_harness.ACK,)),
             f"data block {block_number} ACK",
         )
 
-    harness.queue_serial(bytes((EOT,)))
+    harness.queue_serial(bytes((bs2_stdio_harness.EOT,)))
     cursor = harness.wait_for_serial(
         0,
         cursor,
-        bytes((ACK, CRC_REQUEST)),
+        bytes((bs2_stdio_harness.ACK, bs2_stdio_harness.CRC_REQUEST)),
         "EOT ACK and batch CRC request",
     )
-    harness.queue_serial(ymodem_packet(0, bytes(128), 128))
-    harness.wait_for_serial(0, cursor, bytes((ACK,)), "empty batch header ACK")
-
-
-def send_stdio_chord(
-    process: BNSStdioProcess,
-    chord: int,
-    *,
-    wait_ready: bool = True,
-) -> None:
-    """Deliver one exact chord and require firmware acceptance."""
-    process.send_keyboard(chord=chord)
-    process.wait_for_keyboard("accepted", chord=chord, timeout=60)
-    if wait_ready:
-        process.wait_for_keyboard("ready", timeout=60)
-
-
-def reach_stdio_editor_command_loop(process: BNSStdioProcess) -> None:
-    """Complete real first-boot prompts using speech and keyboard events only."""
-    editor_command_loop_pc = 0xD657
-    initialization_prompts = (
-        FLASH_INITIALIZATION_PROMPT,
-        FILE_INITIALIZATION_PROMPT,
-        FOLDER_INITIALIZATION_PROMPT,
-        WIPEOUT_PROMPT,
-        FLASH_CONFIRMATION_PROMPT,
-    )
-    expected_chord = POWER_ON_INITIALIZE_CHORD
-    speech_start = len(process.speech_names)
-    process.send_keyboard(chord=expected_chord)
-    process.send_event("cpu", watch_pc=editor_command_loop_pc)
-    watch_armed = False
-
-    for _ in range(12):
-        accepted = False
-        ready = False
-        command_loop = False
-        prompt_seen = False
-
-        def reached_startup_boundary(event: dict[str, object]) -> bool:
-            nonlocal accepted, ready, command_loop, prompt_seen, watch_armed
-            if event.get("device") == "keyboard":
-                if (
-                    event.get("state") == "accepted"
-                    and event.get("chord") == expected_chord
-                ):
-                    accepted = True
-                elif event.get("state") == "ready":
-                    ready = True
-            elif event.get("device") == "cpu" and event.get("pc") == editor_command_loop_pc:
-                if event.get("event") == "watch-armed":
-                    watch_armed = True
-                elif event.get("event") == "pc-watch":
-                    command_loop = True
-
-            names = process.speech_names
-            prompt_seen = len(names) > speech_start and any(
-                tuple(names[-len(prompt):]) == prompt
-                for prompt in initialization_prompts
-            )
-            return watch_armed and accepted and ready and (command_loop or prompt_seen)
-
-        process.wait_for(
-            reached_startup_boundary,
-            "BS2 initialization prompt or editor command loop",
-            timeout=60,
-        )
-        if command_loop:
-            return
-        if not prompt_seen:
-            raise RuntimeError("BS2 startup boundary lacked a recognized prompt")
-
-        speech_start = len(process.speech_names)
-        expected_chord = FLASH_INITIALIZATION_Y_KEY
-        process.send_keyboard(chord=FLASH_INITIALIZATION_Y_KEY)
-    raise RuntimeError("BS2 initialization exceeded 12 firmware prompts")
-
-
-def transfer_stdio_ymodem(
-    process: BNSStdioProcess,
-    cursor: int,
-    program: Path,
-) -> None:
-    """Transfer one external program through structured ASCI0 events."""
-    program_data = program.read_bytes()
-    post_import_speech_start = len(process.speech_names)
-    post_import_ready = False
-
-    def wait_for_transfer_boundary(
-        start: int,
-        suffix: bytes,
-        description: str,
-        *,
-        require_post_import_prompt: bool = False,
-    ) -> int:
-        nonlocal post_import_ready
-
-        def reached_boundary(event: dict[str, object]) -> bool:
-            nonlocal post_import_ready
-            if event.get("device") == "keyboard" and event.get("state") == "ready":
-                post_import_ready = True
-            serial_seen = bytes(process.serial[0][start:]).endswith(suffix)
-            if not require_post_import_prompt:
-                return serial_seen
-            names = process.speech_names
-            prompt_seen = (
-                len(names) > post_import_speech_start
-                and tuple(names[-len(FILE_COMMAND_PROMPT):]) == FILE_COMMAND_PROMPT
-            )
-            return serial_seen and post_import_ready and prompt_seen
-
-        process.wait_for(reached_boundary, description, timeout=60)
-        return len(process.serial[0])
-
-    header = (
-        program.name.encode("ascii")
-        + b"\0"
-        + str(len(program_data)).encode("ascii")
-        + b"\0"
-    ).ljust(128, b"\0")
-
-    cursor = wait_for_transfer_boundary(
+    harness.queue_serial(bs2_stdio_harness.ymodem_packet(0, bytes(128), 128))
+    harness.wait_for_serial(
+        0,
         cursor,
-        bytes((CRC_REQUEST,)),
-        "initial YMODEM CRC request",
+        bytes((bs2_stdio_harness.ACK,)),
+        "empty batch header ACK",
     )
-    process.send_serial(0, ymodem_packet(0, header, 128))
-    cursor = wait_for_transfer_boundary(
-        cursor,
-        bytes((ACK, CRC_REQUEST)),
-        "header ACK and data CRC request",
-    )
-
-    for block_number, offset in enumerate(range(0, len(program_data), 1_024), start=1):
-        payload = program_data[offset : offset + 1_024].ljust(1_024, bytes((CPM_EOF,)))
-        process.send_serial(
-            0,
-            ymodem_packet(block_number & 0xFF, payload, 1_024),
-        )
-        cursor = wait_for_transfer_boundary(
-            cursor,
-            bytes((ACK,)),
-            f"data block {block_number} ACK",
-        )
-
-    process.send_serial(0, bytes((EOT,)))
-    cursor = wait_for_transfer_boundary(
-        cursor,
-        bytes((ACK, CRC_REQUEST)),
-        "EOT ACK and batch CRC request",
-    )
-    process.send_serial(0, ymodem_packet(0, bytes(128), 128))
-    wait_for_transfer_boundary(
-        cursor,
-        bytes((ACK,)),
-        "empty batch ACK, post-import file command prompt, and keyboard ready",
-        require_post_import_prompt=True,
-    )
-
-
-def receive_stdio_file(process: BNSStdioProcess, file_path: Path) -> None:
-    """Receive one host file through the firmware's file-menu YMODEM path."""
-    serial1_cursor = len(process.serial[1])
-    serial0_cursor = len(process.serial[0])
-    process.send_keyboard(chord=T_CHORD)
-    accepted = False
-    ready = False
-
-    def reached_transfer_prompt(event: dict[str, object]) -> bool:
-        nonlocal accepted, ready
-        if event.get("device") == "keyboard":
-            if event.get("state") == "accepted" and event.get("chord") == T_CHORD:
-                accepted = True
-            elif event.get("state") == "ready":
-                ready = True
-        asci1_probe = bytes(process.serial[1][serial1_cursor:]).endswith(bytes((0x05,)))
-        return accepted and ready and asci1_probe
-
-    process.wait_for(
-        reached_transfer_prompt,
-        "T-chord acceptance, transfer prompt ready, and ASCI1 disk-drive ENQ",
-        timeout=60,
-    )
-    process.send_serial(1, bytes((NAK,)))
-
-    process.wait_for(
-        lambda _event: bytes(process.serial[0][serial0_cursor:]).endswith(
-            bytes((0x05,))
-        ),
-        "ASCI0 disk-drive ENQ",
-        timeout=60,
-    )
-    serial0_cursor = len(process.serial[0])
-    process.send_serial(0, bytes((NAK,)))
-
-    send_stdio_chord(process, R_KEY)
-    send_stdio_chord(process, Y_KEY, wait_ready=False)
-    transfer_stdio_ymodem(process, serial0_cursor, file_path)
 
 
 def require_persisted_resources(state: Path, resources: tuple[Path, ...]) -> None:
@@ -676,35 +288,6 @@ def require_persisted_resources(state: Path, resources: tuple[Path, ...]) -> Non
             raise RuntimeError(
                 f"persisted BS2 state lacks exact payload for {resource.name}"
             )
-
-
-def execute_selected_stdio_program(
-    process: BNSStdioProcess,
-    expected_cbar: int,
-    speech_marker: tuple[str, ...] | None,
-    *,
-    require_return_key: bool = False,
-) -> dict[str, object]:
-    """Execute the selected program and prove entry, speech, and optional return."""
-    process.arm_pc_watch(0x1000, timeout=60)
-    process.send_keyboard(chord=X_CHORD)
-    entry = process.wait_for_pc_watch(0x1000, timeout=60)
-    if entry.get("cbar") != expected_cbar:
-        raise RuntimeError(
-            f"external program entered with CBAR {entry.get('cbar'):02X}; "
-            f"expected {expected_cbar:02X}"
-        )
-    if speech_marker is not None:
-        process.wait_for_speech_suffix(
-            speech_marker,
-            "external program speech",
-            timeout=60,
-        )
-    if require_return_key:
-        if speech_marker is None:
-            raise ValueError("return-key proof requires an expected speech marker")
-        send_stdio_chord(process, E_CHORD)
-    return entry
 
 
 def _program_speech_marker(program: Path) -> tuple[str, ...] | None:
@@ -733,22 +316,22 @@ def verify_through_stdio(
         state=state,
         power_on_input=True,
     ) as process:
-        reach_stdio_editor_command_loop(process)
+        bs2_stdio_harness.reach_stdio_editor_command_loop(process)
         speech_start = len(process.speech_names)
 
-        send_stdio_chord(process, O_CHORD)
-        send_stdio_chord(process, F_KEY)
+        bs2_stdio_harness.send_stdio_chord(process, O_CHORD)
+        bs2_stdio_harness.send_stdio_chord(process, F_KEY)
         process.wait_for_speech_suffix(
-            FILE_COMMAND_PROMPT,
+            bs2_stdio_harness.FILE_COMMAND_PROMPT,
             "Enter file command prompt",
             timeout=60,
         )
 
         for file_path in (*resources, program):
-            receive_stdio_file(process, file_path)
-        send_stdio_chord(process, DOT5_CHORD)
+            bs2_stdio_harness.receive_stdio_file(process, file_path)
+        bs2_stdio_harness.send_stdio_chord(process, DOT5_CHORD)
 
-        entry = execute_selected_stdio_program(
+        entry = bs2_stdio_harness.execute_selected_stdio_program(
             process,
             expected_cbar,
             expected_speech or _program_speech_marker(program),
@@ -784,15 +367,15 @@ def verify_persisted_stdio_program(rom: Path, state: Path, program: Path) -> Non
         process.wait_for_keyboard("ready", timeout=60)
         speech_start = len(process.speech_names)
 
-        send_stdio_chord(process, O_CHORD)
-        send_stdio_chord(process, F_KEY)
+        bs2_stdio_harness.send_stdio_chord(process, O_CHORD)
+        bs2_stdio_harness.send_stdio_chord(process, F_KEY)
         process.wait_for_speech_suffix(
-            FILE_COMMAND_PROMPT,
+            bs2_stdio_harness.FILE_COMMAND_PROMPT,
             "persisted Enter file command prompt",
             timeout=60,
         )
-        send_stdio_chord(process, DOT5_CHORD)
-        entry = execute_selected_stdio_program(
+        bs2_stdio_harness.send_stdio_chord(process, DOT5_CHORD)
+        entry = bs2_stdio_harness.execute_selected_stdio_program(
             process,
             expected_cbar,
             _program_speech_marker(program),
@@ -906,7 +489,7 @@ def main() -> None:
         # A real blank BS2 must be hard-initialized by holding I-chord while
         # power is applied.  Keep it held until WARM0 reaches the linked
         # COMBYT initializer, then deliver the physical key-up edge.
-        bns.keyboard.press(POWER_ON_INITIALIZE_CHORD)
+        bns.keyboard.press(bs2_stdio_harness.POWER_ON_INITIALIZE_CHORD)
         harness.run_until(
             lambda: bns.cpu.pc_watch_count > 0,
             "BS2 power-on hard-reset initializer",
@@ -936,7 +519,7 @@ def main() -> None:
             serial_event_cursor = len(serial_output.events)
 
         bns.cpu.reset_asci_debug()
-        harness.chord(T_CHORD)
+        harness.chord(bs2_stdio_harness.T_CHORD)
         t_delivered_cycle = bns.cpu.cycle_count
         chord_phases.append(f"T=[{serial_output.format_events(serial_event_cursor)}]")
         serial_event_cursor = len(serial_output.events)
@@ -948,15 +531,15 @@ def main() -> None:
         chord_phases.append(f"disk_probes=[{serial_output.format_events(serial_event_cursor)}]")
         serial_event_cursor = len(serial_output.events)
 
-        harness.chord(R_KEY)
+        harness.chord(bs2_stdio_harness.R_KEY)
         harness.wait_for_key()
         chord_phases.append(f"r=[{serial_output.format_events(serial_event_cursor)}]")
         serial_event_cursor = len(serial_output.events)
-        harness.chord(Y_KEY)
+        harness.chord(bs2_stdio_harness.Y_KEY)
         harness.wait_for_speech()
         chord_phases.append(f"y=[{serial_output.format_events(serial_event_cursor)}]")
         serial_event_cursor = len(serial_output.events)
-        harness.chord(E_CHORD)
+        harness.chord(bs2_stdio_harness.E_CHORD)
         chord_phases.append(f"E=[{serial_output.format_events(serial_event_cursor)}]")
         transfer_ymodem(harness, serial_cursor, args.program)
         harness.run_until(

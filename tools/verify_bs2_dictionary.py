@@ -6,17 +6,19 @@ import argparse
 from pathlib import Path
 
 from qns.input_driver import ASCII_TO_BNS_KEY
-from tools.stdio_process import BNSStdioProcess
-from tools.verify_bs2_external_program import (
+from tools.bs2_stdio_harness import (
     E_CHORD,
-    F_KEY,
     FILE_COMMAND_PROMPT,
-    O_CHORD,
     Y_KEY,
     reach_stdio_editor_command_loop,
     receive_stdio_file,
-    require_persisted_resources,
     send_stdio_chord,
+)
+from tools.stdio_process import BNSStdioProcess
+from tools.verify_bs2_external_program import (
+    F_KEY,
+    O_CHORD,
+    require_persisted_resources,
 )
 from tools.verify_bs2_help import F_CHORD, send_stdio_text
 

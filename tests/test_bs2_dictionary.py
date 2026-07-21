@@ -1,5 +1,6 @@
 """Authorities for the supplied BS2 spell-dictionary stdio workflow."""
 
+from tools.bs2_stdio_harness import E_CHORD, FILE_COMMAND_PROMPT, Y_KEY
 from tools.verify_bs2_dictionary import (
     CREATE_KEY,
     DONE_SUFFIX,
@@ -14,11 +15,8 @@ from tools.verify_bs2_dictionary import (
     verify_dictionary_through_stdio,
 )
 from tools.verify_bs2_external_program import (
-    E_CHORD,
     F_KEY,
-    FILE_COMMAND_PROMPT,
     O_CHORD,
-    Y_KEY,
 )
 from tools.verify_bs2_help import F_CHORD
 

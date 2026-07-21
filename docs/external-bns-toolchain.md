@@ -1,12 +1,13 @@
 # Building external `.bns` programs for Blazie note takers
 
 Status: active implementation plan and verified assembly-program guide,
-2026-07-20. Phases 1 through 3 are complete: a clean checkout installs the
+2026-07-20. Phases 1 through 4 are complete: a clean checkout installs the
 pinned Z180 backend, the format authority deterministically packs external
 programs from linker facts, and a newly built assembly program imports, runs,
-speaks, exits, and returns control to real BS2 firmware under QNS. The C SDK and
-physical-device validation are not complete. Commands marked **planned** do not
-exist yet.
+speaks, exits, and returns control to real BS2 firmware under QNS. The proven
+runtime workflow now has one reusable helper owner. The C SDK is the active
+next phase, and physical-device validation is not complete. Commands marked
+**planned** do not exist yet.
 
 ## Goal
 
@@ -276,6 +277,27 @@ accepted the file and installed its application MMU map. Requiring E-chord
 `accepted` and `ready` after the phrase proves the program executed its exit
 path and returned control to the firmware; entry alone is not sufficient.
 
+## Reusing the QNS runtime harness
+
+`tools/stdio_process.py::BNSStdioProcess` owns the bounded JSONL subprocess and
+retained speech and serial histories. `tools/bs2_stdio_harness.py` builds the
+firmware workflows on that transport. The reusable operations are:
+
+| Helper | Contract |
+|---|---|
+| `send_stdio_chord(process, chord)` | Send one physical chord and require firmware `accepted` and `ready` events |
+| `reach_stdio_editor_command_loop(process)` | Perform fresh-state initialization and prove the editor command loop |
+| `receive_stdio_file(process, file_path)` | From the open file-command menu, reject both disk probes and complete YMODEM receipt of one arbitrary host file |
+| `transfer_stdio_ymodem(process, cursor, file_path)` | Complete the ASCI0 YMODEM exchange after a caller has established the receiver boundary |
+| `execute_selected_stdio_program(process, expected_cbar, speech_marker, require_return_key=True)` | Launch the selected program, prove `PC=0x1000` and `CBAR`, require its speech, then prove firmware input works after exit |
+| `crc16_xmodem(...)` and `ymodem_packet(...)` | Construct independently tested YMODEM protocol data |
+
+These helpers retain related keyboard, speech, CPU-watch, and serial facts in
+one wait where ordering can vary. A caller must not replace those boundaries
+with consecutive primitive waits: consumed JSONL events are not replayed. The
+external-program, full-help, and dictionary verifiers all use this shared
+owner; there are no compatibility wrappers in the external-program verifier.
+
 ## Repository artifacts the plan must create
 
 These are the required artifacts, not suggestions to replace with nearby
@@ -292,9 +314,11 @@ files:
 | `sdk/bns_api.asm` | Compiler-ABI shims that marshal calls to `RST 38h` |
 | `sdk/include/bns_api.h` | Only the API calls whose wrappers have tests |
 | `tools/bns_external.py` | `pack` and `inspect` operations for this format |
+| `tools/bs2_stdio_harness.py` | Reusable BS2 startup, file-transfer, execution, speech, and return helpers |
 | `examples/hello-asm/` | Smallest assembly program: speak and exit |
 | `examples/hello-c/` | Smallest C program using the tested API wrapper |
 | `tests/test_bns_external.py` | Header, CRC, rejection, and fixture authority |
+| `tests/test_bs2_stdio_harness.py` | Focused event-order and protocol authority for the reusable runtime helpers |
 | `docs/external-bns-toolchain.md` | This plan and, later, the verified user guide |
 
 Do not copy the historical copyrighted headers or libraries into the
@@ -375,7 +399,41 @@ post-exit firmware input.
 Gate: the result is structurally valid, enters at `0x1000`, speaks the expected
 phrase, exits, and the firmware accepts another key afterward.
 
-### Phase 4: add the minimal C SDK
+### Phase 4: extract the reusable BS2 stdio harness
+
+Implementation status: complete. The direct harness and three migrated
+verifier suites pass 33 tests and Ruff. The exact full-marker command in the
+verified guide also passed after the final ownership move, including import,
+entry, complete speech, exit, and post-exit input acceptance.
+
+This phase is explicitly requested after the successful Phase 3 runtime proof.
+It moves the proven workflow out of the external-program verifier; it does not
+introduce a second implementation or preserve compatibility re-exports in the
+old owner.
+
+1. Create `tools/bs2_stdio_harness.py` over the existing
+   `tools/stdio_process.py::BNSStdioProcess` transport. Move the accepted-chord,
+   first-boot initialization, YMODEM packet/transfer, file-menu receive, and
+   selected-program execution helpers into it.
+2. Keep the exact event-retention boundaries proven in Phase 3: startup events
+   share one wait, transfer readiness survives the complete YMODEM exchange,
+   and return proof requires speech before post-exit E-chord acceptance and
+   readiness.
+3. Move the focused helper tests from `tests/test_bs2_external_program.py` to
+   `tests/test_bs2_stdio_harness.py` and make that new module their direct
+   owner.
+4. Migrate `tools/verify_bs2_external_program.py`, `tools/verify_bs2_help.py`,
+   and `tools/verify_bs2_dictionary.py` to the new module. Delete the moved
+   definitions from the verifier; do not retain wrappers or re-exports there.
+5. Keep the existing external-program CLI and its documented arguments and
+   output unchanged.
+
+Gate: the focused harness tests and all three migrated verifier suites pass,
+Ruff passes, and the exact full-marker real-ROM command in the verified guide
+still imports the freshly built program, enters it, observes the complete
+phrase, exits, and accepts the post-exit key.
+
+### Phase 5: add the minimal C SDK
 
 1. Confirm the selected z88dk compiler's actual calling convention from its
    generated assembly.
@@ -387,10 +445,11 @@ phrase, exits, and the firmware accepts another key afterward.
 5. Compare the wrapper's generated assembly listing with the firmware register
    contract.
 
-Gate: the C example passes the same emulator and physical-device behavior as
-the assembly example. Passing compilation alone is not an ABI gate.
+Gate: the C example passes the same real-ROM QNS behavior as the assembly
+example. Passing compilation alone is not an ABI gate. Its physical-device
+gate remains in Phase 7 after the assembly example validates that environment.
 
-### Phase 5: make QNS the repeatable integration gate
+### Phase 6: make QNS the repeatable integration gate
 
 The existing command is:
 
@@ -413,7 +472,7 @@ Gate: real firmware completes serial probes, imports the exact output bytes,
 launches at `0x1000` with the header-derived map, observes the example's unique
 behavior, and regains its command loop after exit.
 
-### Phase 6: validate on physical hardware
+### Phase 7: validate on physical hardware
 
 Before the first run, record the unit model, firmware revision, available RAM,
 serial parameters, and a backup. Use the assembly example first because it has
@@ -461,7 +520,7 @@ only when a clean checkout has executed, in order:
 5. the physical transfer/run procedure above.
 
 The exact successful commands and expected output must replace this paragraph
-during Phase 6. Until that happens, the truthful current answer is: the file
+during Phase 7. Until that happens, the truthful current answer is: the file
 format and launch path are known, but the build toolchain is not yet complete.
 
 ## Completion definition
