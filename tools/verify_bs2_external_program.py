@@ -484,12 +484,7 @@ def send_stdio_chord(
 
 def reach_stdio_editor_command_loop(process: BNSStdioProcess) -> None:
     """Complete real first-boot prompts using speech and keyboard events only."""
-    process.wait_for_keyboard(
-        "accepted",
-        chord=POWER_ON_INITIALIZE_CHORD,
-        timeout=60,
-    )
-    responded_at = -1
+    editor_command_loop_pc = 0xD657
     initialization_prompts = (
         FLASH_INITIALIZATION_PROMPT,
         FILE_INITIALIZATION_PROMPT,
@@ -497,22 +492,54 @@ def reach_stdio_editor_command_loop(process: BNSStdioProcess) -> None:
         WIPEOUT_PROMPT,
         FLASH_CONFIRMATION_PROMPT,
     )
+    expected_chord = POWER_ON_INITIALIZE_CHORD
+    speech_start = len(process.speech_names)
+    process.send_keyboard(chord=expected_chord)
+    process.send_event("cpu", watch_pc=editor_command_loop_pc)
+    watch_armed = False
+
     for _ in range(12):
-        process.wait_for_keyboard("ready", timeout=60)
-        names = process.speech_names
-        prompt_seen = any(
-            tuple(names[-len(prompt):]) == prompt
-            for prompt in initialization_prompts
-        )
-        if not prompt_seen or len(names) == responded_at:
-            return
-        responded_at = len(names)
-        process.send_keyboard(chord=FLASH_INITIALIZATION_Y_KEY)
-        process.wait_for_keyboard(
-            "accepted",
-            chord=FLASH_INITIALIZATION_Y_KEY,
+        accepted = False
+        ready = False
+        command_loop = False
+        prompt_seen = False
+
+        def reached_startup_boundary(event: dict[str, object]) -> bool:
+            nonlocal accepted, ready, command_loop, prompt_seen, watch_armed
+            if event.get("device") == "keyboard":
+                if (
+                    event.get("state") == "accepted"
+                    and event.get("chord") == expected_chord
+                ):
+                    accepted = True
+                elif event.get("state") == "ready":
+                    ready = True
+            elif event.get("device") == "cpu" and event.get("pc") == editor_command_loop_pc:
+                if event.get("event") == "watch-armed":
+                    watch_armed = True
+                elif event.get("event") == "pc-watch":
+                    command_loop = True
+
+            names = process.speech_names
+            prompt_seen = len(names) > speech_start and any(
+                tuple(names[-len(prompt):]) == prompt
+                for prompt in initialization_prompts
+            )
+            return watch_armed and accepted and ready and (command_loop or prompt_seen)
+
+        process.wait_for(
+            reached_startup_boundary,
+            "BS2 initialization prompt or editor command loop",
             timeout=60,
         )
+        if command_loop:
+            return
+        if not prompt_seen:
+            raise RuntimeError("BS2 startup boundary lacked a recognized prompt")
+
+        speech_start = len(process.speech_names)
+        expected_chord = FLASH_INITIALIZATION_Y_KEY
+        process.send_keyboard(chord=FLASH_INITIALIZATION_Y_KEY)
     raise RuntimeError("BS2 initialization exceeded 12 firmware prompts")
 
 
@@ -523,6 +550,35 @@ def transfer_stdio_ymodem(
 ) -> None:
     """Transfer one external program through structured ASCI0 events."""
     program_data = program.read_bytes()
+    post_import_speech_start = len(process.speech_names)
+    post_import_ready = False
+
+    def wait_for_transfer_boundary(
+        start: int,
+        suffix: bytes,
+        description: str,
+        *,
+        require_post_import_prompt: bool = False,
+    ) -> int:
+        nonlocal post_import_ready
+
+        def reached_boundary(event: dict[str, object]) -> bool:
+            nonlocal post_import_ready
+            if event.get("device") == "keyboard" and event.get("state") == "ready":
+                post_import_ready = True
+            serial_seen = bytes(process.serial[0][start:]).endswith(suffix)
+            if not require_post_import_prompt:
+                return serial_seen
+            names = process.speech_names
+            prompt_seen = (
+                len(names) > post_import_speech_start
+                and tuple(names[-len(FILE_COMMAND_PROMPT):]) == FILE_COMMAND_PROMPT
+            )
+            return serial_seen and post_import_ready and prompt_seen
+
+        process.wait_for(reached_boundary, description, timeout=60)
+        return len(process.serial[0])
+
     header = (
         program.name.encode("ascii")
         + b"\0"
@@ -530,20 +586,16 @@ def transfer_stdio_ymodem(
         + b"\0"
     ).ljust(128, b"\0")
 
-    cursor = process.wait_for_serial(
-        0,
+    cursor = wait_for_transfer_boundary(
         cursor,
         bytes((CRC_REQUEST,)),
         "initial YMODEM CRC request",
-        timeout=60,
     )
     process.send_serial(0, ymodem_packet(0, header, 128))
-    cursor = process.wait_for_serial(
-        0,
+    cursor = wait_for_transfer_boundary(
         cursor,
         bytes((ACK, CRC_REQUEST)),
         "header ACK and data CRC request",
-        timeout=60,
     )
 
     for block_number, offset in enumerate(range(0, len(program_data), 1_024), start=1):
@@ -552,29 +604,24 @@ def transfer_stdio_ymodem(
             0,
             ymodem_packet(block_number & 0xFF, payload, 1_024),
         )
-        cursor = process.wait_for_serial(
-            0,
+        cursor = wait_for_transfer_boundary(
             cursor,
             bytes((ACK,)),
             f"data block {block_number} ACK",
-            timeout=60,
         )
 
     process.send_serial(0, bytes((EOT,)))
-    cursor = process.wait_for_serial(
-        0,
+    cursor = wait_for_transfer_boundary(
         cursor,
         bytes((ACK, CRC_REQUEST)),
         "EOT ACK and batch CRC request",
-        timeout=60,
     )
     process.send_serial(0, ymodem_packet(0, bytes(128), 128))
-    process.wait_for_serial(
-        0,
+    wait_for_transfer_boundary(
         cursor,
         bytes((ACK,)),
-        "empty batch header ACK",
-        timeout=60,
+        "empty batch ACK, post-import file command prompt, and keyboard ready",
+        require_post_import_prompt=True,
     )
 
 
@@ -582,34 +629,40 @@ def receive_stdio_file(process: BNSStdioProcess, file_path: Path) -> None:
     """Receive one host file through the firmware's file-menu YMODEM path."""
     serial1_cursor = len(process.serial[1])
     serial0_cursor = len(process.serial[0])
-    send_stdio_chord(process, T_CHORD, wait_ready=False)
-    serial1_cursor = process.wait_for_serial(
-        1,
-        serial1_cursor,
-        bytes((0x05,)),
-        "ASCI1 disk-drive ENQ",
+    process.send_keyboard(chord=T_CHORD)
+    accepted = False
+    ready = False
+
+    def reached_transfer_prompt(event: dict[str, object]) -> bool:
+        nonlocal accepted, ready
+        if event.get("device") == "keyboard":
+            if event.get("state") == "accepted" and event.get("chord") == T_CHORD:
+                accepted = True
+            elif event.get("state") == "ready":
+                ready = True
+        asci1_probe = bytes(process.serial[1][serial1_cursor:]).endswith(bytes((0x05,)))
+        return accepted and ready and asci1_probe
+
+    process.wait_for(
+        reached_transfer_prompt,
+        "T-chord acceptance, transfer prompt ready, and ASCI1 disk-drive ENQ",
         timeout=60,
     )
     process.send_serial(1, bytes((NAK,)))
-    serial0_cursor = process.wait_for_serial(
-        0,
-        serial0_cursor,
-        bytes((0x05,)),
+
+    process.wait_for(
+        lambda _event: bytes(process.serial[0][serial0_cursor:]).endswith(
+            bytes((0x05,))
+        ),
         "ASCI0 disk-drive ENQ",
         timeout=60,
     )
+    serial0_cursor = len(process.serial[0])
     process.send_serial(0, bytes((NAK,)))
 
-    process.wait_for_keyboard("ready", timeout=60)
     send_stdio_chord(process, R_KEY)
     send_stdio_chord(process, Y_KEY, wait_ready=False)
     transfer_stdio_ymodem(process, serial0_cursor, file_path)
-    process.wait_for_speech_suffix(
-        FILE_COMMAND_PROMPT,
-        "post-import Enter file command prompt",
-        timeout=60,
-    )
-    process.wait_for_keyboard("ready", timeout=60)
 
 
 def require_persisted_resources(state: Path, resources: tuple[Path, ...]) -> None:
@@ -629,8 +682,10 @@ def execute_selected_stdio_program(
     process: BNSStdioProcess,
     expected_cbar: int,
     speech_marker: tuple[str, ...] | None,
+    *,
+    require_return_key: bool = False,
 ) -> dict[str, object]:
-    """Execute the selected external program and prove native entry and speech."""
+    """Execute the selected program and prove entry, speech, and optional return."""
     process.arm_pc_watch(0x1000, timeout=60)
     process.send_keyboard(chord=X_CHORD)
     entry = process.wait_for_pc_watch(0x1000, timeout=60)
@@ -645,6 +700,10 @@ def execute_selected_stdio_program(
             "external program speech",
             timeout=60,
         )
+    if require_return_key:
+        if speech_marker is None:
+            raise ValueError("return-key proof requires an expected speech marker")
+        send_stdio_chord(process, E_CHORD)
     return entry
 
 
@@ -663,6 +722,8 @@ def verify_through_stdio(
     *,
     persist: bool = False,
     resources: tuple[Path, ...] = (),
+    expected_speech: tuple[str, ...] | None = None,
+    require_return_key: bool = False,
 ) -> None:
     """Import and execute a program through the shipped CLI subprocess."""
     expected_cbar = expected_program_cbar(program.read_bytes())
@@ -672,7 +733,6 @@ def verify_through_stdio(
         state=state,
         power_on_input=True,
     ) as process:
-        process.send_keyboard(chord=POWER_ON_INITIALIZE_CHORD)
         reach_stdio_editor_command_loop(process)
         speech_start = len(process.speech_names)
 
@@ -691,7 +751,8 @@ def verify_through_stdio(
         entry = execute_selected_stdio_program(
             process,
             expected_cbar,
-            _program_speech_marker(program),
+            expected_speech or _program_speech_marker(program),
+            require_return_key=require_return_key,
         )
         phonemes = process.speech_names[speech_start:]
         if persist:
@@ -706,6 +767,8 @@ def verify_through_stdio(
         f"entry: cycle={entry['cycle']} pc={entry['pc']:04X} "
         f"cbar={entry['cbar']:02X}"
     )
+    if require_return_key:
+        print("return-key: E-chord accepted and firmware ready")
     print("serial: ASCI1 ENQ/NAK; ASCI0 ENQ/NAK; YMODEM complete")
     print("phonemes:", " ".join(phonemes))
 
@@ -800,6 +863,12 @@ def main() -> None:
         action="store_true",
         help="save the imported program and execute it from a fresh process",
     )
+    parser.add_argument(
+        "--expected-speech",
+        nargs="+",
+        metavar="PHONEME",
+        help="exact phoneme suffix required before proving post-exit E-chord acceptance",
+    )
     args = parser.parse_args()
 
     if args.persist and not args.stdio:
@@ -811,6 +880,10 @@ def main() -> None:
             args.program,
             persist=args.persist,
             resources=tuple(args.resource),
+            expected_speech=(
+                tuple(args.expected_speech) if args.expected_speech is not None else None
+            ),
+            require_return_key=args.expected_speech is not None,
         )
         if args.persist:
             verify_persisted_stdio_program(args.rom, args.state, args.program)

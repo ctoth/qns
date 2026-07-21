@@ -1,11 +1,12 @@
 # Building external `.bns` programs for Blazie note takers
 
-Status: active implementation plan and verified format specification,
-2026-07-20. Phases 1 and 2 are complete: a clean checkout installs the pinned
-Z180 backend, and the format authority inspects and deterministically packs
-external programs from linker facts. The repository can import and execute
-supplied external programs, but it cannot yet build and run a new external
-program. Commands marked **planned** do not exist yet.
+Status: active implementation plan and verified assembly-program guide,
+2026-07-20. Phases 1 through 3 are complete: a clean checkout installs the
+pinned Z180 backend, the format authority deterministically packs external
+programs from linker facts, and a newly built assembly program imports, runs,
+speaks, exits, and returns control to real BS2 firmware under QNS. The C SDK and
+physical-device validation are not complete. Commands marked **planned** do not
+exist yet.
 
 ## Goal
 
@@ -218,6 +219,63 @@ It downloaded and installed the pinned archive, created a fresh `uv`
 environment, passed the smoke test, and reproduced the same smoke-output
 SHA-256. This closes the Phase 1 clean-checkout gate.
 
+## Verified assembly build and run
+
+Run these commands from the repository root in PowerShell. The copied source
+keeps z88dk's generated listing and symbol files inside ignored `.toolchain/`
+instead of beside the tracked example.
+
+```powershell
+& .\toolchain\setup-z88dk.ps1
+$taskZ88dkBin = (Resolve-Path -LiteralPath '.toolchain\z88dk-2.4\bin').Path
+$env:Path = "$taskZ88dkBin;$env:Path"
+$taskBuild = New-Item -ItemType Directory -Force '.toolchain\build\hello-asm'
+Copy-Item -LiteralPath 'examples\hello-asm\hello.asm' -Destination $taskBuild -Force
+& (Join-Path $taskZ88dkBin 'zcc.exe') '+toolchain/bns.cfg' -m -s -g --list `
+    -o (Join-Path $taskBuild 'hello-asm.bin') `
+    (Join-Path $taskBuild 'hello.asm')
+uv run python tools/bns_external.py pack `
+    (Join-Path $taskBuild 'hello-asm_bns_header.bin') `
+    (Join-Path $taskBuild 'hello-asm.map') `
+    (Join-Path $taskBuild 'hello-asm.bns')
+uv run python tools/bns_external.py inspect `
+    (Join-Path $taskBuild 'hello-asm.bns')
+```
+
+The inspected assembly output is exactly 306 bytes with code size `0x0023`,
+program length `0x0123`, CRC `0x50DB`, and stack `0x1131`. Its map exports
+`__bns_entry=0x100E`, `__bns_code_end=0x1031`, and both
+`__bns_stack_top` and `__bns_end_marker` at `0x1131`. The generated listings
+contain the `RST 38h` calls for `API_SAY_WAIT` and `API_EXIT`.
+
+The following command ran that exact output through the unmodified July 1999
+English BS2 firmware file-transfer and launch paths. The state path was absent
+before the run, so it exercised fresh nonvolatile-state initialization.
+
+```powershell
+uv run python tools/verify_bs2_external_program.py `
+    roms/NFB99/BS2ENG/bs2eng.bns `
+    .toolchain/build/hello-asm/hello-asm-marker.state `
+    .toolchain/build/hello-asm/hello-asm.bns `
+    --stdio --expected-speech `
+    K YI U U EH1 N EH1 S UH1 S EH M B L E1 D UH1 N
+```
+
+The successful run reported:
+
+```text
+imported: hello-asm.bns (306 bytes)
+entry: cycle=148381600 pc=1000 cbar=21
+return-key: E-chord accepted and firmware ready
+serial: ASCI1 ENQ/NAK; ASCI0 ENQ/NAK; YMODEM complete
+```
+
+The required marker is the complete observed firmware phoneme sequence for the
+source phrase `QNS ASSEMBLY DONE`. Entry at `PC=0x1000` proves the firmware
+accepted the file and installed its application MMU map. Requiring E-chord
+`accepted` and `ready` after the phrase proves the program executed its exit
+path and returned control to the firmware; entry alone is not sufficient.
+
 ## Repository artifacts the plan must create
 
 These are the required artifacts, not suggestions to replace with nearby
@@ -294,6 +352,11 @@ two clean builds are byte-identical.
 
 ### Phase 3: build the assembly walking skeleton
 
+Implementation status: complete. The actual example builds through
+`toolchain/bns.cfg`, its map and listings pass the structural authority, and
+the full-marker real-ROM command above proves import, entry, speech, exit, and
+post-exit firmware input.
+
 1. Write `sdk/bns_crt0.asm` with the 14-byte header, entry at logical `0x100E`,
    a stack outside the CRC-covered code section, and normal `API_EXIT`.
 2. Write `examples/hello-asm` to call `API_SAY_WAIT` through `RST 38h`, say a
@@ -303,6 +366,11 @@ two clean builds are byte-identical.
 4. Inspect the resulting `.bns` and its generated assembler listing. Require
    entry at logical `0x100E`, the source-defined section boundaries, and the
    `RST 38h` API calls.
+5. Extend `tools/verify_bs2_external_program.py` with an explicit expected
+   phoneme marker. After observing entry and that exact program-speech marker,
+   send E-chord and require the firmware's keyboard `accepted` and `ready`
+   events. This return assertion is a prerequisite of this phase, not a later
+   integration substitute.
 
 Gate: the result is structurally valid, enters at `0x1000`, speaks the expected
 phrase, exits, and the firmware accepts another key afterward.
@@ -331,10 +399,10 @@ uv run python tools/verify_bs2_external_program.py --help
 ```
 
 It can import an arbitrary program through real-ROM YMODEM and prove its
-program-length-derived `CBAR` at PC `0x1000`. Its speech assertions are
-currently named only for `bsname.bns` and `calsort.bns`, so the tool must be
-extended to accept an explicit expected speech marker and to prove return to
-the firmware command loop.
+program-length-derived `CBAR` at PC `0x1000`. Phase 3 adds the explicit speech
+marker and post-exit E-chord acceptance required for the first runnable
+program. This phase makes that path a clean, documented integration gate for
+both examples and requires return to the firmware command loop.
 
 The final integration command will use a disposable state path, the exact
 BS2ENG ROM, the built program, and the stdio process boundary. The command must

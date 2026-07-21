@@ -12,7 +12,6 @@ from tools.verify_bs2_external_program import (
     F_KEY,
     FILE_COMMAND_PROMPT,
     O_CHORD,
-    POWER_ON_INITIALIZE_CHORD,
     Y_KEY,
     reach_stdio_editor_command_loop,
     receive_stdio_file,
@@ -57,7 +56,6 @@ def verify_dictionary_through_stdio(
         state=state,
         power_on_input=True,
     ) as process:
-        process.send_keyboard(chord=POWER_ON_INITIALIZE_CHORD)
         reach_stdio_editor_command_loop(process)
 
         send_stdio_chord(process, STATUS_CHORD)

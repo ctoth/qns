@@ -95,7 +95,7 @@ def test_dictionary_workflow_imports_checks_persists_and_restarts(
         (rom, {"model": "bs2", "state": state, "power_on_input": True}),
         (rom, {"model": "bs2", "state": state}),
     ]
-    assert processes[0].sent == [{"chord": 0x4A}]
+    assert processes[0].sent == []
     assert processes[1].sent == []
     assert received == [(0, dictionary)]
     assert persisted == [(state, (dictionary,))]

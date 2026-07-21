@@ -12,7 +12,6 @@ from tools.verify_bs2_external_program import (
     F_KEY,
     FILE_COMMAND_PROMPT,
     O_CHORD,
-    POWER_ON_INITIALIZE_CHORD,
     reach_stdio_editor_command_loop,
     receive_stdio_file,
     require_persisted_resources,
@@ -107,7 +106,6 @@ def verify_help_through_stdio(rom: Path, state: Path, help_file: Path) -> None:
         state=state,
         power_on_input=True,
     ) as process:
-        process.send_keyboard(chord=POWER_ON_INITIALIZE_CHORD)
         reach_stdio_editor_command_loop(process)
 
         send_stdio_chord(process, O_CHORD)

@@ -149,7 +149,6 @@ def test_help_workflow_imports_renames_reads_persists_and_restarts(
         (rom, {"model": "bs2", "state": state}),
     ]
     assert processes[0].sent == [
-        {"chord": 0x4A},
         {"text": "bs2eng.hlp"},
         {"text": "help"},
     ]

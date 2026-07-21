@@ -1,5 +1,6 @@
 """Build authorities for external Blazie programs."""
 
+import os
 import subprocess
 from pathlib import Path
 from shutil import copyfile
@@ -13,7 +14,9 @@ from tools.bns_external import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-Z88DK_ASSEMBLER = REPO_ROOT / ".toolchain" / "z88dk-2.4" / "bin" / "z88dk-z80asm.exe"
+Z88DK_BIN = REPO_ROOT / ".toolchain" / "z88dk-2.4" / "bin"
+Z88DK_ASSEMBLER = Z88DK_BIN / "z88dk-z80asm.exe"
+Z88DK_ZCC = Z88DK_BIN / "zcc.exe"
 BS2_FIXTURE_ROOT = REPO_ROOT / "roms" / "NFB99" / "BS2ENG"
 
 
@@ -212,6 +215,53 @@ def test_two_clean_builds_are_byte_identical(tmp_path: Path) -> None:
         second_raw,
         second_map,
     )
+
+
+def test_hello_asm_build_has_linked_layout_and_api_calls(tmp_path: Path) -> None:
+    """The actual assembly example must build through the selected target."""
+    assert Z88DK_ZCC.is_file(), "run toolchain/setup-z88dk.ps1 first"
+    source = tmp_path / "hello.asm"
+    copyfile(REPO_ROOT / "examples" / "hello-asm" / "hello.asm", source)
+    output = tmp_path / "hello-asm.bin"
+    environment = os.environ.copy()
+    environment["PATH"] = f"{Z88DK_BIN}{os.pathsep}{environment['PATH']}"
+
+    subprocess.run(
+        [
+            Z88DK_ZCC,
+            "+toolchain/bns.cfg",
+            "-m",
+            "-s",
+            "-g",
+            "--list",
+            "-o",
+            output,
+            source,
+        ],
+        check=True,
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    raw_image = tmp_path / "hello-asm_bns_header.bin"
+    map_text = output.with_suffix(".map").read_text()
+    program = pack_external_program(raw_image.read_bytes(), map_text)
+    assert inspect_external_program(program) == ExternalProgramInfo(
+        file_size=306,
+        code_size=0x23,
+        program_length=0x123,
+        crc=0x50DB,
+        stack=0x1131,
+    )
+    assert "__bns_entry                     = $100E" in map_text
+    assert "__bns_code_end                  = $1031" in map_text
+    assert "__bns_end_marker                = $1131" in map_text
+    assert "__bns_stack_top                 = $1131" in map_text
+
+    listings = "\n".join(path.read_text() for path in tmp_path.glob("*.lis"))
+    assert listings.lower().count("rst $38") == 2
 
 
 @pytest.mark.parametrize(
