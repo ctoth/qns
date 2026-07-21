@@ -1,10 +1,11 @@
 # Building external `.bns` programs for Blazie note takers
 
 Status: active implementation plan and verified format specification,
-2026-07-20. Phase 1 is complete: a clean checkout installs the pinned Z180
-backend and reproduces the exact smoke artifact. The repository can import and
-execute supplied external programs, but it cannot yet package and run a newly
-built external program. Commands marked **planned** do not exist yet.
+2026-07-20. Phases 1 and 2 are complete: a clean checkout installs the pinned
+Z180 backend, and the format authority inspects and deterministically packs
+external programs from linker facts. The repository can import and execute
+supplied external programs, but it cannot yet build and run a new external
+program. Commands marked **planned** do not exist yet.
 
 ## Goal
 
@@ -103,6 +104,33 @@ make an application that stores state in its data area fail its next CRC check.
 
 The format inspector must reproduce these values and CRCs before it is trusted
 to create a file.
+
+### Verified format commands
+
+The inspector has run successfully against both supplied applications:
+
+```powershell
+uv run python tools/bns_external.py inspect roms/NFB99/BS2ENG/bsname.bns
+uv run python tools/bns_external.py inspect roms/NFB99/BS2ENG/calsort.bns
+```
+
+They report the exact fields in the table above. The first command reports CRC
+`0x6e8a`; the second reports `0x0f57`. The inspector rejects covered-code
+corruption, invalid header bounds, a wrong end marker, and the actual BS2ENG
+firmware-update package.
+
+The pack command syntax is:
+
+```powershell
+uv run python tools/bns_external.py pack <linked.bin> <linked.map> <program.bns>
+```
+
+`linked.map` is the `z88dk-z80asm -m` output. The pinned assembler writes
+public symbols as `name = $hhhh ; metadata`. Packing fails unless all four
+required symbols are present and consistent with the raw image. The packer
+reinspects the completed bytes before writing the output. Two independent
+assemblies of the symbol-bearing test fixture produce byte-identical packed
+files.
 
 ## Runtime contract
 
@@ -239,6 +267,10 @@ smoke-test hash. If this fails, stop and choose another backend explicitly;
 do not imitate a successful z88dk setup with hand-written bytes.
 
 ### Phase 2: implement the format authority
+
+Implementation status: complete. Both supplied fixture CRCs match, every named
+corruption gate is rejected, the packer consumes real pinned-assembler map
+symbols, and two clean fixture builds are byte-identical.
 
 1. Implement `inspect` first. It parses the table above, checks the identifier,
    bounds, `file_size == program_length + 15`, final `0xAA`, stack range, and

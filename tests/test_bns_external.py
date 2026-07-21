@@ -6,7 +6,11 @@ from shutil import copyfile
 
 import pytest
 
-from tools.bns_external import ExternalProgramInfo, inspect_external_program
+from tools.bns_external import (
+    ExternalProgramInfo,
+    inspect_external_program,
+    pack_external_program,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 Z88DK_ASSEMBLER = REPO_ROOT / ".toolchain" / "z88dk-2.4" / "bin" / "z88dk-z80asm.exe"
@@ -24,6 +28,31 @@ def minimal_external_program() -> bytearray:
         b"\x00"
         b"\xaa"
     )
+
+
+def build_pack_fixture(build_root: Path) -> tuple[bytes, str]:
+    """Assemble the symbol-bearing raw image in a fresh directory."""
+    assert Z88DK_ASSEMBLER.is_file(), "run toolchain/setup-z88dk.ps1 first"
+    build_root.mkdir()
+    source = REPO_ROOT / "tests" / "fixtures" / "bns_pack_image.asm"
+    temporary_source = build_root / source.name
+    copyfile(source, temporary_source)
+    output = build_root / "bns_pack_image.bin"
+    subprocess.run(
+        [
+            Z88DK_ASSEMBLER,
+            "-mz180",
+            "-b",
+            "-m",
+            f"-o={output}",
+            temporary_source,
+        ],
+        check=True,
+        cwd=build_root,
+        capture_output=True,
+        text=True,
+    )
+    return output.read_bytes(), output.with_suffix(".map").read_text()
 
 
 def test_pinned_assembler_emits_z180_mlt(tmp_path: Path) -> None:
@@ -148,3 +177,88 @@ def test_inspect_rejects_firmware_update_package() -> None:
         pytest.skip(f"local research fixture is unavailable: {path}")
     with pytest.raises(ValueError):
         inspect_external_program(path.read_bytes())
+
+
+def test_pack_derives_header_from_real_link_symbols(tmp_path: Path) -> None:
+    raw_image, map_text = build_pack_fixture(tmp_path / "build")
+    program = pack_external_program(raw_image, map_text)
+
+    assert program[6:14] == bytes(
+        (
+            0x01,
+            0x00,
+            0x05,
+            0x00,
+            0x00,
+            0x00,
+            0x13,
+            0x10,
+        )
+    )
+    assert inspect_external_program(program) == ExternalProgramInfo(
+        file_size=20,
+        code_size=1,
+        program_length=5,
+        crc=0,
+        stack=0x1013,
+    )
+
+
+def test_two_clean_builds_are_byte_identical(tmp_path: Path) -> None:
+    first_raw, first_map = build_pack_fixture(tmp_path / "first")
+    second_raw, second_map = build_pack_fixture(tmp_path / "second")
+
+    assert pack_external_program(first_raw, first_map) == pack_external_program(
+        second_raw,
+        second_map,
+    )
+
+
+@pytest.mark.parametrize(
+    "missing_symbol",
+    [
+        "__bns_entry",
+        "__bns_code_end",
+        "__bns_end_marker",
+        "__bns_stack_top",
+    ],
+)
+def test_pack_rejects_missing_link_symbol(tmp_path: Path, missing_symbol: str) -> None:
+    raw_image, map_text = build_pack_fixture(tmp_path / "build")
+    altered_map = "\n".join(
+        line for line in map_text.splitlines() if not line.startswith(missing_symbol)
+    )
+    with pytest.raises(ValueError, match=missing_symbol):
+        pack_external_program(raw_image, altered_map)
+
+
+def test_pack_rejects_entry_at_wrong_logical_address(tmp_path: Path) -> None:
+    raw_image, map_text = build_pack_fixture(tmp_path / "build")
+    altered_map = "\n".join(
+        "__bns_entry = $100f ; altered"
+        if line.startswith("__bns_entry")
+        else line
+        for line in map_text.splitlines()
+    )
+    with pytest.raises(ValueError, match="__bns_entry is 0x100f, not 0x100e"):
+        pack_external_program(raw_image, altered_map)
+
+
+def test_pack_rejects_marker_symbol_not_at_final_byte(tmp_path: Path) -> None:
+    raw_image, map_text = build_pack_fixture(tmp_path / "build")
+    altered_map = "\n".join(
+        "__bns_end_marker = $1012 ; altered"
+        if line.startswith("__bns_end_marker")
+        else line
+        for line in map_text.splitlines()
+    )
+    with pytest.raises(ValueError, match="not final offset"):
+        pack_external_program(raw_image, altered_map)
+
+
+def test_pack_rejects_marker_symbol_not_naming_aa(tmp_path: Path) -> None:
+    raw_image, map_text = build_pack_fixture(tmp_path / "build")
+    altered_image = bytearray(raw_image)
+    altered_image[-1] = 0
+    with pytest.raises(ValueError, match="does not identify a 0xaa byte"):
+        pack_external_program(altered_image, map_text)
