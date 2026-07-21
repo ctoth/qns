@@ -91,8 +91,8 @@ def test_stdio_initialization_waits_for_prompt_after_keyboard_ready():
         ("keyboard", {"chord": FLASH_INITIALIZATION_Y_KEY}),
     ]
     assert boundaries == [
-        ("BS2 initialization prompt or editor command loop", {"timeout": 60}),
-        ("BS2 initialization prompt or editor command loop", {"timeout": 60}),
+        ("BS2 initialization prompt or editor command loop", {"timeout": 90}),
+        ("BS2 initialization prompt or editor command loop", {"timeout": 90}),
     ]
 
 

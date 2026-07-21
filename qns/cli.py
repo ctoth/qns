@@ -160,6 +160,18 @@ def main() -> None:
             parser.error(f"--pc-disk-dir is not a directory: {pc_disk_dir}")
         pc_disk_dir.mkdir(parents=True, exist_ok=True)
 
+    binary_state_exists = bool(args.state and Path(args.state).is_file())
+    if (
+        args.model == "bs2"
+        and pc_disk_dir is not None
+        and not args.power_on_input
+        and not binary_state_exists
+    ):
+        parser.error(
+            "fresh BS2 PC Disk requires --power-on-input; "
+            "enter uppercase I as the first input"
+        )
+
     # Convert range args to tuple if provided
     trace_range = None
     if args.trace_writes_range:

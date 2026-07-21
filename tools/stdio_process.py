@@ -23,6 +23,7 @@ class BNSStdioProcess:
         *,
         model: str,
         state: Path | None = None,
+        pc_disk_dir: Path | None = None,
         power_on_input: bool = False,
         cycles: int = 0,
     ):
@@ -40,6 +41,8 @@ class BNSStdioProcess:
         ]
         if state is not None:
             command.extend(("--state", str(state)))
+        if pc_disk_dir is not None:
+            command.extend(("--pc-disk-dir", str(pc_disk_dir)))
         if power_on_input:
             command.append("--power-on-input")
 

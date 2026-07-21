@@ -282,7 +282,7 @@ def reach_stdio_editor_command_loop(process: BNSStdioProcess) -> None:
         process.wait_for(
             reached_startup_boundary,
             "BS2 initialization prompt or editor command loop",
-            timeout=60,
+            timeout=90,
         )
         if command_loop:
             return
