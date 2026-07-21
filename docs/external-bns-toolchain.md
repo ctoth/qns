@@ -1,14 +1,14 @@
 # Building external `.bns` programs for Blazie note takers
 
 Status: active implementation plan and verified assembly-program guide,
-2026-07-20. Phases 1 through 5 are complete: a clean checkout installs the
+2026-07-20. Phases 1 through 6 are complete: a clean checkout installs the
 pinned Z180 backend, the format authority deterministically packs external
 programs from linker facts, and a newly built assembly program imports, runs,
 speaks, exits, and returns control to real BS2 firmware under QNS. The proven
 runtime workflow now has one reusable helper owner, and the minimal C SDK
-passes the same real-ROM gate. Repeatable integration is the active next phase,
-and physical-device validation is not complete. Commands marked **planned** do
-not exist yet.
+passes the same repeatable real-ROM integration gate. Physical-device
+validation is the active next phase and is not complete. Commands marked
+**planned** do not exist yet.
 
 ## Goal
 
@@ -514,22 +514,30 @@ gate remains in Phase 7 after the assembly example validates that environment.
 
 ### Phase 6: make QNS the repeatable integration gate
 
-The existing command is:
+Implementation status: complete. After their documented builds, these are the
+two repeatable integration commands:
 
 ```powershell
-uv run python tools/verify_bs2_external_program.py --help
+uv run python tools/verify_bs2_external_program.py `
+    roms/NFB99/BS2ENG/bs2eng.bns `
+    .toolchain/build/hello-asm/hello-asm-marker.state `
+    .toolchain/build/hello-asm/hello-asm.bns `
+    --stdio --expected-speech `
+    K YI U U EH1 N EH1 S UH1 S EH M B L E1 D UH1 N
+
+uv run python tools/verify_bs2_external_program.py `
+    roms/NFB99/BS2ENG/bs2eng.bns `
+    .toolchain/build/hello-c/hello-c-marker.state `
+    .toolchain/build/hello-c/hello-c.bns `
+    --stdio --expected-speech `
+    K YI U U EH1 N EH1 S S E D UH1 N
 ```
 
-It can import an arbitrary program through real-ROM YMODEM and prove its
-program-length-derived `CBAR` at PC `0x1000`. Phase 3 adds the explicit speech
-marker and post-exit E-chord acceptance required for the first runnable
-program. This phase makes that path a clean, documented integration gate for
-both examples and requires return to the firmware command loop.
-
-The final integration command will use a disposable state path, the exact
-BS2ENG ROM, the built program, and the stdio process boundary. The command must
-be copied into this section only after it has run successfully; until then it
-is not part of the user quick start.
+Both state paths were absent before their final runs. Each command completed
+the real firmware's serial probes and YMODEM receiver, imported the exact
+output bytes, entered at `PC=0x1000` with the header-derived `CBAR=0x21`,
+matched its complete unique program marker, exited, and regained the firmware
+command loop as proved by accepted/ready E-chord events.
 
 Gate: real firmware completes serial probes, imports the exact output bytes,
 launches at `0x1000` with the header-derived map, observes the example's unique
