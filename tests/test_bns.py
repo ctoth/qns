@@ -101,6 +101,7 @@ def test_tns_stdio_uses_source_defined_qwerty_pic_codes():
     assert keyboard_input_chord("a", "tns") == 0x94
     assert keyboard_input_chord(" ", "tns") == 0xA9
     assert keyboard_input_chord("\n", "tns") == 0xDB
+    assert keyboard_input_chord("\x1b", "tns") == 0x89
 
 
 @pytest.mark.parametrize(
@@ -136,6 +137,7 @@ def test_tns_stdio_uses_source_defined_qwerty_pic_codes():
         ("~", 0xB9, True),
         ("\t", 0x91, False),
         ("\b", 0xED, False),
+        ("\x1b", 0x89, False),
         ("\n", 0xDB, False),
         (" ", 0xA9, False),
     ),
