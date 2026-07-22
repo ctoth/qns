@@ -201,7 +201,7 @@ def test_cli_pc_disk_dir_creates_root_and_rejects_file(tmp_path):
     assert b"--pc-disk-dir is not a directory" in rejected.stderr
 
 
-def test_cli_requires_power_on_input_for_fresh_bs2_pc_disk(tmp_path):
+def test_cli_allows_fresh_bs2_pc_disk_without_power_on_input(tmp_path):
     rom = tmp_path / "idle.bin"
     rom.write_bytes(bytes((0x18, 0xFE)))
 
@@ -223,6 +223,4 @@ def test_cli_requires_power_on_input_for_fresh_bs2_pc_disk(tmp_path):
         timeout=10,
     )
 
-    assert result.returncode == 2
-    assert b"fresh BS2 PC Disk requires --power-on-input" in result.stderr
-    assert b"enter uppercase I as the first input" in result.stderr
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
