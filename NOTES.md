@@ -678,3 +678,521 @@ With executed `BBR=0x28`, logical `0x9112` fetches firmware physical offset
 on record `0xD3BA` are unrelated. No conclusion about the loop's hardware or
 runtime ownership survives. The next authority is the exact physical
 `0x2F000-0x33FFF` bank mapped into logical `0x7000-0xBFFF`.
+# BSP calculator input investigation
+
+`APHHELP.C` defines calculator entry as O chord followed by `c`, execution as
+E chord, and exit as Z chord. Its arithmetic entry table defines plus as dots
+3-4-6. The current host mapping produces the corresponding raw values:
+`o=0x15`, `c=0x09`, `1=0x02`, `+=0x2C`, `2=0x06`, `3=0x12`, and `e=0x11`.
+Both host newline and carriage return instead map to firmware chord `0x8D`;
+raw dots 4-6 / C46 is `0x68`, so neither is the documented calculator execute
+key.
+
+In a live NFB99 BSP JSONL run, firmware reached `Braille 'n Speak ready` and
+emitted `keyboard ready`. Sending batched text `oc1+2+3e` produced accepted
+chords `0x15,0x09,0x02,0x2C,0x06,0x2C,0x12,0x11`, proving translation and the
+press/release handshake for every character. It did not enter the calculator:
+after the first digit and after each subsequent chord, firmware spoke `file is
+write protected`. This isolates that run's first failure to using lowercase
+host `o` (`0x15`) instead of the literal O chord (`0x55`), not to the physical
+press/release handshake.
+
+### BSP `calc()` calculator owner
+
+`CALC.C::calc()` speaks `calculator ready`, sets both `numlock` and `calcflg`,
+then loops forever around `glin(cobuf, 99)`. `glin` returns the terminating
+chord through global `glincg`. Z chord exits; E chord, equals chord, the advance
+bar, C46, and the TNS F1/arrow variants all call `compute()` on `cobuf`. On a
+successful expression, `compute()` formats the value into `obuf`, copies it to
+the insert buffer and clipboard, and speaks the numeric result before `calc()`
+returns to `glin`. Thus BSP calculator execute is source-defined as E chord
+`0x51`; C46 is also accepted by the calculator but is distinct from the current
+host Return mapping. The next owner is `glin`/`get_line` and its line-editor
+keypress wait, which determines why QNS will not present queued calculator
+input.
+
+### BSP `glin()` / `get_line()` input collector
+
+`BSPARMS.C::glin(sptr, lim)` calls `get_line(sptr, lim, 0)`. `get_line()`
+initializes the destination and waits on `glincg = keybd()` until the input
+length reaches the supplied limit. A non-chord return is appended to the text
+buffer. Chord returns instead drive editing and command behavior: C25 spells
+the current character, C chord speaks the buffer, X chord arms control input,
+B chord backspaces, and zero chord clears outside calculator mode.
+
+The ordinary line-completion condition is `(glincg == CR && !(stat4 & 0x10))
+|| glincg == ECHORD`; either return leaves the terminating value in `glincg`
+for `calc()` to dispatch. Therefore calculator expression text is collected as
+ordinary characters and E chord or the firmware `CR` value terminates the
+line. The live stall occurs before any expression character reaches this
+collector, at the `keybd()` wait or its hardware-facing caller. The next owner
+to inspect is the exact `keybd()` implementation and its chord/CR constants.
+
+### BSP `BSKEY.ASM::_keybd` keyboard owner
+
+`_keybd` clears the Braille-key speech flag and calls `KEYIN`, the blocking
+hardware-facing keyboard entry routine. It stores the returned raw byte in
+`bkey`. For BSP, raw bit 6 distinguishes a chord from ordinary text. Ordinary
+keys pass through `braasc`, are lowercased when alphabetic, may be spoken, and
+return as an ASCII value. Chords bypass `braasc`; except for U and Q chord's
+immediate mode handling, they return with the chord marker set in the integer
+result and retain their raw low byte.
+
+The calculator therefore blocks inside `KEYIN` while waiting for each physical
+keypress; `get_line()` itself does not poll a separate editor or timer. The
+source constants make the Enter contract exact: `ECHORD=0x151`, while both
+`C46` and calculator `CR` are `0x168`, so their raw keyboard bytes are `0x51`
+and `0x68`. QNS currently maps host `\n` and `\r` through the ASCII table to raw
+`0x8D`; that cannot produce calculator Return/C46. The remaining runtime
+question is which `KEYIN` wait/boundary corresponds to linked PC `0x1418` and
+why the driver recognizes the top-level `KEYIN` caller but not this one.
+
+### BSP `BSKEY.ASM::KEYIN` input multiplexer
+
+`KEYIN` first consumes a running macro when one is active, including macro
+pause, speech, and nested-macro commands. With no available macro key, BSP's
+`KEYINM` calls `_get_key` to unbuffer one physical keyboard value. It then
+handles E-chord macro unpause, one-hand decoding, macro recording, and the
+special macro-control chords before returning the valid raw byte in `A`.
+
+Calculator mode does not select a different input collector: it reaches the
+same `KEYIN -> _get_key` path as the top-level command loop. The difference is
+call context and timing. QNS's readiness heuristic keys off the separately
+discovered top-level STARTA timer write or a stable halted CPU, neither of which
+is guaranteed while `get_line -> keybd -> KEYIN -> _get_key` is polling in the
+calculator. The next source owner is `_get_key`, whose wait behavior must be
+matched to linked PC `0x1418` before deciding what a valid readiness signal is.
+
+### BSP `BSKEY.ASM::_get_key` queue wait
+
+`_get_key` tests the shared `queue_count`. While the queue is empty it loads
+the background timer, executes `HALT`, calls `bg_task`, and loops to test the
+queue again. Once an interrupt has buffered a key, it disables interrupts,
+decrements the count, removes the two-byte key value at `queue_out`, advances
+and wraps the queue pointer, returns the low raw byte in `A` and the full value
+in `HL`, then reenables interrupts.
+
+This disproves the tentative distinction that calculator input waits at a
+different kind of active boundary. The same firmware `_get_key` loop contains
+the same explicit `HALT` used by any caller. QNS's stable-halt readiness
+predicate nevertheless rejects the live calculator wait at PC `0x1418`, so
+the remaining defect lies in what QNS includes in its definition of a stable
+wait (or in how it samples that state), not in calculator firmware bypassing
+the halted queue wait.
+
+### Linked NFB99 calculator wait correction
+
+The earlier linked-HALT conclusion was wrong because the ROM search treated
+`ED 76` as HALT. Z80 HALT is the single-byte opcode `76`. The exact linked BSP
+`_get_key` sequence occurs uniquely at `0x1AF2`: `LD HL,DA32; LD A,(HL); OR A;
+JR NZ; LD A,(D653); HALT; CALL 132F; JR 1AF2`. Its queue-count read begins at
+`0x1AF5`, and its real HALT is at `0x1AFE`.
+
+The calculator does use the shared `_get_key` empty-wait loop. QNS still cannot
+use sampled stable HALT as a complete input boundary because periodic wakeups
+can move the sampled PC between host chunks. The exact `0x1AF5` queue-count
+read is the general readiness epoch: when that instruction observes an empty
+queue, the active calculator/menu/editor caller is requesting its next key.
+This is independent of the host Return defect, where `\n` and `\r` map through
+the ASCII inverse table to raw `0x8D` instead of calculator C46/CR raw `0x68`.
+
+### BSP `BSKEY.ASM::_put_key` / firmware queue ownership
+
+The keyboard ISR does not hand a chord directly to `keybd()`. `_put_key`
+increments one-byte `queue_count` and appends the two-byte key value at
+`queue_in`; `_get_key` later decrements `queue_count` when an application input
+reader removes that key at `queue_out`. The queue holds 64 entries on BSPLUS.
+
+This distinguishes the two acknowledgements that the first implementation
+incorrectly treated as equivalent. `_IIB` clearing proves only that hardware
+transfer into the firmware queue completed. `queue_count` returning to zero
+proves the application removed the key. A general input driver can safely keep
+at most one firmware key queued: after initial boot readiness, start another
+host chord only when `_IIB` is clear and linked `queue_count` is zero. That
+contract applies to calculator, menus, editors, and other `keybd()` callers
+without recognizing each caller separately.
+
+### TNS `TNSKBX.C::get_brl()` input owner
+
+TNS `KEYIN` calls `get_brl()` instead of using the raw classic chord directly,
+but `get_brl()` obtains each PC keyboard scan through the same `get_key()`
+firmware queue consumer. It then decodes modifier flags, filters key-up and
+typematic codes, converts the scan to Braille, and returns the decoded command.
+
+Therefore the linked `_get_key` empty-wait read is the common application-level
+readiness authority for TNS as well as the classic BNS family. No TNS-specific
+readiness adapter or calculator exception is required; the hardware-specific
+press/release sequence remains in `ChordInputDriver`, while the next-key epoch
+comes from the shared firmware queue consumer.
+
+### Linked BSP calculator bypasses both recovered queue bytes
+
+A live BSP run traced unique CPU reads of `queue_count` (`0x41A32`) through
+O-chord, the option prompt, `c`, and `calculator ready`. The option prompt
+reached the recovered `_get_key` wait at `0x1AF5`; no new queue-count reader
+appeared after calculator entry. This disproves the conclusion above that the
+linked NFB99 calculator uses that `_get_key` loop; the later source tree is not
+an exact description of this linked calculator implementation.
+
+A second live BSP run traced `_IIB` (`0x4327C`) through the same sequence. The
+ISR wrote and cleared O (`0x55`) and c (`0x09`), but the calculator made no CPU
+read of `_IIB` after announcing readiness. Its repeated idle/error speech while
+no digit is sent confirms the calculator remains active. The remaining input
+candidate is direct polling of the physical keyboard port by the linked
+calculator/editor path; its exact reader PC must be recovered before changing
+the readiness contract.
+
+### Interrupt-first calculator input and physical queue addressing
+
+Unique-PC keyboard-port tracing found no calculator polling read after
+`calculator ready`; the only post-boot port reads were ISR reads for a presented
+chord. Sampled HALT tracing likewise found the option prompt's `_get_key` HALT
+at `0x1AFC`, but no calculator HALT. The calculator therefore waits
+interrupt-first rather than announcing readiness through a pre-key queue,
+port, or HALT observation.
+
+With the readiness guard bypassed only in diagnostic trace mode, presenting
+digit `1` after `calculator ready` completed the normal hardware ISR handshake
+(`_IIB` received `0x02` and cleared), yet produced no CPU read at physical
+`queue_count` address `0x41A32`. Since an external application can alter Z180
+bank mapping while retaining the firmware's logical queue contract, the next
+question is whether input-boundary discovery incorrectly froze a banked
+physical queue address that is only valid in the top-level firmware mapping.
+
+Live MMU capture falsified that physical-queue hypothesis. Top-level and
+`calculator ready` speech both use `CBR=0x34`, `CBAR=0xC6`; the external
+application changes `BBR` (`0x12` around c, `0x18` around digit 1), but the
+linked `queue_count` logical address is in the common area selected by CBR.
+Physical `0x41A32` therefore remains the correct queue address. The apparent
+absence of a digit read can instead be an artifact of unique-PC suppression:
+if the calculator later reuses `_get_key` at `0x1AF5`, that PC was already
+logged during the option prompt. Repeated nonzero queue reads must be logged to
+recover the actual first-digit consumption order.
+
+Repeated nonzero tracing proved both c and digit 1 are consumed by the same
+linked `_get_key` path at `0x1AF5` / `0x1B03`. The actual ownership boundary is
+therefore application consumption, not ISR acceptance: `_IIB` clearing only
+proves the chord entered firmware, and calculator initialization can clear an
+already queued first digit before `_get_key` reads it.
+
+The general fix retains one logical host character until `_get_key` observes a
+nonzero queue. If firmware inserted the character but returns the queue to zero
+without that observation, the driver repeats the same physical chord. A live
+single-event `Oc1+2+3E` run then produced `6`. A second expression, `4+5\n`,
+wrote and accepted raw chord `0x68` (decimal 104) and produced `9`, proving host
+Return maps to firmware C46/CR rather than raw inverse-table `0x8D`.
+
+## WinDisk / PC serial filesystem protocol recovery
+
+### `WDComm.dll::CWDComm::getWhoWhat` identity exchange
+
+The original WinDisk 2001 installer was recovered from the archived DB
+Techies distribution. Its `WDComm.dll` is 49,152 bytes with SHA-256
+`9DF35738FF28C211039DD152881CD030F4DC71C22CA7B869E678872740ECAF62`.
+The DLL retains Microsoft C++ export names for its protocol owners.
+
+`CWDComm::getWhoWhat` is exported at RVA `0x4980` (loaded address
+`0x10004980`). It initializes the serial line when necessary, then repeatedly
+sends the exact three-byte request `05 04 57` and waits up to one second for
+an exact two-byte reply. Byte zero is accepted only in the inclusive range
+`1..11` and becomes the notetaker device type. Byte one is accepted only in
+the inclusive range `1..5` and becomes the notetaker baud-rate code; the
+function converts that code to the host communication driver's baud enums.
+Only a valid device type, valid baud code, and supported converted baud mark
+the connection identified. The outer attempt window is five seconds.
+
+The request therefore reads as an ENQ-prefixed WinDisk identity operation:
+`ENQ (0x05), EOT/function introducer (0x04), 'W' (0x57)`. The two-byte reply
+is binary metadata, not a pathname or text response. This proves the exact
+WinDisk discovery boundary but does not yet prove any folder or file command
+grammar. The next protocol-owning function to recover is the exported
+`CWDComm::enumFolder`, which must reveal the first directory request and its
+record framing.
+
+### `WDComm.dll::CWDComm::enumFolder` directory exchange
+
+`CWDComm::enumFolder` is exported at RVA `0x2F30` (loaded address
+`0x10002F30`). Its string parameter is copied into the object's command
+buffer, followed by one carriage return. The function sends the exact
+three-byte operation prefix `05 04 46` and then sends the path bytes plus the
+carriage return; it does not send the trailing NUL. Thus the directory
+request grammar is `ENQ, EOT/function introducer, 'F', path, CR`.
+
+The first reply field is exactly two bytes and is interpreted as a
+little-endian unsigned entry count. A zero count is a successful empty
+directory. For each nonzero entry the function reads exactly 31 bytes. The
+record layout recovered from the local stack offsets is:
+
+- bytes `0..20`: NUL-terminated filename field;
+- byte `21`: file type, treated as invalid when greater than `3`;
+- bytes `22..25`: four-byte size field, reordered into a host 32-bit value;
+- bytes `26..30`: five one-byte date/time components passed to
+  `buildSystemTime`.
+
+The name, type, size, and converted timestamp are appended to WinDisk's item
+vector. A missing 31-byte record ends the serial line and returns `-41`.
+Invalid record metadata changes the object's per-item status but does not by
+itself change the fixed record length.
+
+After the two-byte count and after every 31-byte record, `enumFolder` calls
+`CWDComm::nextFunctionCharSend`. A return of `2` retries the same record index;
+a return of `3` ends the serial line and returns `-42`; a return of `1`
+continues. The exact control bytes are not inferred here. The next
+protocol-owning function to recover is `nextFunctionCharSend`, because its
+control exchange is part of the directory framing.
+
+### `WDComm.dll::CWDComm::nextFunctionCharSend` record control
+
+`CWDComm::nextFunctionCharSend` is exported at RVA `0x4F70` (loaded address
+`0x10004F70`). It maps the object's current record status directly to one
+single-byte host-to-notetaker control character:
+
+- status/return `1`: send ASCII `C` (`0x43`) to continue;
+- status/return `2`: send ASCII `R` (`0x52`) to retry the current record;
+- status/return `3`: send ASCII `X` (`0x58`) to cancel.
+
+Any other status sends nothing and returns `-65`. The helper contains no
+receive operation. This completes the unresolved `enumFolder` control
+framing: WinDisk acknowledges the count and each fixed 31-byte directory
+record with `C`, requests retransmission with `R`, or aborts with `X`.
+
+The next protocol-owning function to recover is `CWDComm::receiveFile`, which
+must establish whether and how a selected notetaker file becomes an ordinary
+host file.
+
+### `WDComm.dll::CWDComm::receiveFile` guest-to-host file transfer
+
+`CWDComm::receiveFile` is exported at RVA `0x3710` (loaded address
+`0x10003710`) and accepts two strings. The first is copied into the remote
+command buffer and carriage-return terminated; the second is retained as the
+ordinary host destination pathname.
+
+After the identity exchange when needed, the function sends exact operation
+prefix `05 04 53`, then `remote path, CR`, then one additional NUL byte. It
+configures the bundled `XYDRV32` transfer driver, starts that driver in receive
+mode, and writes the transferred body to the retained host pathname. The file
+body is therefore carried by the X/YMODEM driver rather than by WinDisk's
+31-byte directory-record framing. The function restores the serial-line mode
+after the transfer and returns the transfer driver's result; serial property
+setup failure returns `-64`.
+
+This proves that one notetaker file can be materialized as a normal host file,
+but it does not yet prove the reverse host-to-notetaker operation. The next
+protocol-owning function to recover is `CWDComm::sendFile`.
+
+### `WDComm.dll::CWDComm::sendFile` host-to-guest file transfer
+
+`CWDComm::sendFile` is exported at RVA `0x38F0` (loaded address
+`0x100038F0`) and accepts two strings. The first is retained as the ordinary
+host source pathname. The second becomes the remote destination path and is
+carriage-return terminated.
+
+After the identity exchange when needed, the function sends exact operation
+prefix `05 04 52`, then `remote path, CR`. It requires exactly one reply byte
+within five seconds, and that byte must be `0x05`; a missing byte returns
+`-41`, while any value other than `0x05` returns `-42`. After the readiness
+byte it configures the bundled `XYDRV32` transfer driver, starts that driver in
+transmit mode, and sends the retained host file. Serial property setup failure
+returns `-64`.
+
+WinDisk therefore supports both directions using normal host pathnames:
+directory metadata through its custom fixed-record exchange, and file bodies
+through X/YMODEM. This still does not make a host directory directly visible
+inside the notetaker's ordinary file menu; it proves a host program can
+enumerate the guest filesystem and copy files in either direction while the
+firmware is in WinDisk mode.
+
+The remaining architectural decision is whether WinDisk mode can satisfy the
+requested `--state-dir` semantics or whether the emulator must instead expose
+a host directory to the firmware as its older external PC Disk device. These
+are directionally different protocols and must not be conflated.
+
+### `BS2ENG::upload_download` external Disk Drive owner
+
+The NFB99 BS2 bank-one image is mapped at its linked logical base `0x4000`.
+The routine before the external-disk owner returns at `0x60DD`; the owner
+begins at `0x60DE`, allocates `0x8c` bytes of compiler stack frame, and returns
+at `0x677B`. This exact boundary contains the previously observed disk probe
+near `0x671F` and replaces the earlier unresolved entry-point estimate.
+
+This is the combined upload/download owner rather than a one-byte serial
+primitive. Its high-level branches choose ordinary serial transfer or the
+external Disk Drive path, choose transfer direction/mode, and dispatch to the
+corresponding block-transfer helpers. The disk path contains literal command
+bytes `Y` (`0x59`), `S` (`0x53`), and `R` (`0x52`). The observed branches are:
+
+- one direction sends `Y`, then `S`, then bytes from the firmware buffer at
+  `0xD9BC` through the shared single-byte sender at `0x22CF`, and terminates
+  the string with carriage return;
+- the other direction sends `Y`, then `R` before entering its selected
+  transfer helper;
+- a final disk exchange at `0x671F..0x676A` uses literals `0x05`, `Y`, and `E`,
+  retries the exchange twice while the resulting status is `0xFF`, and reports
+  a remaining nonzero status through the firmware error path;
+- the common tail restores transfer/serial state, conditionally restores the
+  active channel, and returns at `0x677B`.
+
+The function also confirms that the firmware treats the Disk Drive as an
+active command/transfer peer, not as WinDisk's host-side view of guest files.
+However, Ghidra's decompilation does not preserve enough Z80 calling detail to
+label the `0x230F` operations around literals `0x05` and `E` as sends,
+receives, or expected-value reads. Assigning those meanings here would be an
+inference rather than recovered protocol.
+
+The next protocol-owning function to recover is therefore the bank-zero helper
+at logical `0x230F`. It must be documented before following another callee or
+claiming the complete external-disk probe grammar.
+
+### `BS2ENG::ftran_send_wt` send-and-receive wrapper
+
+The bank-zero helper at logical `0x230F` spans `0x230F..0x2321`. It first
+calls the single-byte sender at `0x22CF`, passing through its caller's byte.
+If that sender returns with a nonzero condition, `0x230F` returns immediately.
+Otherwise it passes the address of status byte `0xDDC3` to helper `0x2322`.
+If `0xDDC3` remains zero, it returns the `0x2322` result; if the status byte is
+nonzero, it returns `0xFFFF`.
+
+The matching labels and comments in `BSSERIAL.ASM` identify `0x230F` as
+`ftran_send_wt(ch)`, documented there as sending a character and waiting for
+an acknowledgement. They identify `0x2322` as `ftran_recv(char *error)`: it
+waits for a buffered inbound character, returns that byte when successful,
+sets the pointed status to `1` on timeout or `2` on abort, and returns `-1` on
+either error. The timeout is controlled by `ftran_timeout` in tenths of a
+second.
+
+This makes the external disk discovery grammar exact. `disk_upload_download`
+tries serial port 1 and then port 0. On each port it sets a three-tick receive
+timeout and repeatedly sends `ENQ` (`0x05`) while the peer replies `?`
+(`0x3F`). A reply other than `ACK` (`0x06`) rejects that port. After `ACK`, it
+sends ASCII `C` and expects ASCII `1` or `3`; `3` advertises the drive's
+38,400-baud capability, while either accepted value establishes YMODEM-capable
+disk service. The special old-drive test accepts the drive after sending `C`
+without validating that capability reply.
+
+The next protocol-owning surface to recover is the disk-specific branch of
+`upload_download`: the command/path bytes sent after successful discovery and
+before its YMODEM transfer.
+
+### `BS2ENG::upload_download` external-disk transfer grammar
+
+The matching `FILETRAN.C` makes both transfer directions exact. A successful
+disk discovery has already selected `ser_chan` and established whether the
+drive supports the higher baud rate. Every disk transfer then begins another
+`ftran_send_wt(ENQ)` and requires `ACK`.
+
+Saving notetaker files to the external disk proceeds as:
+
+1. send `ENQ` and receive `ACK`;
+2. send ASCII `Y`, then ASCII `R` (the disk is told to receive);
+3. wait five ticks and, when advertised, switch the selected serial channel to
+   the drive's higher speed;
+4. transmit the selected notetaker file set as a YMODEM batch.
+
+Loading files from the external disk proceeds as:
+
+1. send `ENQ` and receive `ACK`;
+2. send ASCII `Y`, then ASCII `S` (the disk is told to send);
+3. send the requested name or wildcard pathname as raw bytes followed by
+   carriage return, with no trailing NUL;
+4. wait five ticks and, when advertised, switch to the higher speed;
+5. receive a YMODEM batch into the notetaker filesystem.
+
+After either direction, firmware returns the UART to the discovery speed,
+waits 500 ticks for PC Disk recovery, and queries the operation result by
+sending `ENQ`, then `Y`, then `E` with send-and-receive on `E`. Reply `0`
+means success. Reply `0xFF` is retried once; any remaining nonzero reply is
+passed to the firmware's disk-error reporter.
+
+This is already sufficient for a host service to back the notetaker's load and
+save operations with ordinary host files: match the discovery handshake,
+interpret `Y R` as an inbound YMODEM batch, interpret `Y S pathname CR` as an
+outbound YMODEM batch selected from the host tree, and answer the subsequent
+`Y E` status query. It does not yet establish the separate directory and file
+management commands exposed by the Disk Drive menu.
+
+The next protocol-owning surface to recover is the source owner for Disk Drive
+directory enumeration and its associated path-management commands.
+
+### `BS2ENG::savef` / `enqack` PC Disk command grammar
+
+The ordinary Disk Drive menu is implemented by `savef` and `enqack` in
+`BSTXT.C`, separately from the newer YMODEM transfer branch. `enqack(command)`
+emits this request:
+
+`ENQ (0x05), command byte, name/path bytes, CR (0x0D)`
+
+The name/path field is omitted only for format command `F`. On the PC Disk
+channel, firmware temporarily disables receive interrupts after ENQ, waits for
+the acknowledgement, consumes the acknowledgement from the UART, restores
+receive interrupts, and then emits the command frame. On the other disk
+channel it waits for the normal receive path to place `ACK` in `istat`.
+
+The recovered command mapping is:
+
+- `d name-or-pattern CR`: directory listing. The firmware deliberately uses
+  lowercase `d` so the initial acknowledgement is not inserted into the open
+  clipboard; it then changes its local state to uppercase `D` and receives the
+  listing as text into that clipboard.
+- `L name CR`: load a text file from disk into the current notetaker file.
+- `S name CR`: save the current file; `T name CR` is also used for text-output
+  and for the Braille/no-formatting menu aliases.
+- `K name-or-pattern CR`: delete file(s); `X name CR`: remove directory;
+  `M name CR`: create directory.
+- `H path CR`: change directory (`C` in the user menu is normalized to this
+  command); `V label CR`: write volume label.
+- `F CR`: format, with no name/path bytes; `U name CR`: disk update/revision
+  operation.
+- resume does not create a new ENQ frame: it changes local receive state and
+  sends XON.
+
+Directory and load replies use the firmware's text-receive path rather than
+the 31-byte WinDisk records. Directory output is placed in the clipboard and
+is expected to terminate with Ctrl-Z (`0x1A`). Save/text-output sends file data
+and then Ctrl-Z. File-management commands wait for a status/error byte; the
+known error alphabet is `#`, `!`, `&`, `%`, `"`, `$`, `+`, `-`, `/`, and `?`,
+with Ctrl-Z treated as successful completion where applicable.
+
+This establishes that the old PC Disk interface is a real remote filesystem
+API: it carries path-aware directory, load/save, delete, change-directory,
+mkdir/rmdir, format, and label operations. The remaining detail needed for a
+faithful host-directory backend is the receive ISR's exact acknowledgement,
+data, and completion handling for the `d` and `L` replies.
+
+The next protocol-owning function to recover is the Disk Drive receive handler
+that dispatches bytes according to `sflag` and writes `istat`/`dskcnt`.
+
+### `BS2ENG::DISKIN` and channel-zero receive completion
+
+The external Disk Drive ISR `DISKIN` reads each inbound byte, handles XON/XOFF,
+and always stores the latest byte in `istat` while a storage command is active.
+Only local receive states `D` (directory) and `$` (load/resume) append inbound
+bytes to the current notetaker file. The directory command opens the clipboard
+before entering state `D`; load uses the current destination file. `dskcnt`
+saturates at three bytes and is used as the firmware's minimum evidence that a
+data-producing disk operation actually ran.
+
+The PC Disk path on serial channel zero uses the ordinary serial receive ISR.
+That ISR likewise stores every received byte in `istat`, queues the byte, and
+increments `dskcnt` up to three. `gettxt` drains the queue through `ser_task`
+into the open file. For a directory, Ctrl-Z is both queued into the clipboard
+and recognized by the waiting loop as the explicit end marker; for a load, the
+receiver changes its local state to `$` and finishes after the serial stream
+becomes idle. XON and XOFF control paused transfers rather than becoming file
+data.
+
+The command acknowledgement and result rules are therefore:
+
+- the peer answers the initial ENQ with ACK before the command/path frame;
+- `d` returns a textual listing terminated by Ctrl-Z;
+- `L` returns file text, with idle time delimiting completion and XON/XOFF
+  available for flow control;
+- `S`/`T` receive file text from the notetaker until its Ctrl-Z terminator;
+- metadata/mutation commands report a one-byte error/status when needed, using
+  the error alphabet already listed; lack of an error byte through the bounded
+  wait is treated as success for `H`, `K`, `M`, `V`, and `X`.
+
+This completes the protocol surface needed for the architectural decision. A
+QNS serial peer can expose a rooted host directory as the firmware's PC Disk:
+the firmware already supplies paths and filesystem commands, and the emulator
+only needs to translate those requests inside the configured root, stream text
+or YMODEM file bodies, and emit the legacy acknowledgement/completion bytes.
