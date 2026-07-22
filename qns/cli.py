@@ -119,8 +119,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Dump all unique write addresses to CSV file (address,count)")
     parser.add_argument("--dump-ram", type=str, metavar="FILE",
                         help="Dump RAM contents to file after execution")
-    parser.add_argument("--state", type=str, metavar="FILE",
-                        help="Load nonvolatile RAM state before execution and save it afterward")
+    state_group = parser.add_mutually_exclusive_group()
+    state_group.add_argument(
+        "--state",
+        type=str,
+        metavar="FILE",
+        help="Load binary nonvolatile state before execution and save it afterward",
+    )
+    state_group.add_argument(
+        "--state-dir",
+        type=str,
+        metavar="DIR",
+        help="Load directory-backed nonvolatile state before execution and save it afterward",
+    )
     parser.add_argument(
         "--pc-disk-dir",
         type=str,
@@ -274,6 +285,14 @@ def main() -> None:
                 bns.load_state(state_path)
             else:
                 print(f"Initializing nonvolatile RAM state: {state_path}")
+        elif args.state_dir:
+            state_dir = Path(args.state_dir)
+            if state_dir.exists() and not state_dir.is_dir():
+                parser.error(f"--state-dir is not a directory: {state_dir}")
+            if state_dir.exists() and any(state_dir.iterdir()):
+                bns.load_state_dir(state_dir)
+            else:
+                print(f"Initializing nonvolatile state directory: {state_dir}")
 
         if args.trace:
             bns.trace_boot()
@@ -299,6 +318,8 @@ def main() -> None:
 
         if args.state:
             bns.save_state(args.state)
+        elif args.state_dir:
+            bns.save_state_dir(args.state_dir)
 
         # Dump trace data if any tracing was enabled
         bns.dump_trace_data()

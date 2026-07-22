@@ -810,6 +810,16 @@ class BNS:
         self.memory.save_state(path)
         print(f"Saved nonvolatile RAM state: {path}")
 
+    def load_state_dir(self, path: Path | str) -> None:
+        """Load BNS nonvolatile state from a directory."""
+        self.memory.load_state_dir(path)
+        print(f"Loaded nonvolatile state directory: {path}")
+
+    def save_state_dir(self, path: Path | str) -> None:
+        """Save BNS nonvolatile state to a directory."""
+        self.memory.save_state_dir(path)
+        print(f"Saved nonvolatile state directory: {path}")
+
     def print_stats(self) -> None:
         """Print execution statistics."""
         print("\n=== Execution Statistics ===")

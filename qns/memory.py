@@ -130,6 +130,60 @@ class Memory:
         temporary.write_bytes(data)
         temporary.replace(path)
 
+    def load_state_dir(self, path: Path | str) -> None:
+        """Load nonvolatile state from separate files in a directory."""
+        path = Path(path)
+        if not path.is_dir():
+            raise ValueError(f"state directory does not exist: {path}")
+
+        ram = (path / "ram.bin").read_bytes()
+        shadow = (path / "shadow.bin").read_bytes()
+        flash = (path / "flash.bin").read_bytes()
+        expected_shadow_size = (len(self.ram) + 7) // 8
+
+        if len(ram) != len(self.ram):
+            raise ValueError(
+                f"state RAM size is {len(ram)} bytes; emulator requires {len(self.ram)}"
+            )
+        if len(shadow) != expected_shadow_size:
+            raise ValueError(
+                f"state shadow bitmap is {len(shadow)} bytes; "
+                f"expected {expected_shadow_size}"
+            )
+        if len(flash) != len(self.flash):
+            raise ValueError(
+                f"state flash size is {len(flash)} bytes; "
+                f"emulator requires {len(self.flash)}"
+            )
+
+        self.ram[:] = ram
+        self.flash[:] = flash
+        self._written_addrs = {
+            address
+            for address in range(len(self.ram))
+            if shadow[address >> 3] & (1 << (address & 7))
+        }
+
+    def save_state_dir(self, path: Path | str) -> None:
+        """Save nonvolatile RAM, shadow metadata, and flash as separate files."""
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        bitmap = bytearray((len(self.ram) + 7) // 8)
+        for address in self._written_addrs:
+            if address < len(self.ram):
+                bitmap[address >> 3] |= 1 << (address & 7)
+
+        components = {
+            "ram.bin": bytes(self.ram),
+            "shadow.bin": bytes(bitmap),
+            "flash.bin": bytes(self.flash),
+        }
+        for name, data in components.items():
+            target = path / name
+            temporary = path / f".{name}.tmp"
+            temporary.write_bytes(data)
+            temporary.replace(target)
+
     def read(self, addr: int) -> int:
         """Read byte from physical address (z180emu does MMU translation).
 

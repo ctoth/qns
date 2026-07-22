@@ -113,3 +113,30 @@ def test_nonvolatile_state_preserves_bsnew_flash(tmp_path):
     restored.load_state(state_path)
     restored.set_high_bank_latch(0x0A)
     assert restored.read(0x81234) == 0x5A
+
+
+def test_nonvolatile_state_directory_preserves_ram_shadow_and_flash(tmp_path):
+    state_dir = tmp_path / "bs2-state"
+    memory = Memory(ram_size=32, rom_size=16, flash_size=2 * 1024 * 1024)
+    memory.load_rom(bytes((0xAA,)) * 16)
+    memory.write(0, 0)
+    memory.write(20, 0x5A)
+    _program_flash_byte(memory, 0x101234, 0xA5)
+
+    memory.save_state_dir(state_dir)
+
+    assert state_dir.is_dir()
+    assert {path.name for path in state_dir.iterdir()} == {
+        "flash.bin",
+        "ram.bin",
+        "shadow.bin",
+    }
+    restored = Memory(ram_size=32, rom_size=16, flash_size=2 * 1024 * 1024)
+    restored.load_rom(bytes((0xAA,)) * 16)
+    restored.load_state_dir(state_dir)
+    restored.set_high_bank_latch(0x0A)
+
+    assert restored.read(0) == 0
+    assert restored.read(1) == 0xAA
+    assert restored.read(20) == 0x5A
+    assert restored.read(0x81234) == 0xA5

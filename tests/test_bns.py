@@ -1317,3 +1317,69 @@ def test_cli_state_round_trip_preserves_rom_shadow_ram(tmp_path):
     assert reader.returncode == 0, reader.stderr.decode(errors="replace")
     assert reader.stdout == b"\x5A"
     assert b"Loaded nonvolatile RAM state" in reader.stderr
+
+
+def test_cli_state_dir_creates_directory_state(tmp_path):
+    state_dir = tmp_path / "bs2-state"
+    idle_rom = tmp_path / "idle.bin"
+    idle_rom.write_bytes(bytes((0x18, 0xFE)))
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "qns.bns",
+            str(idle_rom),
+            "--model",
+            "bs2",
+            "--cycles",
+            "5000",
+            "--input",
+            "serial0",
+            "--output",
+            "serial0",
+            "--state-dir",
+            str(state_dir),
+        ),
+        input=b"",
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert state_dir.is_dir()
+    assert {path.name for path in state_dir.iterdir()} == {
+        "flash.bin",
+        "ram.bin",
+        "shadow.bin",
+    }
+    assert (state_dir / "flash.bin").stat().st_size == 2 * 1024 * 1024
+    assert b"Initializing nonvolatile state directory" in result.stderr
+    assert b"Saved nonvolatile state directory" in result.stderr
+
+    reloaded = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "qns.bns",
+            str(idle_rom),
+            "--model",
+            "bs2",
+            "--cycles",
+            "5000",
+            "--input",
+            "serial0",
+            "--output",
+            "serial0",
+            "--state-dir",
+            str(state_dir),
+        ),
+        input=b"",
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert reloaded.returncode == 0, reloaded.stderr.decode(errors="replace")
+    assert b"Loaded nonvolatile state directory" in reloaded.stderr
