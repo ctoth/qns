@@ -8,11 +8,11 @@ from hypothesis import strategies as st
 
 from qns.input_driver import ASCII_TO_BNS_KEY
 from tools.bs2_stdio_harness import (
+    COLD_RESET_CHORD,
     E_CHORD,
     FILE_COMMAND_PROMPT,
     FLASH_INITIALIZATION_PROMPT,
     FLASH_INITIALIZATION_Y_KEY,
-    POWER_ON_INITIALIZE_CHORD,
     R_KEY,
     SOH,
     STX,
@@ -57,7 +57,7 @@ def test_stdio_initialization_waits_for_prompt_after_keyboard_ready():
                     {
                         "device": "keyboard",
                         "state": "accepted",
-                        "chord": POWER_ON_INITIALIZE_CHORD,
+                        "chord": COLD_RESET_CHORD,
                     },
                     {"device": "cpu", "event": "watch-armed", "pc": 0xD657},
                     {"device": "keyboard", "state": "ready"},
@@ -86,7 +86,6 @@ def test_stdio_initialization_waits_for_prompt_after_keyboard_ready():
     reach_stdio_editor_command_loop(Process())
 
     assert outbound == [
-        ("keyboard", {"chord": POWER_ON_INITIALIZE_CHORD}),
         ("cpu", {"watch_pc": 0xD657}),
         ("keyboard", {"chord": FLASH_INITIALIZATION_Y_KEY}),
     ]

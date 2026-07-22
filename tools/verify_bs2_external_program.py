@@ -314,7 +314,7 @@ def verify_through_stdio(
         rom,
         model="bs2",
         state=state,
-        power_on_input=True,
+        reset="cold",
     ) as process:
         bs2_stdio_harness.reach_stdio_editor_command_loop(process)
         speech_start = len(process.speech_names)
@@ -489,7 +489,7 @@ def main() -> None:
         # A real blank BS2 must be hard-initialized by holding I-chord while
         # power is applied.  Keep it held until WARM0 reaches the linked
         # COMBYT initializer, then deliver the physical key-up edge.
-        bns.keyboard.press(bs2_stdio_harness.POWER_ON_INITIALIZE_CHORD)
+        bns.keyboard.press(bs2_stdio_harness.COLD_RESET_CHORD)
         harness.run_until(
             lambda: bns.cpu.pc_watch_count > 0,
             "BS2 power-on hard-reset initializer",

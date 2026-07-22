@@ -58,12 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", choices=("keyboard", "serial0", "serial1"),
                         help="Route standard input to the BNS keyboard or an ASCI channel")
     parser.add_argument(
-        "--power-on-input",
-        action="store_true",
-        help=(
-            "Read and hold the first keyboard chord during power-on "
-            "(BS2 requires uppercase I)"
-        ),
+        "--reset",
+        choices=("warm", "cold"),
+        help="Apply the model's physical warm- or cold-reset startup gesture",
     )
     parser.add_argument("--output", choices=("console", "serial0", "serial1"),
                         default="console",
@@ -214,7 +211,7 @@ def main() -> None:
             trace_first_writes=args.trace_first_writes,
             dump_writes_file=args.dump_writes,
             stdin_device="jsonl" if structured_stdio else (args.input or "keyboard"),
-            power_on_input=args.power_on_input,
+            reset=args.reset,
             serial_output=serial_output,
             serial_output_channel=serial_output_channel,
             pc_disk_dir=pc_disk_dir,

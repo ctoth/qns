@@ -106,7 +106,7 @@ def verify_help_through_stdio(rom: Path, state: Path, help_file: Path) -> None:
         rom,
         model="bs2",
         state=state,
-        power_on_input=True,
+        reset="cold",
     ) as process:
         reach_stdio_editor_command_loop(process)
 

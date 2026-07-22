@@ -90,7 +90,7 @@ def test_dictionary_workflow_imports_checks_persists_and_restarts(
 
     assert TEST_WORD == "the"
     assert launches == [
-        (rom, {"model": "bs2", "state": state, "power_on_input": True}),
+        (rom, {"model": "bs2", "state": state, "reset": "cold"}),
         (rom, {"model": "bs2", "state": state}),
     ]
     assert processes[0].sent == []

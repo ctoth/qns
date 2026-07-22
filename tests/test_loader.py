@@ -75,6 +75,7 @@ def make_input_boundary_image(
     timer_logical: int,
     buffer_logical: int,
     queue_logical: int = 0xDA32,
+    reset_logical: int = 0xD4B0,
     size: int = 0x10000,
 ) -> bytes:
     """Place the input-boundary signatures into an empty image."""
@@ -117,12 +118,20 @@ def make_input_boundary_image(
         0xCD, 0x2F, 0x13,                                    # CALL nn
         0x18, 0xF0,                                          # JR d
     ))
+    reset_complete = bytes((
+        0x3E, 0x02,                                            # LD A,2
+        0x32, 0xAF, 0xD4,                                      # LD (HNDSHK),A
+        0xCD, 0x00, 0x20,                                      # CALL flush
+        0x3E, 0x64,                                            # LD A,64H
+        0x32, reset_logical & 0xFF, reset_logical >> 8,        # LD (COMBYT),A
+    ))
     image = bytearray(size)
     starta_offset = timer_pc - 7
     image[starta_offset:starta_offset + len(starta)] = starta
     image[0x0B00:0x0B00 + len(accept)] = accept
     image[0x0C00:0x0C00 + len(key_queue)] = key_queue
     image[0x0D00:0x0D00 + len(key_wait)] = key_wait
+    image[0x0E00:0x0E00 + len(reset_complete)] = reset_complete
     return bytes(image)
 
 
@@ -140,6 +149,7 @@ def test_find_input_boundary_recovers_linked_addresses():
         keyboard_wait_pc=0x0D03,
         command_loop_timer=0x41653,
         command_loop_timer_pc=0x0A0D,
+        reset_complete=0x414B0,
     )
 
 
@@ -151,8 +161,11 @@ def test_find_input_boundary_requires_all_signatures():
     no_queue[0x0C00:0x0C20] = bytes(0x20)
     no_wait = bytearray(complete)
     no_wait[0x0D00:0x0D20] = bytes(0x20)
+    no_reset = bytearray(complete)
+    no_reset[0x0E00:0x0E20] = bytes(0x20)
 
     assert find_input_boundary(bytes(starta_only)) is None
     assert find_input_boundary(bytes(no_queue)) is None
     assert find_input_boundary(bytes(no_wait)) is None
+    assert find_input_boundary(bytes(no_reset)) is None
     assert find_input_boundary(bytes(0x10000)) is None

@@ -146,7 +146,7 @@ def test_help_workflow_imports_renames_reads_persists_and_restarts(
     verify_help_through_stdio(rom, state, help_file)
 
     assert launches == [
-        (rom, {"model": "bs2", "state": state, "power_on_input": True}),
+        (rom, {"model": "bs2", "state": state, "reset": "cold"}),
         (rom, {"model": "bs2", "state": state}),
     ]
     assert processes[0].sent == [

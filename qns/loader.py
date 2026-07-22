@@ -44,6 +44,8 @@ _JR_NZ = _Insn("jr nz,d", (0x20,), operand_bytes=1)
 _LD_A_MEMORY = _Insn("ld a,(nn)", (0x3A,), operand_bytes=2)
 _LD_MEMORY_A = _Insn("ld (nn),a", (0x32,), operand_bytes=2)
 _LD_A_7D = _Insn("ld a,7dh", (0x3E, 0x7D))
+_LD_A_02 = _Insn("ld a,02h", (0x3E, 0x02))
+_LD_A_64 = _Insn("ld a,64h", (0x3E, 0x64))
 _LD_HL_INDIRECT_ZERO = _Insn("ld (hl),0", (0x36, 0x00))
 _INC_HL_INDIRECT = _Insn("inc (hl)", (0x34,))
 _LD_HL_INDIRECT_C = _Insn("ld (hl),c", (0x71,))
@@ -223,6 +225,18 @@ _KEY_WAIT_SIGNATURES = (
     ),
 )
 
+# BS.ASM::WARM0 initializes the serial handshake immediately before writing
+# COMBYT=64h.  That write proves every source-defined warm or cold reset has
+# accepted its held startup gesture.  COMBYT is linked at a revision-specific
+# address, so discover it rather than retaining the old BS2 address.
+_RESET_COMPLETE_SIGNATURE = (
+    _LD_A_02,
+    _LD_MEMORY_A,
+    _CALL,
+    _LD_A_64,
+    _LD_MEMORY_A,
+)
+
 # Every supplied runtime maps the command-loop common area with CBR=34
 # (see NOTES.md's live MMU records), which converts the logical operand
 # addresses above into the physical addresses our callbacks receive.
@@ -258,6 +272,9 @@ class InputBoundary:
     command_loop_timer_pc: int
     """Linked address of the STARTA instruction that clears that timer."""
 
+    reset_complete: int
+    """Physical COMBYT write proving a power-on reset gesture was accepted."""
+
 
 def find_input_boundary(firmware: bytes) -> InputBoundary | None:
     """Locate this firmware revision's chord-acceptance addresses.
@@ -269,7 +286,13 @@ def find_input_boundary(firmware: bytes) -> InputBoundary | None:
     starta = _find_signature(bank, _STARTA_SIGNATURE)
     accept = _find_signature(bank, _CHORD_ACCEPT_SIGNATURE)
     key_queue = _find_signature(bank, _KEY_QUEUE_SIGNATURE)
-    if len(starta) != 1 or len(accept) != 1 or len(key_queue) != 1:
+    reset_complete = _find_signature(bank, _RESET_COMPLETE_SIGNATURE)
+    if (
+        len(starta) != 1
+        or len(accept) != 1
+        or len(key_queue) != 1
+        or len(reset_complete) != 1
+    ):
         return None
 
     timer_operand = starta[0] + _sequence_offset(
@@ -284,6 +307,10 @@ def find_input_boundary(firmware: bytes) -> InputBoundary | None:
         _KEY_QUEUE_SIGNATURE, _LD_HL_IMMEDIATE
     ) + 1
     queue_logical = bank[queue_operand] | (bank[queue_operand + 1] << 8)
+    reset_operand = reset_complete[0] + _sequence_offset(
+        _RESET_COMPLETE_SIGNATURE, _LD_A_64
+    ) + len(_LD_A_64.tokens()) + 1
+    reset_logical = bank[reset_operand] | (bank[reset_operand + 1] << 8)
     key_waits = [
         offset
         for signature in _KEY_WAIT_SIGNATURES
@@ -302,6 +329,7 @@ def find_input_boundary(firmware: bytes) -> InputBoundary | None:
         command_loop_timer_pc=starta[0] + _sequence_offset(
             _STARTA_SIGNATURE, _LD_HL_INDIRECT_ZERO
         ),
+        reset_complete=common_base + reset_logical,
     )
 
 

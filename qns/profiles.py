@@ -32,9 +32,6 @@ class HardwareProfile:
     has_clock_pic: bool
     has_gas_gauge: bool
     parallel_port_base: int
-    power_on_input_proven: bool
-    """Whether the power-on input dialogue boundary is proven for this
-    model, enabling --power-on-input."""
 
 
 
@@ -54,7 +51,6 @@ PROFILES: dict[str, HardwareProfile] = {
             has_clock_pic=False,
             has_gas_gauge=False,
             parallel_port_base=0x80,
-            power_on_input_proven=False,
         ),
         HardwareProfile(
             name="bs2",
@@ -68,7 +64,6 @@ PROFILES: dict[str, HardwareProfile] = {
             has_clock_pic=True,
             has_gas_gauge=True,
             parallel_port_base=0x80,
-            power_on_input_proven=True,
         ),
         HardwareProfile(
             name="bsl",
@@ -82,7 +77,6 @@ PROFILES: dict[str, HardwareProfile] = {
             has_clock_pic=False,
             has_gas_gauge=False,
             parallel_port_base=0x80,
-            power_on_input_proven=False,
         ),
         HardwareProfile(
             name="bl2",
@@ -96,7 +90,6 @@ PROFILES: dict[str, HardwareProfile] = {
             has_clock_pic=True,
             has_gas_gauge=True,
             parallel_port_base=0x80,
-            power_on_input_proven=True,
         ),
         HardwareProfile(
             name="bl4",
@@ -110,7 +103,6 @@ PROFILES: dict[str, HardwareProfile] = {
             has_clock_pic=True,
             has_gas_gauge=True,
             parallel_port_base=0xA0,
-            power_on_input_proven=True,
         ),
         HardwareProfile(
             name="tns",
@@ -124,7 +116,6 @@ PROFILES: dict[str, HardwareProfile] = {
             has_clock_pic=True,
             has_gas_gauge=False,
             parallel_port_base=0xC0,
-            power_on_input_proven=False,
         ),
     )
 }

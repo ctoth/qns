@@ -24,7 +24,7 @@ class BNSStdioProcess:
         model: str,
         state: Path | None = None,
         pc_disk_dir: Path | None = None,
-        power_on_input: bool = False,
+        reset: str | None = None,
         cycles: int = 0,
     ):
         command = [
@@ -43,8 +43,8 @@ class BNSStdioProcess:
             command.extend(("--state", str(state)))
         if pc_disk_dir is not None:
             command.extend(("--pc-disk-dir", str(pc_disk_dir)))
-        if power_on_input:
-            command.append("--power-on-input")
+        if reset is not None:
+            command.extend(("--reset", reset))
 
         self.process = subprocess.Popen(
             command,

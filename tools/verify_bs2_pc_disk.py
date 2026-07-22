@@ -78,7 +78,7 @@ def _run_pc_disk_commands(rom: Path, disk_root: Path) -> None:
         rom,
         model="bs2",
         pc_disk_dir=disk_root,
-        power_on_input=True,
+        reset="cold",
     ) as process:
         reach_stdio_editor_command_loop(process)
         serial_start = (len(process.serial[0]), len(process.serial[1]))

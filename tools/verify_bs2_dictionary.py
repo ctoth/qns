@@ -56,7 +56,7 @@ def verify_dictionary_through_stdio(
         rom,
         model="bs2",
         state=state,
-        power_on_input=True,
+        reset="cold",
     ) as process:
         reach_stdio_editor_command_loop(process)
 

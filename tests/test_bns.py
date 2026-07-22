@@ -9,7 +9,6 @@ from io import BytesIO, StringIO
 import pytest
 
 from qns.bns import (
-    _COMBYT_PHYSICAL,
     BNS,
     _read_stdin_character,
 )
@@ -27,12 +26,12 @@ from qns.stdio import JSONLOutput
 # NOTES.md.  Behavioral tests install these directly instead of loading
 # the real packages.
 INPUT_BOUNDARIES: dict[str, InputBoundary] = {
-    "bsp": InputBoundary(0x4327C, 0x41A32, 0x1AF5, 0x41653, 0x0A0D),
-    "bs2": InputBoundary(0x4327D, 0x41A33, 0x1BD3, 0x41654, 0x0A7E),
-    "bsl": InputBoundary(0x433E5, 0x41A34, 0x1CF9, 0x41653, 0x0A97),
-    "bl2": InputBoundary(0x433E6, 0x41A35, 0x1DB4, 0x41654, 0x0AF5),
-    "bl4": InputBoundary(0x433F0, 0x41A3B, 0x1FC0, 0x4165A, 0x0B36),
-    "tns": InputBoundary(0x4329D, 0x41A38, 0x1E16, 0x41659, 0x0AF9),
+    "bsp": InputBoundary(0x4327C, 0x41A32, 0x1AF5, 0x41653, 0x0A0D, 0x414AF),
+    "bs2": InputBoundary(0x4327D, 0x41A33, 0x1BD3, 0x41654, 0x0A7E, 0x414B0),
+    "bsl": InputBoundary(0x433E5, 0x41A34, 0x1CF9, 0x41653, 0x0A97, 0x414AF),
+    "bl2": InputBoundary(0x433E6, 0x41A35, 0x1DB4, 0x41654, 0x0AF5, 0x414B0),
+    "bl4": InputBoundary(0x433F0, 0x41A3B, 0x1FC0, 0x4165A, 0x0B36, 0x414B6),
+    "tns": InputBoundary(0x4329D, 0x41A38, 0x1E16, 0x41659, 0x0AF9, 0x414B5),
 }
 
 
@@ -183,37 +182,26 @@ def test_command_loop_gate_requires_linked_starta_instruction(model):
 
 
 @pytest.mark.parametrize(
-    ("model", "character", "chord"),
-    [("bs2", "I", 0x4A), ("bl2", "b", 0x03), ("bl4", "b", 0x03)],
+    ("model", "reset", "chord"),
+    [
+        (model, reset, chord)
+        for model in ("bsp", "bs2", "bsl", "bl2", "bl4")
+        for reset, chord in (("warm", 0x7F), ("cold", 0x4A))
+    ],
 )
-def test_power_on_stdin_holds_chord_until_profile_acceptance_boundary(
-    monkeypatch,
+def test_classic_reset_holds_source_defined_chord_until_warm0_completes(
     model,
-    character,
+    reset,
     chord,
 ):
-    """A proven profile holds its startup chord until firmware accepts it."""
-    characters = iter((character, ""))
-    monkeypatch.setattr(
-        "qns.bns._read_stdin_character",
-        lambda: next(characters),
-    )
-
-    class ImmediateThread:
-        def __init__(self, *, target, **_kwargs):
-            self.target = target
-
-        def start(self):
-            self.target()
-
-    monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
-    bns = BNS(model=model, stdin_device="keyboard", power_on_input=True)
+    bns = BNS(model=model, reset=reset)
     bns._input_boundary = INPUT_BOUNDARIES[model]
     observed = []
 
-    class PowerOnCPU:
+    class ResetCPU:
         halted = False
         pc = 0
+        instruction_pc = 0
 
         @staticmethod
         def set_irq(_line, _state):
@@ -221,53 +209,59 @@ def test_power_on_stdin_holds_chord_until_profile_acceptance_boundary(
 
         def run(self, cycles):
             observed.append((bns.keyboard.dots, bns.keyboard._key_down))
-            if model == "bs2":
-                bns._mem_write(_COMBYT_PHYSICAL, 0x64)
-            elif model == "bl2":
-                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
-            else:
-                bns._io_read(0xB0)
-                bns._io_read(0xC0)
+            bns._mem_write(INPUT_BOUNDARIES[model].reset_complete, 0x64)
             return cycles
 
-    bns.cpu = PowerOnCPU()
+    bns.cpu = ResetCPU()
     bns.run(max_cycles=1_000)
 
     assert observed == [(chord, True)]
     assert not bns.keyboard._key_down
 
 
-@pytest.mark.parametrize("character", ["", "i", "O"])
-def test_power_on_stdin_requires_documented_uppercase_i(monkeypatch, character):
-    """No nearby or missing stdin character may select the hard-reset path."""
-    monkeypatch.setattr("qns.bns._read_stdin_character", lambda: character)
-    bns = BNS(model="bs2", stdin_device="keyboard", power_on_input=True)
-    bns._input_boundary = INPUT_BOUNDARIES["bs2"]
+@pytest.mark.parametrize(
+    ("reset", "make_scans", "release_scans"),
+    (
+        ("warm", (0xA1, 0x81), (0x01, 0x21)),
+        ("cold", (0xC9, 0xA1, 0x81), (0x01, 0x21, 0x49)),
+    ),
+)
+def test_tns_reset_delivers_source_defined_modifier_sequence(
+    reset,
+    make_scans,
+    release_scans,
+):
+    bns = BNS(model="tns", reset=reset)
+    bns._input_boundary = INPUT_BOUNDARIES["tns"]
+    observed = []
+    reset_completed = False
+    status_checked = False
 
-    with pytest.raises(RuntimeError, match="uppercase I"):
-        bns.run(max_cycles=1_000)
+    class ResetCPU:
+        halted = False
+        pc = 0
+        instruction_pc = 0
 
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
 
-def test_bl2_power_on_stdin_requires_an_initial_chord(monkeypatch):
-    monkeypatch.setattr("qns.bns._read_stdin_character", lambda: "")
-    bns = BNS(model="bl2", stdin_device="keyboard", power_on_input=True)
-    bns._input_boundary = INPUT_BOUNDARIES["bl2"]
+        def run(self, cycles):
+            nonlocal reset_completed, status_checked
+            if not status_checked:
+                bns._read_tns_status(0xE0)
+                status_checked = True
+            if bns.keyboard.latched:
+                observed.append(bns.keyboard.read(bns.keyboard.port))
+            if not reset_completed and tuple(observed) == make_scans:
+                bns._mem_write(INPUT_BOUNDARIES["tns"].reset_complete, 0x64)
+                reset_completed = True
+            return cycles
 
-    with pytest.raises(RuntimeError, match="initial chord"):
-        bns.run(max_cycles=1_000)
+    bns.cpu = ResetCPU()
+    bns.run(max_cycles=10_000)
 
-
-def test_power_on_stdin_rejects_non_keyboard_channel():
-    """A serial byte cannot be silently reinterpreted as a keyboard chord."""
-    with pytest.raises(ValueError, match="requires keyboard stdin"):
-        BNS(stdin_device="serial0", power_on_input=True)
-
-
-@pytest.mark.parametrize("model", ["bsp", "bsl"])
-def test_power_on_stdin_rejects_profiles_without_proven_reset_boundary(model):
-    """A power-on release event cannot be applied to unproven firmware."""
-    with pytest.raises(ValueError, match="proven BS2, BL2, or BL4 boundary"):
-        BNS(model=model, stdin_device="keyboard", power_on_input=True)
+    assert tuple(observed) == make_scans + release_scans
 
 
 @pytest.mark.parametrize(
@@ -351,6 +345,12 @@ def test_tns_owns_source_defined_hardware_ports():
     assert bns.keyboard.port == 0xD0
     assert bns.clock_pic is not None
     assert bns.display is None
+    assert bns.io.read(0xE0) == 0xFF
+
+    bns.keyboard.press(0xA1)
+    assert bns.io.read(0xE0) == 0xFE
+    assert bns.io.read(0xD0) == 0xA1
+    assert bns.io.read(0xE0) == 0xFF
 
     bns.io.write(0x80, 1)
     bns.io.write(0xB0, 0x5A)
@@ -548,56 +548,6 @@ def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):
         {"device": "keyboard", "state": "accepted", "chord": 0x01},
         {"device": "keyboard", "state": "ready"},
     ]
-
-
-def test_jsonl_power_on_input_accepts_raw_uppercase_i_chord(monkeypatch):
-    monkeypatch.setattr(
-        sys,
-        "stdin",
-        StringIO('{"device":"keyboard","chord":74}\n'),
-    )
-    output_stream = StringIO()
-
-    class ImmediateThread:
-        def __init__(self, *, target, **_kwargs):
-            self.target = target
-
-        def start(self):
-            self.target()
-
-    monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
-    bns = BNS(
-        model="bs2",
-        stdin_device="jsonl",
-        power_on_input=True,
-        stdio_output=JSONLOutput(output_stream),
-    )
-    bns._input_boundary = INPUT_BOUNDARIES["bs2"]
-    observed = []
-
-    class PowerOnCPU:
-        halted = False
-        pc = 0
-
-        @staticmethod
-        def set_irq(_line, _state):
-            pass
-
-        def run(self, cycles):
-            observed.append(bns.keyboard.dots)
-            bns._mem_write(_COMBYT_PHYSICAL, 0x64)
-            return cycles
-
-    bns.cpu = PowerOnCPU()
-    bns.run(max_cycles=1_000)
-
-    assert observed == [0x4A]
-    assert not bns.keyboard._key_down
-    assert json.loads(output_stream.getvalue()) == {
-        "device": "keyboard",
-        "state": "accepted",
-        "chord": 0x4A,
-    }
 
 
 def test_bsl_keyboard_stdin_uses_exact_command_loop_epoch(monkeypatch):

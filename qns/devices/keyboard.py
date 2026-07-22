@@ -1,5 +1,6 @@
 """BNS keyboard input devices."""
 
+from collections import deque
 from collections.abc import Callable
 
 IrqCallback = Callable[[int], None]
@@ -82,6 +83,8 @@ class TNSKeyboard:
         self.code = 0
         self.latched = False
         self._down_code = 0
+        self._pending_codes: deque[int] = deque()
+        self._power_on_codes: tuple[int, ...] = ()
         self._irq_callback: IrqCallback | None = None
 
     def set_irq_callback(self, callback: IrqCallback) -> None:
@@ -95,6 +98,8 @@ class TNSKeyboard:
             self.latched = False
             if self._irq_callback:
                 self._irq_callback(0)
+        if self._pending_codes:
+            self._present(self._pending_codes.popleft())
         return code
 
     def write(self, _port: int, _value: int) -> None:
@@ -114,6 +119,31 @@ class TNSKeyboard:
         if code | 0x80 == self._down_code:
             self._down_code = 0
         self._present(code & 0x7F)
+
+    def queue_codes(self, codes: tuple[int, ...]) -> None:
+        """Present raw PIC bytes in order as the firmware acknowledges them."""
+        if not codes:
+            raise ValueError("keyboard-PIC sequence cannot be empty")
+        if self.latched or self._pending_codes:
+            raise RuntimeError("keyboard-PIC sequence already in flight")
+        self._pending_codes.extend(code & 0xFF for code in codes[1:])
+        self._present(codes[0])
+
+    def hold_power_on_codes(self, codes: tuple[int, ...]) -> None:
+        """Hold startup scans until firmware checks the active-low PIC status."""
+        if not codes:
+            raise ValueError("keyboard-PIC power-on sequence cannot be empty")
+        if self.latched or self._pending_codes or self._power_on_codes:
+            raise RuntimeError("keyboard-PIC sequence already in flight")
+        self._power_on_codes = codes
+
+    def status(self) -> int:
+        """Return CEST and expose held startup keys after the garbage read."""
+        if not self.latched and self._power_on_codes:
+            codes = self._power_on_codes
+            self._power_on_codes = ()
+            self.queue_codes(codes)
+        return 0xFE if self.latched else 0xFF
 
     def _present(self, code: int) -> None:
         self.code = code & 0xFF

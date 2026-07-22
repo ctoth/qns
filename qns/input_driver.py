@@ -63,7 +63,10 @@ SHIFTED_ASCII_TO_TNS_SCAN = {
 TNS_LEFT_SHIFT_SCAN = 0xE1
 TNS_ALT_SCAN = 0xA1
 
-BS2_POWER_ON_INITIALIZE_CHORD = 0x4A
+WARM_RESET_CHORD = 0x7F
+COLD_RESET_CHORD = 0x4A
+TNS_WARM_RESET_SCANS = (0xA1, 0x81)
+TNS_COLD_RESET_SCANS = (0xC9, 0xA1, 0x81)
 
 
 def keyboard_input_chord(value: str | int, model: str = "bsp") -> int:
@@ -114,25 +117,26 @@ class ChordInputDriver:
         self._shifted = False
         self._alt = False
         self._ready_reported = False
-        self._power_on_combyt_writes = bns._combyt_writes
-        self._power_on_bl4_key_samples = bns._bl4_key_samples
+        self._reset_complete_writes = bns._reset_complete_writes
+        self._reset_scans: tuple[int, ...] = ()
         self._ready_epoch = bns._keyboard_ready_epoch
         self._queue_epoch = bns._keyboard_queue_epoch
         self._consume_epoch = bns._keyboard_consume_epoch
         self._has_consumed_input = False
 
-    def hold_power_on_chord(self, value: str | int) -> None:
-        """Convert the first chord and hold it down through power-on."""
+    def start_reset(self, reset: str) -> None:
+        """Apply the model's physical warm- or cold-reset power-on gesture."""
         bns = self._bns
-        try:
-            chord = keyboard_input_chord(value, bns.model)
-        except ValueError as error:
-            raise RuntimeError(str(error)) from error
-        if bns.model == "bs2" and chord != BS2_POWER_ON_INITIALIZE_CHORD:
-            raise RuntimeError("power-on input must begin with uppercase I")
-        self._chord = chord
-        bns.keyboard.press(chord)
-        self._phase = "power-on"
+        if self._tns:
+            self._reset_scans = (
+                TNS_WARM_RESET_SCANS if reset == "warm" else TNS_COLD_RESET_SCANS
+            )
+            self._chord = self._reset_scans[-1]
+            bns.keyboard.hold_power_on_codes(self._reset_scans)
+        else:
+            self._chord = WARM_RESET_CHORD if reset == "warm" else COLD_RESET_CHORD
+            bns.keyboard.press(self._chord)
+        self._phase = "reset"
 
     def tick(self) -> None:
         """Advance the in-flight chord, then start the next queued one."""
@@ -173,22 +177,20 @@ class ChordInputDriver:
                     self._phase = "down"
             return
 
-        if self._phase == "power-on":
-            # Each model proves power-on acceptance through a different
-            # observable: BS2 by its COMBYT write, BL2 by the cleared
-            # keyboard latch, BL4 by its space-bar port being sampled.
-            if (
-                (
-                    bns.model == "bs2"
-                    and bns._combyt_writes > self._power_on_combyt_writes
-                )
-                or (bns.model == "bl2" and not keyboard.latched)
-                or (
-                    bns.model == "bl4"
-                    and bns._bl4_key_samples > self._power_on_bl4_key_samples
-                )
-            ):
-                keyboard.release()
+        if self._phase == "reset":
+            if bns._reset_complete_writes > self._reset_complete_writes:
+                if self._tns:
+                    keyboard.queue_codes(
+                        tuple(code & 0x7F for code in reversed(self._reset_scans))
+                    )
+                    self._phase = "reset-release"
+                else:
+                    keyboard.release()
+                    self._accept()
+            return
+
+        if self._phase == "reset-release":
+            if not keyboard.latched:
                 self._accept()
             return
 

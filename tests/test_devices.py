@@ -64,6 +64,29 @@ def test_tns_keyboard_pic_releases_nested_key_then_modifier():
     assert keyboard.read(0xD0) == 0x61
 
 
+def test_tns_keyboard_pic_queues_power_on_modifier_sequence():
+    keyboard = TNSKeyboard()
+
+    keyboard.queue_codes((0xC9, 0xA1, 0x81))
+
+    assert keyboard.read(0xD0) == 0xC9
+    assert keyboard.read(0xD0) == 0xA1
+    assert keyboard.read(0xD0) == 0x81
+    assert not keyboard.latched
+
+
+def test_tns_keyboard_pic_holds_power_on_scans_until_status_check():
+    keyboard = TNSKeyboard()
+
+    keyboard.hold_power_on_codes((0xA1, 0x81))
+
+    assert keyboard.read(0xD0) == 0
+    assert keyboard.status() == 0xFE
+    assert keyboard.read(0xD0) == 0xA1
+    assert keyboard.read(0xD0) == 0x81
+    assert keyboard.status() == 0xFF
+
+
 @given(cells=st.binary(min_size=1, max_size=18))
 def test_braille_lite_display_captures_command_prefixed_cells(cells: bytes):
     """Each 0x83 command makes exactly the following byte one display cell."""

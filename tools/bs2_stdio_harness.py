@@ -11,7 +11,7 @@ R_KEY = 0x17
 Y_KEY = 0x3D
 E_CHORD = 0x51
 X_CHORD = 0x6D
-POWER_ON_INITIALIZE_CHORD = 0x4A
+COLD_RESET_CHORD = 0x4A
 
 SOH = 0x01
 STX = 0x02
@@ -244,9 +244,8 @@ def reach_stdio_editor_command_loop(process: BNSStdioProcess) -> None:
         WIPEOUT_PROMPT,
         FLASH_CONFIRMATION_PROMPT,
     )
-    expected_chord = POWER_ON_INITIALIZE_CHORD
+    expected_chord = COLD_RESET_CHORD
     speech_start = len(process.speech_names)
-    process.send_keyboard(chord=expected_chord)
     process.send_event("cpu", watch_pc=editor_command_loop_pc)
     watch_armed = False
 

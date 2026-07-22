@@ -41,8 +41,6 @@ from .stdio import (
 )
 from .synth import SSI263PCMSynth, SSI263Synth
 
-_COMBYT_PHYSICAL = 0x414B0
-
 
 def _read_stdin_character() -> str:
     """Read one redirected byte or one unbuffered Windows console key."""
@@ -83,7 +81,7 @@ class BNS:
                  dump_writes_file: str | None = None,
                  trace_interrupts: bool = False,
                  stdin_device: str | None = None,
-                 power_on_input: bool = False,
+                 reset: str | None = None,
                  serial_output: BinaryIO | None = None,
                  serial_output_channel: int | None = None,
                  pc_disk_dir: Path | str | None = None,
@@ -104,7 +102,7 @@ class BNS:
             dump_writes_file: File to dump all write addresses to (CSV format)
             trace_interrupts: Log interrupt-related activity (IRQ lines, ITC register)
             stdin_device: Standard-input target: keyboard, serial0, serial1, or jsonl
-            power_on_input: Hold the first keyboard stdin chord during power-on
+            reset: Apply the model's warm- or cold-reset power-on gesture
             serial_output: Raw byte stream for the selected serial output channel
             serial_output_channel: ASCI channel routed to serial_output
             pc_disk_dir: Host directory exposed to the firmware as PC Disk on ASCI0
@@ -115,12 +113,8 @@ class BNS:
         profile = PROFILES.get(model)
         if profile is None:
             raise ValueError(f"Unsupported BNS model: {model}")
-        if power_on_input and stdin_device not in ("keyboard", "jsonl"):
-            raise ValueError("power-on input requires keyboard stdin")
-        if power_on_input and not profile.power_on_input_proven:
-            raise ValueError(
-                "power-on input requires a proven BS2, BL2, or BL4 boundary"
-            )
+        if reset not in (None, "warm", "cold"):
+            raise ValueError(f"Unsupported reset mode: {reset}")
 
         self.clock = clock
         self.model = model
@@ -129,7 +123,7 @@ class BNS:
         self.io = IOBus()
         self.trace_interrupts = trace_interrupts
         self.stdin_device = stdin_device
-        self.power_on_input = power_on_input
+        self.reset_mode = reset
         self.serial_output = serial_output
         self.serial_output_channel = serial_output_channel
         self.pc_disk = PCDisk(pc_disk_dir) if pc_disk_dir is not None else None
@@ -161,8 +155,7 @@ class BNS:
         self._keyboard_accept_epoch = 0
         self._keyboard_queue_epoch = 0
         self._keyboard_consume_epoch = 0
-        self._combyt_writes = 0
-        self._bl4_key_samples = 0
+        self._reset_complete_writes = 0
 
         # Statistics
         self.stats = {
@@ -297,12 +290,11 @@ class BNS:
         """Memory write callback for CPU."""
         self.stats['writes'] += 1
 
-        if addr == _COMBYT_PHYSICAL:
-            self._combyt_writes += 1
-
         # Count only the linked STARTA instruction that opens another command-loop
         # epoch.  The same timer is also cleared during early RAM initialization.
         input_boundary = self._input_boundary
+        if input_boundary is not None and addr == input_boundary.reset_complete:
+            self._reset_complete_writes += 1
         if (
             input_boundary is not None
             and addr == input_boundary.keyboard_input_buffer
@@ -512,8 +504,8 @@ class BNS:
         self.power_latch = value
 
     def _read_tns_status(self, port: int) -> int:
-        """Return inactive Type 'n Speak power and battery status inputs."""
-        return 0xFF
+        """Expose the active-low Type 'n Speak keyboard-PIC ready input."""
+        return self.keyboard.status()
 
     def _write_tns_latch(self, port: int, value: int) -> None:
         """Retain the Type 'n Speak status/clock latch output."""
@@ -525,7 +517,6 @@ class BNS:
 
     def _read_bl4_space(self, port: int) -> int:
         """Return the BL4 space-bar input on port C0 bit zero."""
-        self._bl4_key_samples += 1
         return int(bool(self.keyboard.dots & 0x40))
 
     def _write_bl4_power(self, port: int, value: int) -> None:
@@ -616,7 +607,8 @@ class BNS:
                 f"queue 0x{self._input_boundary.keyboard_queue_count:05X}, "
                 f"wait PC 0x{self._input_boundary.keyboard_wait_pc:04X}, "
                 f"timer 0x{self._input_boundary.command_loop_timer:05X} "
-                f"@ PC 0x{self._input_boundary.command_loop_timer_pc:04X}"
+                f"@ PC 0x{self._input_boundary.command_loop_timer_pc:04X}, "
+                f"reset 0x{self._input_boundary.reset_complete:05X}"
             )
 
     def reset(self) -> None:
@@ -643,13 +635,13 @@ class BNS:
 
         input_driver: ChordInputDriver | None = None
         pc_watch_reported = False
-        if self.stdin_device is not None:
-            if self.stdin_device in ("keyboard", "jsonl"):
+        if self.stdin_device is not None or self.reset_mode is not None:
+            if self.stdin_device in ("keyboard", "jsonl") or self.reset_mode is not None:
                 if self._input_boundary is None:
-                    if self.power_on_input:
+                    if self.reset_mode is not None:
                         raise RuntimeError(
                             "chord-acceptance addresses were not discovered "
-                            "in this firmware; power-on input is unavailable"
+                            "in this firmware; reset is unavailable"
                         )
                     print(
                         "[Input] chord-acceptance addresses not discovered "
@@ -657,33 +649,8 @@ class BNS:
                     )
                 else:
                     input_driver = ChordInputDriver(self)
-                if input_driver is not None and self.power_on_input:
-                    if self.stdin_device == "jsonl":
-                        line = sys.stdin.readline()
-                        if not line:
-                            power_on_value = None
-                        else:
-                            event = parse_input_event(line)
-                            if not isinstance(event, KeyboardInput):
-                                raise RuntimeError(
-                                    "power-on input requires a keyboard JSONL event"
-                                )
-                            if isinstance(event.value, str):
-                                power_on_value = event.value[:1] or None
-                                for character in event.value[1:]:
-                                    input_driver.queue.put(character)
-                            else:
-                                power_on_value = event.value
-                    else:
-                        power_on_value = _read_stdin_character() or None
-
-                    if power_on_value is None:
-                        if self.model == "bs2":
-                            raise RuntimeError(
-                                "power-on input ended before uppercase I"
-                            )
-                        raise RuntimeError("power-on input ended before the initial chord")
-                    input_driver.hold_power_on_chord(power_on_value)
+                if input_driver is not None and self.reset_mode is not None:
+                    input_driver.start_reset(self.reset_mode)
 
             def read_stdin() -> None:
                 if self.stdin_device == "keyboard":
@@ -713,8 +680,13 @@ class BNS:
                     while data := sys.stdin.buffer.read(1):
                         self._serial_input_queue.put(data[0])
 
-            threading.Thread(target=read_stdin, daemon=True, name="bns-stdin").start()
-            print(f"Input: STDIN ({self.stdin_device})")
+            if self.stdin_device is not None:
+                threading.Thread(
+                    target=read_stdin,
+                    daemon=True,
+                    name="bns-stdin",
+                ).start()
+                print(f"Input: STDIN ({self.stdin_device})")
 
         cycles_run = 0
         try:

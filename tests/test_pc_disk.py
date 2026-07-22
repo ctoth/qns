@@ -201,7 +201,7 @@ def test_cli_pc_disk_dir_creates_root_and_rejects_file(tmp_path):
     assert b"--pc-disk-dir is not a directory" in rejected.stderr
 
 
-def test_cli_allows_fresh_bs2_pc_disk_without_power_on_input(tmp_path):
+def test_cli_allows_fresh_bs2_pc_disk_without_reset(tmp_path):
     rom = tmp_path / "idle.bin"
     rom.write_bytes(bytes((0x18, 0xFE)))
 
