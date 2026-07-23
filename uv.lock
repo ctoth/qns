@@ -304,6 +304,7 @@ dependencies = [
     { name = "numpy" },
     { name = "setuptools" },
     { name = "sounddevice" },
+    { name = "z180" },
 ]
 
 [package.optional-dependencies]
@@ -327,6 +328,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "setuptools", specifier = ">=70.0.0" },
     { name = "sounddevice", specifier = ">=0.4.6" },
+    { name = "z180", git = "https://github.com/ctoth/z-core?subdirectory=crates%2Fz180-py&rev=9142185ef8d9d9a93d909e422d3a9a287f1d4f02" },
 ]
 provides-extras = ["dev"]
 
@@ -394,3 +396,8 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f5/74/52186e3e5c833d00273f7949a9383adff93692c6e02406bf359cb4d3e921/sounddevice-0.5.3-py3-none-win32.whl", hash = "sha256:845d6927bcf14e84be5292a61ab3359cf8e6b9145819ec6f3ac2619ff089a69c", size = 312882, upload-time = "2025-10-19T13:23:54.829Z" },
     { url = "https://files.pythonhosted.org/packages/66/c7/16123d054aef6d445176c9122bfbe73c11087589b2413cab22aff5a7839a/sounddevice-0.5.3-py3-none-win_amd64.whl", hash = "sha256:f55ad20082efc2bdec06928e974fbcae07bc6c405409ae1334cefe7d377eb687", size = 364025, upload-time = "2025-10-19T13:23:56.362Z" },
 ]
+
+[[package]]
+name = "z180"
+version = "0.1.0"
+source = { git = "https://github.com/ctoth/z-core?subdirectory=crates%2Fz180-py&rev=9142185ef8d9d9a93d909e422d3a9a287f1d4f02#9142185ef8d9d9a93d909e422d3a9a287f1d4f02" }

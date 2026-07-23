@@ -7,7 +7,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
-from .cpu import Z180
+from z180.compat import Z180
+
 from .devices import (
     MSM6242RTC,
     BQ2010GasGauge,

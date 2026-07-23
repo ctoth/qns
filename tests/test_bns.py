@@ -714,7 +714,9 @@ def test_address_trace_retains_causal_write_event_once():
 
     bns.cpu.run(100)
 
-    assert bns.traced_writes == [(6, 0x0002, 0xF000, 0x5A)]
+    # z-core resets DCNTL to F0h, so external-memory fetch waits move the
+    # second instruction's callback entry from the incumbent's cycle 6 to 12.
+    assert bns.traced_writes == [(12, 0x0002, 0xF000, 0x5A)]
 
 
 def test_bsplus_port_80_is_watchdog_read_and_speech_power_write():
