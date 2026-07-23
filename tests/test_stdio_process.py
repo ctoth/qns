@@ -25,7 +25,8 @@ def test_stdio_process_timeout_names_the_waited_for_boundary(monkeypatch):
         )
 
 
-def test_stdio_process_round_trips_binary_serial_through_real_cli(tmp_path):
+@pytest.mark.parametrize("core", ["compat", "direct"])
+def test_stdio_process_round_trips_binary_serial_through_real_cli(tmp_path, core):
     echo_rom = tmp_path / "serial-echo.bin"
     echo_rom.write_bytes(bytes((
         0x3E, 0x64,
@@ -40,7 +41,12 @@ def test_stdio_process_round_trips_binary_serial_through_real_cli(tmp_path):
         0x18, 0xF0,
     )))
 
-    with BNSStdioProcess(echo_rom, model="bsp", cycles=200_000) as bns:
+    with BNSStdioProcess(
+        echo_rom,
+        model="bsp",
+        core=core,
+        cycles=200_000,
+    ) as bns:
         bns.send_serial(0, b"\x00\xffZ")
         cursor = bns.wait_for_serial(
             0,
