@@ -7,7 +7,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
-from .cpu import Z180
+from z180 import IrqLine, Machine, Reg, WatchKind
+
 from .devices import (
     MSM6242RTC,
     BQ2010GasGauge,
@@ -119,7 +120,11 @@ class BNS:
         self.clock = clock
         self.model = model
         self.profile = profile
-        self.memory = Memory(flash_size=profile.flash_size)
+        self.memory = Memory(
+            ram_size=profile.ram_size,
+            rom_size=profile.rom_size,
+            flash_size=profile.flash_size,
+        )
         self.io = IOBus()
         self.trace_interrupts = trace_interrupts
         self.stdin_device = stdin_device
@@ -138,6 +143,15 @@ class BNS:
         self._stdio_watch_queue: queue.Queue[int] = queue.Queue()
         self._stdio_stop_requested = threading.Event()
         self._stdin_error_queue: queue.Queue[ValueError] = queue.Queue()
+        self._pending_irq_states = {0: False, 1: False, 2: False}
+        self._applied_irq_states: dict[int, bool | None] = {0: None, 1: None, 2: None}
+        self._callback_cycle = 0
+        self._callback_pc = 0
+        self._pending_asci_rx: list[int | None] = [None, None]
+        self._pending_csio_rx: int | None = None
+        self._pc_watch_address: int | None = None
+        self._pc_watch_cycle = 0
+        self._pc_watch_cbar = 0
 
         # Debugging options
         self.trace_writes_addr = trace_writes
@@ -205,24 +219,37 @@ class BNS:
             self.ssi263.set_synth(self.synth)
 
         self._setup_io()
-        csio_device = (
+        self._csio_device = (
             self.display if profile.display == "csio" else self.clock_pic
         )
 
-        # Create CPU with memory/IO callbacks
-        self.cpu = Z180(
-            clock=clock,
+        regions = [
+            {"base": 0x00000, "size": profile.ram_size, "kind": "ram"},
+        ]
+        if profile.flash_size:
+            regions.append({"base": 0x80000, "size": 0x80000, "kind": "external"})
+        self.cpu = Machine(
+            config_dict={
+                "clock_hz": clock,
+                "phys_addr_bits": 20,
+                "unmapped_read": 0xFF,
+                "variant": "Z80180",
+                "regions": regions,
+                "event_capacity": 4096,
+            },
             mem_read=self._mem_read,
             mem_write=self._mem_write,
             io_read=self._io_read,
             io_write=self._io_write,
-            serial_rx=self._serial_receive,
-            serial_tx=self._serial_transmit,
-            csio_rx=csio_device.receive if csio_device else None,
-            csio_tx=csio_device.transmit if csio_device else None,
+        )
+        self.memory.ram = self.cpu.ram(0x00000)
+        self._ram_write_watch = self.cpu.add_mem_watch(
+            0x00000,
+            profile.ram_size,
+            WatchKind.Write,
         )
         if stdio_watch_pc is not None:
-            self.cpu.watch_pc(stdio_watch_pc)
+            self._arm_pc_watch(stdio_watch_pc)
 
         # Connect keyboard interrupt (INT2) to CPU
         self.keyboard.set_irq_callback(self._make_irq_callback(2, "keyboard"))
@@ -242,52 +269,78 @@ class BNS:
                 state_str = "ASSERT" if state else "CLEAR"
                 cycles = self.stats.get('cycles', 0)
                 print(f"[IRQ] INT{line} {state_str} from {source} (cycle ~{cycles})")
-            self.cpu.set_irq(line, state)
+            self._pending_irq_states[line] = bool(state)
         return callback
 
     def _mem_read(self, addr: int) -> int:
-        """Memory read callback for CPU."""
-        input_boundary = self._input_boundary
-        if input_boundary is not None and addr == input_boundary.keyboard_wait_pc:
-            if self.memory.read(input_boundary.keyboard_queue_count) == 0:
-                self._keyboard_ready_epoch += 1
-            else:
-                self._keyboard_consume_epoch += 1
+        """Read qns-owned external memory without re-entering z-core."""
+        return self.memory.read(addr)
+
+    def _observe_instruction_boundary(self) -> None:
+        """Preserve callback-era observers at the exact instruction boundary."""
+        pc = self.cpu.reg(Reg.PC)
+        physical_pc = self.cpu.mmu_translate(pc)
+        self._observe_input_boundary(physical_pc)
 
         boundary = self._english_boundary
         if (
             self._english_callback is not None
             and boundary is not None
-            and addr == boundary.capture_addr
+            and physical_pc == boundary.capture_addr
         ):
-            cycle = self.cpu.cycle_count
-            if cycle != self._english_capture_cycle:
-                self._english_capture_cycle = cycle
-                source = self.cpu.get_reg(Z180.HL)
-                segment_length = self.cpu.get_reg(Z180.BC) & 0xFFFF
-                common_page = self.cpu.cbar >> 4
-                if (
-                    source == boundary.spbuf
-                    and source >> 12 >= common_page
-                    and 0 < segment_length <= 0xFF
-                ):
-                    physical = (source + (self.cpu.cbr << 12)) & 0xFFFFF
-                    message = bytearray()
-                    for offset in range(0x100):
-                        value = self.memory.read(physical + offset)
-                        if value == 0:
-                            text = bytes(message).decode(
-                                "ascii",
-                                errors="replace",
-                            ).strip()
-                            if text:
-                                self._english_callback(text)
-                            break
-                        message.append(value)
-        return self.memory.read(addr)
+            self._capture_english_boundary(boundary)
+
+    def _observe_input_boundary(self, physical_pc: int) -> None:
+        """Update firmware input epochs at one physical instruction address."""
+        input_boundary = self._input_boundary
+        if (
+            input_boundary is not None
+            and physical_pc == input_boundary.keyboard_wait_pc
+        ):
+            if self.memory.read(input_boundary.keyboard_queue_count) == 0:
+                self._keyboard_ready_epoch += 1
+            else:
+                self._keyboard_consume_epoch += 1
+
+    def _capture_english_boundary(self, boundary: EnglishBoundary) -> None:
+        """Capture one exact pre-translation string from native register state."""
+        cycle = self.cpu.cycle_count()
+        if cycle == self._english_capture_cycle:
+            return
+        self._english_capture_cycle = cycle
+        source = self.cpu.reg(Reg.HL)
+        segment_length = self.cpu.reg(Reg.BC) & 0xFFFF
+        cbr = self.cpu.io_reg_peek(self.PORT_CBR)
+        common_page = self.cpu.io_reg_peek(self.PORT_CBAR) >> 4
+        if not (
+            source == boundary.spbuf
+            and source >> 12 >= common_page
+            and 0 < segment_length <= 0xFF
+        ):
+            return
+        physical = (source + (cbr << 12)) & 0xFFFFF
+        message = bytearray()
+        for offset in range(0x100):
+            value = self.memory.read(physical + offset)
+            if value == 0:
+                text = bytes(message).decode("ascii", errors="replace").strip()
+                if text:
+                    self._english_callback(text)
+                return
+            message.append(value)
 
     def _mem_write(self, addr: int, value: int) -> None:
-        """Memory write callback for CPU."""
+        """Write qns-owned external memory without re-entering z-core."""
+        self._observe_write(
+            addr,
+            value,
+            pc=self._callback_pc,
+            cycle=self._callback_cycle,
+        )
+        self.memory.write(addr, value)
+
+    def _observe_write(self, addr: int, value: int, *, pc: int, cycle: int) -> None:
+        """Apply QNS write observers after z-core has stored internal RAM."""
         self.stats['writes'] += 1
 
         # Count only the linked STARTA instruction that opens another command-loop
@@ -311,7 +364,7 @@ class BNS:
             input_boundary is not None
             and addr == input_boundary.command_loop_timer
             and value == 0
-            and self.cpu.instruction_pc == input_boundary.command_loop_timer_pc
+            and pc == input_boundary.command_loop_timer_pc
         ):
             self._command_loop_write_count += 1
             if self.memory.read(input_boundary.keyboard_queue_count) == 0:
@@ -323,9 +376,7 @@ class BNS:
             and self.trace_writes_range[0] <= addr <= self.trace_writes_range[1]
         )
         if single_trace or range_trace:
-            self.traced_writes.append(
-                (self.cpu.cycle_count, self.cpu.instruction_pc, addr, value)
-            )
+            self.traced_writes.append((cycle, pc, addr, value))
 
         # Single address trace
         if single_trace:
@@ -343,7 +394,18 @@ class BNS:
         if self.dump_writes_file is not None:
             self.write_counts[addr] = self.write_counts.get(addr, 0) + 1
 
-        self.memory.write(addr, value)
+    def _process_memory_events(self) -> None:
+        """Drain native RAM-write events before their bounded queue can overflow."""
+        for event in self.cpu.drain_events():
+            if event["kind"] == "mem_write":
+                self._observe_write(
+                    event["phys"],
+                    event["value"],
+                    pc=event["pc"],
+                    cycle=event["cycle"],
+                )
+        if self.cpu.events_lost():
+            raise RuntimeError("z-core memory events were lost; QNS observers are invalid")
 
     def _io_read(self, port: int) -> int:
         """I/O read callback for CPU."""
@@ -460,7 +522,7 @@ class BNS:
         """Read one BSNEW 8255 register."""
         value = self.parallel_ports[port - self.profile.parallel_port_base]
         if self.profile.family == "bsnew" and port == 0x81 and self.gas_gauge:
-            if self.gas_gauge.read_line(self.cpu.cycle_count):
+            if self.gas_gauge.read_line(self._callback_cycle):
                 value |= 0x08
             else:
                 value &= ~0x08
@@ -497,7 +559,7 @@ class BNS:
         self.disk_power_enabled = bool(value & 0x08)
         self.charge_output_high = bool(value & 0x80)
         if self.gas_gauge:
-            self.gas_gauge.write_line(bool(value & 0x20), self.cpu.cycle_count)
+            self.gas_gauge.write_line(bool(value & 0x20), self._callback_cycle)
 
     def _write_tns_power(self, port: int, value: int) -> None:
         """Retain the Type 'n Speak power-control latch."""
@@ -527,12 +589,12 @@ class BNS:
         self.disk_power_enabled = bool(value & 0x10)
         self.charge_output_high = bool(value & 0x80)
         if self.gas_gauge:
-            self.gas_gauge.write_line(bool(value & 0x80), self.cpu.cycle_count)
+            self.gas_gauge.write_line(bool(value & 0x80), self._callback_cycle)
 
     def _read_bl4_status(self, port: int) -> int:
         """Return power-on status plus the BL4 gas-gauge input on bit three."""
         value = 0xFF
-        if self.gas_gauge and not self.gas_gauge.read_line(self.cpu.cycle_count):
+        if self.gas_gauge and not self.gas_gauge.read_line(self._callback_cycle):
             value &= ~0x08
         return value
 
@@ -574,6 +636,107 @@ class BNS:
             self.serial_output.write(bytes((value,)))
             self.serial_output.flush()
 
+    def _apply_pending_irqs(self) -> None:
+        """Apply device IRQ state only outside z-core bus callbacks."""
+        lines = (IrqLine.Int0, IrqLine.Int1, IrqLine.Int2)
+        for number, line in enumerate(lines):
+            state = self._pending_irq_states[number]
+            if self._applied_irq_states[number] != state:
+                self.cpu.set_irq(line, state)
+                self._applied_irq_states[number] = state
+
+    def _pump_serial_inputs(self) -> None:
+        """Offer retained ASCI and CSI/O input bytes to z-core."""
+        for channel in range(2):
+            pending = self._pending_asci_rx[channel]
+            if pending is None:
+                received = self._serial_receive(channel)
+                if received >= 0:
+                    pending = received & 0xFF
+                    self._pending_asci_rx[channel] = pending
+            if pending is not None and self.cpu.asci_rx_push(channel, pending):
+                self._pending_asci_rx[channel] = None
+
+        if self._csio_device is not None:
+            if self._pending_csio_rx is None:
+                received = self._csio_device.receive()
+                if received >= 0:
+                    self._pending_csio_rx = received & 0xFF
+            if (
+                self._pending_csio_rx is not None
+                and self.cpu.csio_rx_push(self._pending_csio_rx)
+            ):
+                self._pending_csio_rx = None
+
+    def _drain_serial_outputs(self) -> None:
+        """Deliver all native ASCI and CSI/O output bytes to QNS devices."""
+        for channel in range(2):
+            while (value := self.cpu.asci_tx_pop(channel)) is not None:
+                self._serial_transmit(channel, value)
+        if self._csio_device is not None:
+            while (value := self.cpu.csio_tx_pop()) is not None:
+                self._csio_device.transmit(value)
+
+    def _arm_pc_watch(self, address: int) -> None:
+        """Arm z-core's PC counter and QNS's cycle/CBAR observation."""
+        self._pc_watch_address = address
+        self._pc_watch_cycle = 0
+        self._pc_watch_cbar = 0
+        self.cpu.set_pc_watch(address)
+
+    def _prepare_instruction(self, *, pump_inputs: bool = True) -> None:
+        """Perform all ordering-sensitive work immediately before one step."""
+        self._apply_pending_irqs()
+        if pump_inputs:
+            self._pump_serial_inputs()
+        self._observe_instruction_boundary()
+        self._callback_cycle = self.cpu.cycle_count()
+        self._callback_pc = self.cpu.reg(Reg.PC)
+        if self._pc_watch_address == self._callback_pc:
+            self._pc_watch_cycle = self._callback_cycle
+            self._pc_watch_cbar = self.cpu.io_reg_peek(self.PORT_CBAR)
+
+    def _finish_execution(self) -> None:
+        """Drain all native outputs and observer events after execution."""
+        self._process_memory_events()
+        self._drain_serial_outputs()
+
+    def _execute_instruction(self, *, pump_inputs: bool = True) -> int:
+        """Execute one instruction with QNS queue and observer ordering."""
+        self._prepare_instruction(pump_inputs=pump_inputs)
+        actual = self.cpu.step()
+        self._finish_execution()
+        return actual
+
+    def _requires_instruction_steps(self) -> bool:
+        """Return whether callbacks or observers require instruction boundaries."""
+        return any((
+            self._input_boundary is not None,
+            self._english_callback is not None,
+            self.profile.flash_size > 0,
+            self.gas_gauge is not None,
+            self.trace_interrupts,
+            self.stdin_device is not None,
+            self._pc_watch_address is not None,
+        ))
+
+    def _execute_budget(self, cycles: int) -> int:
+        """Execute at least the requested cycle budget with correct device ordering."""
+        if self._requires_instruction_steps():
+            self._pump_serial_inputs()
+            actual = 0
+            while actual < cycles:
+                actual += self._execute_instruction(pump_inputs=False)
+            return actual
+
+        self._apply_pending_irqs()
+        self._pump_serial_inputs()
+        self._callback_cycle = self.cpu.cycle_count()
+        self._callback_pc = self.cpu.reg(Reg.PC)
+        actual = self.cpu.run(cycles)
+        self._finish_execution()
+        return actual
+
     def load_rom(self, path: Path | str) -> None:
         """Load a pre-extracted .bin, raw firmware image, or update package."""
         path = Path(path)
@@ -614,6 +777,11 @@ class BNS:
     def reset(self) -> None:
         """Reset the emulator."""
         self.cpu.reset()
+        self._applied_irq_states = {0: None, 1: None, 2: None}
+        self._callback_cycle = 0
+        self._callback_pc = 0
+        self._pending_asci_rx = [None, None]
+        self._pending_csio_rx = None
         self.memory.set_mmu(cbr=0, bbr=0, cbar=0xF0)
         print("BNS reset complete")
 
@@ -652,7 +820,10 @@ class BNS:
                 if input_driver is not None and self.reset_mode is not None:
                     input_driver.start_reset(self.reset_mode)
 
+            stdin_started = threading.Event()
+
             def read_stdin() -> None:
+                stdin_started.set()
                 if self.stdin_device == "keyboard":
                     while character := _read_stdin_character():
                         input_driver.queue.put(character)
@@ -681,11 +852,13 @@ class BNS:
                         self._serial_input_queue.put(data[0])
 
             if self.stdin_device is not None:
-                threading.Thread(
+                stdin_thread = threading.Thread(
                     target=read_stdin,
                     daemon=True,
                     name="bns-stdin",
-                ).start()
+                )
+                stdin_thread.start()
+                stdin_started.wait()
                 print(f"Input: STDIN ({self.stdin_device})")
 
         cycles_run = 0
@@ -707,7 +880,7 @@ class BNS:
                     pass
                 else:
                     self._stdio_watch_pc = watch_pc
-                    self.cpu.watch_pc(watch_pc)
+                    self._arm_pc_watch(watch_pc)
                     pc_watch_reported = False
                     if self.stdio_output is not None:
                         self.stdio_output.emit(
@@ -718,22 +891,22 @@ class BNS:
 
                 # Run in chunks of 1000 cycles
                 chunk = 1000 if max_cycles == 0 else min(1000, max_cycles - cycles_run)
-                actual = self.cpu.run(chunk)
+                actual = self._execute_budget(chunk)
                 cycles_run += actual
                 self.stats['cycles'] = cycles_run
 
                 if (
                     self.stdio_output is not None
                     and self._stdio_watch_pc is not None
-                    and self.cpu.pc_watch_count > 0
+                    and self.cpu.pc_watch_hits() > 0
                     and not pc_watch_reported
                 ):
                     self.stdio_output.emit(
                         "cpu",
                         event="pc-watch",
                         pc=self._stdio_watch_pc,
-                        cycle=self.cpu.pc_watch_cycle,
-                        cbar=self.cpu.pc_watch_cbar,
+                        cycle=self._pc_watch_cycle,
+                        cbar=self._pc_watch_cbar,
                     )
                     pc_watch_reported = True
 
@@ -760,11 +933,11 @@ class BNS:
 
         self.stats['cycles'] = cycles_run
         print(f"Executed {cycles_run:,} cycles")
-        print(f"Final PC: {self.cpu.pc:04X}")
+        print(f"Final PC: {self.cpu.reg(Reg.PC):04X}")
 
     def step(self) -> int:
         """Execute a single instruction. Returns cycles consumed."""
-        return self.cpu.step()
+        return self._execute_instruction()
 
     def dump_ram(self, path: Path | str) -> None:
         """Dump RAM contents to a file."""
@@ -798,11 +971,12 @@ class BNS:
         print(f"Cycles executed: {self.stats['cycles']:,}")
         print(f"Memory writes:   {self.stats['writes']:,}")
         print(f"Phonemes output: {self.stats['phonemes']}")
-        print(f"Final PC:        0x{self.cpu.pc:04X}")
-        print(f"CPU halted:      {self.cpu.halted}")
+        print(f"Final PC:        0x{self.cpu.reg(Reg.PC):04X}")
+        print(f"CPU halted:      {self.cpu.halted()}")
         print(
-            f"MMU state:       CBR=0x{self.cpu.cbr:02X} BBR=0x{self.cpu.bbr:02X} "
-            f"CBAR=0x{self.cpu.cbar:02X}"
+            f"MMU state:       CBR=0x{self.cpu.io_reg_peek(self.PORT_CBR):02X} "
+            f"BBR=0x{self.cpu.io_reg_peek(self.PORT_BBR):02X} "
+            f"CBAR=0x{self.cpu.io_reg_peek(self.PORT_CBAR):02X}"
         )
 
     def dump_trace_data(self) -> None:
@@ -843,9 +1017,9 @@ class BNS:
         self.reset()
         print("\n=== First 10 instructions ===")
         for i in range(10):
-            pc_before = self.cpu.pc
+            pc_before = self.cpu.reg(Reg.PC)
             cycles = self.step()
-            pc_after = self.cpu.pc
+            pc_after = self.cpu.reg(Reg.PC)
             print(f"{i+1}. PC: {pc_before:04X} -> {pc_after:04X} ({cycles} cycles)")
 
 

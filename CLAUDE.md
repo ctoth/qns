@@ -32,8 +32,8 @@ qns/
 │   │   └── player.py         # sounddevice real-time audio
 │   ├── devices/              # Peripherals: bus, keyboards, displays,
 │   │                         # rtc, clock_pic, gas_gauge, watchdog
-│   ├── _z180_cffi.*.pyd      # Z180 native extension (working)
-│   ├── cpu.py                # Z180 wrapper (CFFI bindings)
+│   ├── _z180_cffi.*.pyd      # Legacy benchmark extension (optional)
+│   ├── cpu.py                # Legacy CFFI benchmark subject
 │   ├── ssi263.py             # SSI-263 chip: register decode, phoneme
 │   │                         # capture, INT1; SpeechBackend protocol
 │   ├── memory.py             # Memory + Z180 MMU (physical addressing)
@@ -44,7 +44,7 @@ qns/
 │   ├── cli.py                # argparse CLI (python -m qns.bns)
 │   └── bns.py                # Main emulator machine
 ├── tools/
-│   ├── build_ffi.py          # CFFI build script (with debug counters)
+│   ├── build_ffi.py          # Legacy benchmark build script
 │   ├── extract_phonemes.py   # Extract phonemes from AppleWin
 │   ├── decode_sc01_rom.py    # Regenerates qns/synth/sc01_rom.py
 │   ├── extract_firmware.py   # Package -> .bin extraction (uses qns.loader)
@@ -59,7 +59,8 @@ qns/
 
 ## Related Resources
 
-- **z180emu**: `C:\Users\Q\src\z180emu\` - Z180 CPU emulator (C)
+- **z-core**: `https://github.com/ctoth/z-core` - production Z180 core and Python binding
+- **z180emu**: `C:\Users\Q\src\z180emu\` - legacy CFFI benchmark core
 - **BNS source**: `C:\Users\Q\src\bns\` - Original Blazie source (ASM)
 - **Technical report**: `C:\Users\Q\src\bns\EMULATION_REPORT.md`
 - **AppleWin SSI-263**: `C:\Users\Q\src\AppleWin\source\SSI263.cpp`
@@ -74,8 +75,11 @@ qns/
 ## Commands
 
 ```bash
-# Build CFFI extension (required after changes to build_ffi.py)
-uv run python tools/build_ffi.py
+# Refresh the pinned z-core dependency
+uv sync
+
+# Build the optional legacy CFFI benchmark after changes to build_ffi.py
+uv run tools/build_ffi.py
 
 # Run synth tests
 uv run pytest tests/test_synth.py -v
@@ -84,10 +88,10 @@ uv run pytest tests/test_synth.py -v
 uv run pytest tests/test_synth.py::test_synth_speaks_phoneme -v -s
 
 # Run emulator with audio - NEEDS ~40M CYCLES TO HEAR SPEECH
-uv run python -m qns.bns --audio --cycles 40000000 roms/bspeng.bns
+uv run -m qns.bns --audio --cycles 40000000 roms/bspeng.bns
 
 # Quick test (5M cycles) - only shows pauses during boot
-uv run python -m qns.bns --audio --cycles 5000000 roms/bspeng.bns
+uv run -m qns.bns --audio --cycles 5000000 roms/bspeng.bns
 ```
 
 **IMPORTANT**: The emulator needs approximately 40 million cycles before the firmware
@@ -115,8 +119,9 @@ pause phonemes (0x00) during the boot sequence.
      `SSI263State` snapshots to a backend via `set_synth()`
 
 4. **Memory System** - Physical addressing works
-   - z180emu handles MMU translation internally
-   - Memory callbacks receive physical addresses
+   - z-core owns the 512 KiB RAM hot path and Z180 MMU translation
+   - qns callbacks own only the optional high flash aperture and external I/O
+   - native write-watch events preserve QNS observers without RAM callbacks
 
 ## What's Not Working
 
@@ -139,14 +144,14 @@ pause phonemes (0x00) during the boot sequence.
 
 Current CLI (`qns/bns.py`):
 ```bash
-uv run python -m qns.bns --help
-uv run python -m qns.bns --cycles N --stats rom.bns
-uv run python -m qns.bns --trace-writes 0xADDR rom.bns
-uv run python -m qns.bns --trace-io rom.bns
+uv run -m qns.bns --help
+uv run -m qns.bns --cycles N --stats rom.bns
+uv run -m qns.bns --trace-writes 0xADDR rom.bns
+uv run -m qns.bns --trace-io rom.bns
 ```
 
 When adding tools, consider:
 - What question am I trying to answer?
 - What visibility do I lack?
-- Can z180emu expose more state? (modify C, rebuild CFFI)
+- Can z-core expose the missing native state directly?
 - Can the CLI filter/format output better?
