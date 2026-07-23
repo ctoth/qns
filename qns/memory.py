@@ -1,10 +1,9 @@
-"""QNS-owned firmware image, effective RAM state, and banked flash."""
+"""Memory subsystem with Z180 MMU banking."""
 
 from pathlib import Path
 
 _STATE_MAGIC_V1 = b"QNSRAM\x00\x01"
 _STATE_MAGIC_V2 = b"QNSRAM\x00\x02"
-_STATE_MAGIC_V3 = b"QNSRAM\x00\x03"
 
 _FLASH_WINDOW_START = 0x80000
 _FLASH_PAGE_SIZE = 0x80000
@@ -15,11 +14,22 @@ _FLASH_UNLOCK_2 = 0x2AAA
 
 
 class Memory:
-    """Own retained ROM bytes, z-core's effective RAM view, and external flash.
+    """
+    Z180 memory with MMU support for BNS hardware.
 
-    z-core owns MMU translation and the 512 KiB RAM hot path. QNS retains the
-    firmware image for discovery and legacy-state conversion, and its callbacks
-    serve only the optional banked flash aperture.
+    Physical memory layout (from BNS hardware):
+    The BNS uses "shadow RAM" - ROM and RAM overlap in the physical address space.
+    - Reads from physical 0x00000-0x0FFFF return ROM data (if loaded)
+    - Writes to ANY address go to RAM (shadow RAM behind ROM)
+    - RAM covers the full 20-bit address space (up to 1MB)
+
+    BNS logical memory map (from EMULATION_REPORT):
+    - 0x0000-0x3FFF (16KB): Common RAM (fixed)
+    - 0x4000-0x7FFF (16KB): Banked RAM (switchable via CBR)
+    - 0x8000-0xFFFF (32KB): ROM + Common RAM (shadow RAM)
+
+    z180emu handles MMU translation internally and passes physical addresses
+    to our callbacks.
     """
 
     def __init__(
@@ -28,31 +38,29 @@ class Memory:
         rom_size: int = 256 * 1024,
         flash_size: int = 0,
     ):
-        # BNS replaces this with z-core's writable zero-copy RAM view.
-        self.ram: bytearray | memoryview = bytearray(ram_size)
+        # RAM covers the full address space - shadow RAM behind ROM
+        self.ram = bytearray(ram_size)
         self.rom = bytearray(rom_size)
+        self.rom_loaded = False  # Track if ROM data was loaded
         self.flash = bytearray((0xFF,)) * flash_size
         self.high_bank_latch = 0
         self._flash_command = "ready"
+
+        # Track which addresses have been written to (for shadow RAM)
+        self._written_addrs: set[int] = set()
 
         # MMU registers
         self.cbr = 0x00   # Common Base Register
         self.bbr = 0x00   # Bank Base Register
         self.cbar = 0xF0  # Common/Bank Area Register (default: all common area 0)
 
-    def load_rom(self, data: bytes, offset: int = 0) -> None:
-        """Initialize effective RAM and the retained firmware image."""
-        if offset < 0 or offset + len(data) > len(self.ram):
-            raise ValueError("ROM image exceeds configured RAM size")
-        if offset + len(data) > len(self.rom):
-            raise ValueError("ROM image exceeds configured ROM size")
-        self.ram[:] = b"\x00" * len(self.ram)
-        self.rom[:] = b"\x00" * len(self.rom)
-        self.ram[offset:offset + len(data)] = data
+    def load_rom(self, data: bytes, offset: int = 0):
+        """Load ROM image."""
         self.rom[offset:offset + len(data)] = data
+        self.rom_loaded = True
 
     def load_state(self, path: Path | str) -> None:
-        """Load effective RAM, converting legacy shadow-RAM state when needed."""
+        """Load nonvolatile RAM, shadow metadata, and optional flash bytes."""
         data = Path(path).read_bytes()
         magic_size = len(_STATE_MAGIC_V1)
         if len(data) < magic_size + 4:
@@ -67,11 +75,6 @@ class Memory:
             if len(data) < header_size:
                 raise ValueError("not a QNS nonvolatile RAM state file")
             flash_size = int.from_bytes(data[magic_size + 4:header_size], "little")
-        elif magic == _STATE_MAGIC_V3:
-            header_size = magic_size + 8
-            if len(data) < header_size:
-                raise ValueError("not a QNS nonvolatile RAM state file")
-            flash_size = int.from_bytes(data[magic_size + 4:header_size], "little")
         else:
             raise ValueError("not a QNS nonvolatile RAM state file")
 
@@ -80,13 +83,12 @@ class Memory:
             raise ValueError(
                 f"state RAM size is {ram_size} bytes; emulator requires {len(self.ram)}"
             )
-        if magic in (_STATE_MAGIC_V2, _STATE_MAGIC_V3) and flash_size != len(self.flash):
+        if magic == _STATE_MAGIC_V2 and flash_size != len(self.flash):
             raise ValueError(
                 f"state flash size is {flash_size} bytes; emulator requires {len(self.flash)}"
             )
 
-        legacy = magic in (_STATE_MAGIC_V1, _STATE_MAGIC_V2)
-        bitmap_size = (ram_size + 7) // 8 if legacy else 0
+        bitmap_size = (ram_size + 7) // 8
         expected_size = header_size + bitmap_size + ram_size + flash_size
         if len(data) != expected_size:
             raise ValueError(
@@ -95,28 +97,35 @@ class Memory:
 
         bitmap = data[header_size:header_size + bitmap_size]
         ram_end = header_size + bitmap_size + ram_size
-        stored_ram = data[header_size + bitmap_size:ram_end]
-        if legacy:
-            effective_ram = bytearray(self.ram)
-            for address, value in enumerate(stored_ram):
-                if address >= len(self.rom) or bitmap[address >> 3] & (1 << (address & 7)):
-                    effective_ram[address] = value
-        else:
-            effective_ram = stored_ram
-
-        self.ram[:] = effective_ram
+        self.ram[:] = data[header_size + bitmap_size:ram_end]
         if flash_size:
             self.flash[:] = data[ram_end:]
+        self._written_addrs = {
+            address
+            for address in range(ram_size)
+            if bitmap[address >> 3] & (1 << (address & 7))
+        }
 
     def save_state(self, path: Path | str) -> None:
-        """Atomically save V3 effective RAM and flash."""
+        """Atomically save nonvolatile RAM, shadow metadata, and flash."""
         path = Path(path)
-        header = b"".join((
-            _STATE_MAGIC_V3,
-            len(self.ram).to_bytes(4, "little"),
-            len(self.flash).to_bytes(4, "little"),
-        ))
-        data = b"".join((header, bytes(self.ram), bytes(self.flash)))
+        bitmap = bytearray((len(self.ram) + 7) // 8)
+        for address in self._written_addrs:
+            if address < len(self.ram):
+                bitmap[address >> 3] |= 1 << (address & 7)
+
+        if self.flash:
+            header = b"".join((
+                _STATE_MAGIC_V2,
+                len(self.ram).to_bytes(4, "little"),
+                len(self.flash).to_bytes(4, "little"),
+            ))
+        else:
+            header = b"".join((
+                _STATE_MAGIC_V1,
+                len(self.ram).to_bytes(4, "little"),
+            ))
+        data = b"".join((header, bytes(bitmap), bytes(self.ram), bytes(self.flash)))
         temporary = path.with_name(f".{path.name}.tmp")
         temporary.write_bytes(data)
         temporary.replace(path)
@@ -128,11 +137,18 @@ class Memory:
             raise ValueError(f"state directory does not exist: {path}")
 
         ram = (path / "ram.bin").read_bytes()
+        shadow = (path / "shadow.bin").read_bytes()
         flash = (path / "flash.bin").read_bytes()
+        expected_shadow_size = (len(self.ram) + 7) // 8
 
         if len(ram) != len(self.ram):
             raise ValueError(
                 f"state RAM size is {len(ram)} bytes; emulator requires {len(self.ram)}"
+            )
+        if len(shadow) != expected_shadow_size:
+            raise ValueError(
+                f"state shadow bitmap is {len(shadow)} bytes; "
+                f"expected {expected_shadow_size}"
             )
         if len(flash) != len(self.flash):
             raise ValueError(
@@ -140,32 +156,26 @@ class Memory:
                 f"emulator requires {len(self.flash)}"
             )
 
-        shadow_path = path / "shadow.bin"
-        if shadow_path.exists():
-            shadow = shadow_path.read_bytes()
-            expected_shadow_size = (len(self.ram) + 7) // 8
-            if len(shadow) != expected_shadow_size:
-                raise ValueError(
-                    f"state shadow bitmap is {len(shadow)} bytes; "
-                    f"expected {expected_shadow_size}"
-                )
-            effective_ram = bytearray(self.ram)
-            for address, value in enumerate(ram):
-                if address >= len(self.rom) or shadow[address >> 3] & (1 << (address & 7)):
-                    effective_ram[address] = value
-        else:
-            effective_ram = ram
-
-        self.ram[:] = effective_ram
+        self.ram[:] = ram
         self.flash[:] = flash
+        self._written_addrs = {
+            address
+            for address in range(len(self.ram))
+            if shadow[address >> 3] & (1 << (address & 7))
+        }
 
     def save_state_dir(self, path: Path | str) -> None:
-        """Save effective RAM and flash as separate files."""
+        """Save nonvolatile RAM, shadow metadata, and flash as separate files."""
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
+        bitmap = bytearray((len(self.ram) + 7) // 8)
+        for address in self._written_addrs:
+            if address < len(self.ram):
+                bitmap[address >> 3] |= 1 << (address & 7)
 
         components = {
             "ram.bin": bytes(self.ram),
+            "shadow.bin": bytes(bitmap),
             "flash.bin": bytes(self.flash),
         }
         for name, data in components.items():
@@ -173,24 +183,43 @@ class Memory:
             temporary = path / f".{name}.tmp"
             temporary.write_bytes(data)
             temporary.replace(target)
-        shadow_path = path / "shadow.bin"
-        if shadow_path.exists():
-            shadow_path.unlink()
 
     def read(self, addr: int) -> int:
-        """Read a byte from qns-owned physical storage."""
+        """Read byte from physical address (z180emu does MMU translation).
+
+        Shadow RAM architecture:
+        - The BNS has ROM that can be banked into the lower 64KB physical space
+        - RAM "shadows" ROM - writes always go to RAM
+        - Reads: return RAM if that address was written, otherwise ROM
+
+        To properly implement this, we track written addresses. Any address
+        that was written to returns RAM; unwritten addresses return ROM.
+        """
         addr &= 0xFFFFF  # 20-bit physical address
 
         flash_offset = self._flash_offset(addr)
         if flash_offset is not None:
             return self.flash[flash_offset]
 
+        # If address was written to, return RAM (shadow RAM took priority)
+        if addr < len(self.ram) and addr in self._written_addrs:
+            return self.ram[addr]
+
+        # Otherwise return ROM if in ROM region
+        if addr < len(self.rom) and self.rom_loaded:
+            return self.rom[addr]
+
+        # Fall back to RAM for addresses beyond ROM
         if addr < len(self.ram):
             return self.ram[addr]
         return 0xFF
 
     def write(self, addr: int, value: int):
-        """Write a byte to qns-owned physical storage."""
+        """Write byte to physical address (z180emu does MMU translation).
+
+        Shadow RAM: ALL writes go to RAM, regardless of ROM region.
+        This is how the BNS hardware works - RAM sits behind ROM.
+        """
         addr &= 0xFFFFF  # 20-bit physical address
         flash_offset = self._flash_offset(addr)
         if flash_offset is not None:
@@ -199,6 +228,7 @@ class Memory:
 
         if addr < len(self.ram):
             self.ram[addr] = value & 0xFF
+            self._written_addrs.add(addr)  # Track for shadow RAM reads
 
     def set_high_bank_latch(self, value: int) -> None:
         """Select the BSNEW 512 KiB flash page and enable state."""

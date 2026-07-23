@@ -3,7 +3,6 @@
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from z180 import Reg
 
 from qns.bns import BNS
 from tools.bs2_harness import BS2Harness, SerialCapture
@@ -56,9 +55,7 @@ def test_wait_for_serial_reports_byte_stuck_in_disabled_transmitter(tmp_path):
         )
     )
     state = tmp_path / "bs2.state"
-    state_source = BNS(model="bs2")
-    state_source.load_rom(rom)
-    state_source.save_state(state)
+    BNS(model="bs2").save_state(state)
     harness = BS2Harness(
         rom,
         state,
@@ -76,16 +73,14 @@ def test_run_until_reports_lazy_failure_context(tmp_path):
     rom = tmp_path / "loop.bin"
     rom.write_bytes(bytes((0x18, 0xFE)))  # JR $
     state = tmp_path / "bs2.state"
-    state_source = BNS(model="bs2")
-    state_source.load_rom(rom)
-    state_source.save_state(state)
+    BNS(model="bs2").save_state(state)
     harness = BS2Harness(rom, state, cycle_limit=2_000)
     context_calls = 0
 
     def timeout_context() -> str:
         nonlocal context_calls
         context_calls += 1
-        return f"marker={harness.bns.cpu.reg(Reg.PC):04X}"
+        return f"marker={harness.bns.cpu.pc:04X}"
 
     with pytest.raises(RuntimeError, match=r"loop wait.*marker=0000"):
         harness.run_until(lambda: False, "loop wait", context=timeout_context)
@@ -95,7 +90,7 @@ def test_run_until_reports_lazy_failure_context(tmp_path):
     with pytest.raises(
         RuntimeError,
         match=(
-            r"cycle=4032 pc=0000 halted=0 "
+            r"cycle=4000 pc=0000 halted=0 "
             r"pending_speech_irq=none phonemes=0"
         ),
     ):

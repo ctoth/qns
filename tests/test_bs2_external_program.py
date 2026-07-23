@@ -3,7 +3,6 @@
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from z180 import Reg
 
 from tools.bs2_stdio_harness import (
     FILE_INITIALIZATION_PROMPT,
@@ -99,10 +98,7 @@ def test_editor_loop_accepts_exact_linked_command_loop_epoch():
         _command_loop_write_count = 1
 
         class CPU:
-            @staticmethod
-            def reg(register):
-                assert register == Reg.PC
-                return 0xD657
+            pc = 0xD657
 
         cpu = CPU()
 

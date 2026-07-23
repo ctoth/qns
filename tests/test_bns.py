@@ -7,7 +7,6 @@ import sys
 from io import BytesIO, StringIO
 
 import pytest
-from z180 import Reg
 
 from qns.bns import (
     BNS,
@@ -60,7 +59,7 @@ def test_load_rom_discovers_aligned_update_image_from_length_and_crc(
     tmp_path,
     image_offset,
 ):
-    firmware = bytes(range(251)) * 1000
+    firmware = bytes(range(251)) * 1045
     package_path = tmp_path / "firmware.bns"
     package_path.write_bytes(_build_update_package(image_offset, firmware))
     bns = BNS()
@@ -68,8 +67,7 @@ def test_load_rom_discovers_aligned_update_image_from_length_and_crc(
     bns.load_rom(package_path)
 
     assert bytes(bns.memory.rom[:len(firmware)]) == firmware
-    assert bytes(bns.memory.ram[:len(firmware)]) == firmware
-    assert len(bns.memory.rom) == 256 * 1024
+    assert len(bns.memory.rom) == len(firmware)
 
 
 def test_load_rom_rejects_update_package_without_valid_image_crc(tmp_path):
@@ -173,21 +171,13 @@ def test_command_loop_gate_requires_linked_starta_instruction(model):
     """Early timer initialization cannot open stdin before linked STARTA."""
     bns = BNS(model=model)
     bns._input_boundary = INPUT_BOUNDARIES[model]
+    bns.cpu = type("InstructionCPU", (), {"instruction_pc": 0x1234})()
 
-    bns._observe_write(
-        INPUT_BOUNDARIES[model].command_loop_timer,
-        0,
-        pc=0x1234,
-        cycle=0,
-    )
+    bns._mem_write(INPUT_BOUNDARIES[model].command_loop_timer, 0)
     assert bns._command_loop_write_count == 0
 
-    bns._observe_write(
-        INPUT_BOUNDARIES[model].command_loop_timer,
-        0,
-        pc=INPUT_BOUNDARIES[model].command_loop_timer_pc,
-        cycle=0,
-    )
+    bns.cpu.instruction_pc = INPUT_BOUNDARIES[model].command_loop_timer_pc
+    bns._mem_write(INPUT_BOUNDARIES[model].command_loop_timer, 0)
     assert bns._command_loop_write_count == 1
 
 
@@ -208,17 +198,21 @@ def test_classic_reset_holds_source_defined_chord_until_warm0_completes(
     bns._input_boundary = INPUT_BOUNDARIES[model]
     observed = []
 
-    def execute_budget(cycles):
-        observed.append((bns.keyboard.dots, bns.keyboard._key_down))
-        bns._observe_write(
-            INPUT_BOUNDARIES[model].reset_complete,
-            0x64,
-            pc=0,
-            cycle=0,
-        )
-        return cycles
+    class ResetCPU:
+        halted = False
+        pc = 0
+        instruction_pc = 0
 
-    bns._execute_budget = execute_budget
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
+
+        def run(self, cycles):
+            observed.append((bns.keyboard.dots, bns.keyboard._key_down))
+            bns._mem_write(INPUT_BOUNDARIES[model].reset_complete, 0x64)
+            return cycles
+
+    bns.cpu = ResetCPU()
     bns.run(max_cycles=1_000)
 
     assert observed == [(chord, True)]
@@ -243,38 +237,31 @@ def test_tns_reset_delivers_source_defined_modifier_sequence(
     reset_completed = False
     status_checked = False
 
-    def execute_budget(cycles):
-        nonlocal reset_completed, status_checked
-        if not status_checked:
-            bns._read_tns_status(0xE0)
-            status_checked = True
-        if bns.keyboard.latched:
-            observed.append(bns.keyboard.read(bns.keyboard.port))
-        if not reset_completed and tuple(observed) == make_scans:
-            bns._observe_write(
-                INPUT_BOUNDARIES["tns"].reset_complete,
-                0x64,
-                pc=0,
-                cycle=0,
-            )
-            reset_completed = True
-        return cycles
+    class ResetCPU:
+        halted = False
+        pc = 0
+        instruction_pc = 0
 
-    bns._execute_budget = execute_budget
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
+
+        def run(self, cycles):
+            nonlocal reset_completed, status_checked
+            if not status_checked:
+                bns._read_tns_status(0xE0)
+                status_checked = True
+            if bns.keyboard.latched:
+                observed.append(bns.keyboard.read(bns.keyboard.port))
+            if not reset_completed and tuple(observed) == make_scans:
+                bns._mem_write(INPUT_BOUNDARIES["tns"].reset_complete, 0x64)
+                reset_completed = True
+            return cycles
+
+    bns.cpu = ResetCPU()
     bns.run(max_cycles=10_000)
 
     assert tuple(observed) == make_scans + release_scans
-
-
-def test_reset_discards_host_bytes_pending_at_native_serial_boundaries():
-    bns = BNS(model="bsl")
-    bns._pending_asci_rx = [0x41, 0x42]
-    bns._pending_csio_rx = 0x43
-
-    bns.reset()
-
-    assert bns._pending_asci_rx == [None, None]
-    assert bns._pending_csio_rx is None
 
 
 @pytest.mark.parametrize(
@@ -309,25 +296,29 @@ def test_english_speech_observes_each_linked_pretranslation_buffer(
     spoken = []
     bns = BNS(model=model, english_callback=spoken.append)
     bns.load_rom(rom_path)
+    hl_register = bns.cpu.HL
+    bc_register = bns.cpu.BC
     message = b"enter file command"
     physical_spbuf = (0x34 << 12) + spbuf
     for offset, value in enumerate(message):
         bns.memory.write(physical_spbuf + offset, value)
-    bns.memory.ram[:10] = bytes((
-        0x3E, 0x34,
-        0xED, 0x39, 0x38,
-        0x3E, 0xC6,
-        0xED, 0x39, 0x3A,
-    ))
-    for _ in range(4):
-        bns.step()
-    bns.cpu.set_reg(Reg.HL, spbuf)
-    bns.cpu.set_reg(Reg.BC, 4)
-    bns.cpu.set_reg(Reg.PC, capture_site)
 
-    bns._observe_instruction_boundary()
-    bns.cpu.set_reg(Reg.PC, capture_site + 1)
-    bns._observe_instruction_boundary()
+    class SpeechBoundaryCPU:
+        cycle_count = 1234
+        cbr = 0x34
+        cbar = 0xC6
+
+        @staticmethod
+        def get_reg(register):
+            return {
+                hl_register: spbuf,
+                bc_register: 4,
+            }[register]
+
+    bns.cpu = SpeechBoundaryCPU()
+
+    bns._mem_read(capture_site)
+    bns._mem_read(capture_site + 1)
 
     assert spoken == ["enter file command"]
 
@@ -335,8 +326,13 @@ def test_english_speech_observes_each_linked_pretranslation_buffer(
 def test_english_speech_ignores_unrelated_instruction_fetches():
     spoken = []
     bns = BNS(model="bsp", english_callback=spoken.append)
-    bns.cpu.set_reg(Reg.PC, 0x1234)
-    bns._observe_instruction_boundary()
+    bns.cpu = type(
+        "UnrelatedCPU",
+        (),
+        {"instruction_pc": 0x1234, "cycle_count": 1},
+    )()
+
+    bns._mem_read(0x1234)
 
     assert spoken == []
 
@@ -387,50 +383,76 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
     bns = BNS(model=model, stdin_device="keyboard")
     bns._input_boundary = INPUT_BOUNDARIES[model]
     observed = []
-    calls = 0
 
-    def observe_write(address, value):
-        bns.memory.write(address, value)
-        bns._observe_write(address, value, pc=0, cycle=calls * 1_000)
+    class KeyPhaseCPU:
+        halted = False
+        pc = 0x1BDA
+        instruction_pc = INPUT_BOUNDARIES[model].keyboard_wait_pc
 
-    def execute_budget(cycles):
-        nonlocal calls
-        calls += 1
-        observed.append((bns.keyboard.dots, bns.keyboard._key_down, bns.keyboard.latched))
-        if calls == 2:
-            bns._observe_input_boundary(INPUT_BOUNDARIES[model].keyboard_wait_pc)
-        elif calls == 3:
-            observe_write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0x3D)
-            observe_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 1)
-            bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
-        elif calls == 4:
-            bns.memory.write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0)
-            bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
-        elif calls == 5:
-            observe_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 0)
-        elif calls == 6:
-            observe_write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0x3D)
-            observe_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 1)
-            bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
-        elif calls == 7:
-            bns.memory.write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0)
-            bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
-        elif calls == 8:
-            bns._observe_input_boundary(INPUT_BOUNDARIES[model].keyboard_wait_pc)
-            observe_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 0)
-        elif calls == 9:
-            observe_write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0x03)
-            observe_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 1)
-            bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
-        elif calls == 10:
-            bns.memory.write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0)
-            bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
-        elif calls == 11:
-            bns._observe_input_boundary(INPUT_BOUNDARIES[model].keyboard_wait_pc)
-            observe_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 0)
-        return cycles
+        def __init__(self):
+            self.calls = 0
 
-    bns._execute_budget = execute_budget
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
+
+        def run(self, cycles):
+            self.calls += 1
+            observed.append(
+                (
+                    bns.keyboard.dots,
+                    bns.keyboard._key_down,
+                    bns.keyboard.latched,
+                )
+            )
+            if self.calls == 2:
+                bns._mem_read(INPUT_BOUNDARIES[model].keyboard_wait_pc)
+            elif self.calls == 3:
+                bns._mem_write(
+                    INPUT_BOUNDARIES[model].keyboard_input_buffer,
+                    0x3D,
+                )
+                bns._mem_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 1)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 4:
+                bns.memory.write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 5:
+                # Application initialization discards the queued key without
+                # `_get_key` observing it. The same host chord must be retried.
+                bns._mem_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 0)
+            elif self.calls == 6:
+                bns._mem_write(
+                    INPUT_BOUNDARIES[model].keyboard_input_buffer,
+                    0x3D,
+                )
+                bns._mem_write(
+                    INPUT_BOUNDARIES[model].keyboard_queue_count,
+                    1,
+                )
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 7:
+                bns.memory.write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 8:
+                bns._mem_read(INPUT_BOUNDARIES[model].keyboard_wait_pc)
+                bns._mem_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 0)
+            elif self.calls == 9:
+                bns._mem_write(
+                    INPUT_BOUNDARIES[model].keyboard_input_buffer,
+                    0x03,
+                )
+                bns._mem_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 1)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 10:
+                bns.memory.write(INPUT_BOUNDARIES[model].keyboard_input_buffer, 0)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 11:
+                bns._mem_read(INPUT_BOUNDARIES[model].keyboard_wait_pc)
+                bns._mem_write(INPUT_BOUNDARIES[model].keyboard_queue_count, 0)
+            return cycles
+
+    bns.cpu = KeyPhaseCPU()
     bns.run(max_cycles=11_000)
 
     assert observed == [
@@ -477,30 +499,42 @@ def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):
     )
     bns._input_boundary = INPUT_BOUNDARIES["bsp"]
     observed = []
-    calls = 0
 
-    def observe_write(address, value):
-        bns.memory.write(address, value)
-        bns._observe_write(address, value, pc=0, cycle=calls * 1_000)
+    class EventCPU:
+        halted = True
+        pc = 0xD656
+        instruction_pc = INPUT_BOUNDARIES["bsp"].keyboard_wait_pc
 
-    def execute_budget(cycles):
-        nonlocal calls
-        calls += 1
-        observed.append((bns.keyboard.dots, bns._serial_receive(0), bns._serial_receive(1)))
-        if calls == 2:
-            bns._observe_input_boundary(INPUT_BOUNDARIES["bsp"].keyboard_wait_pc)
-        elif calls == 3:
-            observe_write(INPUT_BOUNDARIES["bsp"].keyboard_input_buffer, 0x01)
-            observe_write(INPUT_BOUNDARIES["bsp"].keyboard_queue_count, 1)
-            bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
-        elif calls == 4:
-            bns.memory.write(INPUT_BOUNDARIES["bsp"].keyboard_input_buffer, 0)
-            bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
-            bns._observe_input_boundary(INPUT_BOUNDARIES["bsp"].keyboard_wait_pc)
-            observe_write(INPUT_BOUNDARIES["bsp"].keyboard_queue_count, 0)
-        return cycles
+        def __init__(self):
+            self.calls = 0
 
-    bns._execute_budget = execute_budget
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
+
+        def run(self, cycles):
+            self.calls += 1
+            observed.append(
+                (
+                    bns.keyboard.dots,
+                    bns._serial_receive(0),
+                    bns._serial_receive(1),
+                )
+            )
+            if self.calls == 2:
+                bns._mem_read(INPUT_BOUNDARIES["bsp"].keyboard_wait_pc)
+            elif self.calls == 3:
+                bns._mem_write(INPUT_BOUNDARIES["bsp"].keyboard_input_buffer, 0x01)
+                bns._mem_write(INPUT_BOUNDARIES["bsp"].keyboard_queue_count, 1)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 4:
+                bns.memory.write(INPUT_BOUNDARIES["bsp"].keyboard_input_buffer, 0)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+                bns._mem_read(INPUT_BOUNDARIES["bsp"].keyboard_wait_pc)
+                bns._mem_write(INPUT_BOUNDARIES["bsp"].keyboard_queue_count, 0)
+            return cycles
+
+    bns.cpu = EventCPU()
     bns.run(max_cycles=5_000)
 
     assert observed[0] == (0, 0x00, 0xFF)
@@ -535,35 +569,47 @@ def test_bsl_keyboard_stdin_uses_exact_command_loop_epoch(monkeypatch):
     bns = BNS(model="bsl", stdin_device="keyboard")
     bns._input_boundary = INPUT_BOUNDARIES["bsl"]
     observed = []
-    calls = 0
 
-    def observe_write(address, value, pc=0):
-        bns.memory.write(address, value)
-        bns._observe_write(address, value, pc=pc, cycle=calls * 1_000)
+    class TimerWokenCPU:
+        halted = False
+        pc = 0xD656
+        instruction_pc = 0
 
-    def execute_budget(cycles):
-        nonlocal calls
-        calls += 1
-        observed.append((bns.keyboard.dots, bns.keyboard._key_down, bns.keyboard.latched))
-        if calls == 1:
-            observe_write(
-                INPUT_BOUNDARIES["bsl"].command_loop_timer,
-                0,
-                INPUT_BOUNDARIES["bsl"].command_loop_timer_pc,
+        def __init__(self):
+            self.calls = 0
+
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
+
+        def run(self, cycles):
+            self.calls += 1
+            observed.append(
+                (
+                    bns.keyboard.dots,
+                    bns.keyboard._key_down,
+                    bns.keyboard.latched,
+                )
             )
-        elif calls == 2:
-            observe_write(INPUT_BOUNDARIES["bsl"].keyboard_input_buffer, 0x01)
-            observe_write(INPUT_BOUNDARIES["bsl"].keyboard_queue_count, 1)
-            bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
-        elif calls == 3:
-            bns.memory.write(INPUT_BOUNDARIES["bsl"].keyboard_input_buffer, 0)
-            bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
-        elif calls == 4:
-            bns._observe_input_boundary(INPUT_BOUNDARIES["bsl"].keyboard_wait_pc)
-            observe_write(INPUT_BOUNDARIES["bsl"].keyboard_queue_count, 0)
-        return cycles
+            if self.calls == 1:
+                self.instruction_pc = INPUT_BOUNDARIES["bsl"].command_loop_timer_pc
+                bns._mem_write(INPUT_BOUNDARIES["bsl"].command_loop_timer, 0)
+            elif self.calls == 2:
+                bns._mem_write(
+                    INPUT_BOUNDARIES["bsl"].keyboard_input_buffer,
+                    0x01,
+                )
+                bns._mem_write(INPUT_BOUNDARIES["bsl"].keyboard_queue_count, 1)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 3:
+                bns.memory.write(INPUT_BOUNDARIES["bsl"].keyboard_input_buffer, 0)
+                bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+            elif self.calls == 4:
+                bns._mem_read(INPUT_BOUNDARIES["bsl"].keyboard_wait_pc)
+                bns._mem_write(INPUT_BOUNDARIES["bsl"].keyboard_queue_count, 0)
+            return cycles
 
-    bns._execute_budget = execute_budget
+    bns.cpu = TimerWokenCPU()
     bns.run(max_cycles=4_000)
 
     assert observed == [
@@ -610,41 +656,39 @@ def test_tns_modified_stdin_preserves_physical_modifier_sequence(
     )
     bns._input_boundary = INPUT_BOUNDARIES["tns"]
     observed = []
-    calls = 0
-    queued = False
-    consumed = False
 
-    def execute_budget(cycles):
-        nonlocal calls, queued, consumed
-        calls += 1
-        code = None
-        if bns.keyboard.latched:
-            code = bns.keyboard.read(0xD0)
-            observed.append(code)
-        if calls == 1:
-            bns._observe_input_boundary(INPUT_BOUNDARIES["tns"].keyboard_wait_pc)
-        elif code == accepted and not queued:
-            bns.memory.write(INPUT_BOUNDARIES["tns"].keyboard_queue_count, 1)
-            bns._observe_write(
-                INPUT_BOUNDARIES["tns"].keyboard_queue_count,
-                1,
-                pc=0,
-                cycle=calls * 1_000,
-            )
-            queued = True
-        elif queued and not consumed:
-            bns._observe_input_boundary(INPUT_BOUNDARIES["tns"].keyboard_wait_pc)
-            bns.memory.write(INPUT_BOUNDARIES["tns"].keyboard_queue_count, 0)
-            bns._observe_write(
-                INPUT_BOUNDARIES["tns"].keyboard_queue_count,
-                0,
-                pc=0,
-                cycle=calls * 1_000,
-            )
-            consumed = True
-        return cycles
+    class KeyboardPICCPU:
+        halted = False
+        pc = 0xD65C
+        instruction_pc = 0
 
-    bns._execute_budget = execute_budget
+        def __init__(self):
+            self.calls = 0
+            self.queued = False
+            self.consumed = False
+
+        @staticmethod
+        def set_irq(_line, _state):
+            pass
+
+        def run(self, cycles):
+            self.calls += 1
+            code = None
+            if bns.keyboard.latched:
+                code = bns.keyboard.read(0xD0)
+                observed.append(code)
+            if self.calls == 1:
+                bns._mem_read(INPUT_BOUNDARIES["tns"].keyboard_wait_pc)
+            elif code == accepted and not self.queued:
+                bns._mem_write(INPUT_BOUNDARIES["tns"].keyboard_queue_count, 1)
+                self.queued = True
+            elif self.queued and not self.consumed:
+                bns._mem_read(INPUT_BOUNDARIES["tns"].keyboard_wait_pc)
+                bns._mem_write(INPUT_BOUNDARIES["tns"].keyboard_queue_count, 0)
+                self.consumed = True
+            return cycles
+
+    bns.cpu = KeyboardPICCPU()
     bns.run(max_cycles=8_000)
 
     assert observed == expected
@@ -668,9 +712,9 @@ def test_address_trace_retains_causal_write_event_once():
         0x18, 0xFE,        # JR $
     )))
 
-    bns._execute_budget(100)
+    bns.cpu.run(100)
 
-    assert bns.traced_writes == [(12, 0x0002, 0xF000, 0x5A)]
+    assert bns.traced_writes == [(6, 0x0002, 0xF000, 0x5A)]
 
 
 def test_bsplus_port_80_is_watchdog_read_and_speech_power_write():
@@ -742,8 +786,14 @@ def test_bs2_wires_bq2010_data_line_between_power_latch_and_port_b():
     """BSNEW bit-5 writes and port-B bit 3 must share the timed gauge line."""
     bns = BNS(model="bs2")
 
+    class TimedCPU:
+        cycle_count = 0
+
+    timed_cpu = TimedCPU()
+    bns.cpu = timed_cpu
+
     def write_line(high: bool, cycle: int) -> None:
-        bns._callback_cycle = cycle
+        timed_cpu.cycle_count = cycle
         bns._io_write(0xA0, 0x20 if high else 0)
 
     write_line(False, 0)
@@ -755,10 +805,10 @@ def test_bs2_wires_bq2010_data_line_between_power_latch_and_port_b():
         write_line(True, cycle + low_cycles)
         cycle += 20_290
 
-    bns._callback_cycle = 184_900
+    timed_cpu.cycle_count = 184_900
     assert bns._io_read(0x81) == 0xF7
 
-    bns._callback_cycle = 194_400
+    timed_cpu.cycle_count = 194_400
     assert bns._io_read(0x81) == 0xFF
 
 
@@ -783,23 +833,23 @@ def test_bs2_wires_clock_pic_to_csio_and_8255_c4_strobe():
     """The BSNEW PIC must receive CSIO commands only on the C4 rising edge."""
     bns = BNS(model="bs2")
 
-    bns._csio_device.transmit(4)
-    assert bns._csio_device.receive() == -1
+    bns.cpu._csio_tx(4)
+    assert bns.cpu._csio_rx() == -1
 
     bns._io_write(0x83, 0x09)
 
     assert bns.parallel_ports[2] & 0x10
-    assert bns._csio_device.receive() != -1
+    assert bns.cpu._csio_rx() != -1
 
 
 def test_bsl_wires_braille_display_to_csio():
     """The B_LITE profile must answer the firmware's attached-display poll."""
     bns = BNS(model="bsl")
 
-    bns._csio_device.transmit(0x81)
+    bns.cpu._csio_tx(0x81)
 
-    assert bns._csio_device.receive() == 0x0A
-    assert bns._csio_device.receive() == -1
+    assert bns.cpu._csio_rx() == 0x0A
+    assert bns.cpu._csio_rx() == -1
 
     bns._io_write(0x83, 0x08)
     assert not bns.parallel_ports[2] & 0x10
@@ -818,9 +868,9 @@ def test_bl2_combines_bsnew_devices_with_parallel_display():
     bns._io_write(0x83, 3)
     assert display_controls == [3]
 
-    bns._csio_device.transmit(4)
+    bns.cpu._csio_tx(4)
     bns._io_write(0x83, 9)
-    assert bns._csio_device.receive() != -1
+    assert bns.cpu._csio_rx() != -1
 
 
 def test_bl4_owns_split_keyboard_parallel_display_and_four_megabyte_flash():
@@ -842,9 +892,9 @@ def test_bl4_owns_split_keyboard_parallel_display_and_four_megabyte_flash():
 
     bns._io_write(0xA3, 3)
     assert display_controls == [3]
-    bns._csio_device.transmit(4)
+    bns.cpu._csio_tx(4)
     bns._io_write(0xA3, 9)
-    assert bns._csio_device.receive() != -1
+    assert bns.cpu._csio_rx() != -1
 
     bns._io_write(0x80, 0x93)
     assert bns.rs232_power_enabled
@@ -867,12 +917,25 @@ def test_bns_rejects_unknown_hardware_model():
 def test_run_keeps_advancing_native_time_while_cpu_is_halted():
     """HALT waits for hardware interrupts; it does not terminate emulation."""
     bns = BNS()
-    bns.memory.load_rom(b"\x76")
+
+    class HaltedCPU:
+        halted = True
+        pc = 0x1234
+
+        def __init__(self):
+            self.chunks = []
+
+        def run(self, cycles):
+            self.chunks.append(cycles)
+            return cycles
+
+    cpu = HaltedCPU()
+    bns.cpu = cpu
 
     bns.run(max_cycles=2000)
 
-    assert bns.cpu.halted()
-    assert bns.stats["cycles"] >= 2000
+    assert cpu.chunks == [1000, 1000]
+    assert bns.stats["cycles"] == 2000
 
 
 def test_serial_standard_streams_select_one_asci_channel():
@@ -892,46 +955,6 @@ def test_serial_standard_streams_select_one_asci_channel():
     bns._serial_transmit(1, 0x58)
     bns._serial_transmit(0, 0x41)
     assert output.getvalue() == b"A"
-
-
-def test_native_asci_queue_round_trip_uses_bns_execution_owner():
-    output = BytesIO()
-    bns = BNS(
-        stdin_device="serial0",
-        serial_output=output,
-        serial_output_channel=0,
-    )
-    bns.memory.load_rom(bytes((
-        0x3E, 0x64,
-        0xED, 0x39, 0x00,
-        0x3E, 0x02,
-        0xED, 0x39, 0x02,
-        0xED, 0x38, 0x04,
-        0xE6, 0x80,
-        0x28, 0xF9,
-        0xED, 0x38, 0x08,
-        0xED, 0x39, 0x06,
-        0x18, 0xF1,
-    )))
-    bns._serial_input_queue.put(0x5A)
-
-    rdrf_seen = False
-    while bns.cpu.cycle_count() < 200_000:
-        bns._execute_budget(1_000)
-        rdrf_seen |= bool(bns.cpu.io_reg_peek(0x04) & 0x80)
-
-    diagnostics = {
-        "pc": bns.cpu.reg(Reg.PC),
-        "cntla0": bns.cpu.io_reg_peek(0x00),
-        "cntlb0": bns.cpu.io_reg_peek(0x02),
-        "stat0": bns.cpu.io_reg_peek(0x04),
-        "tdr0": bns.cpu.io_reg_peek(0x06),
-        "rdr0": bns.cpu.io_reg_peek(0x08),
-        "icr": bns.cpu.io_reg_peek(0x3F),
-        "pending": bns._pending_asci_rx,
-        "rdrf_seen": rdrf_seen,
-    }
-    assert output.getvalue() == b"Z", repr(diagnostics)
 
 
 def test_unselected_serial_output_is_silent(capsys):
@@ -958,7 +981,7 @@ def test_cli_serial_standard_io_round_trip(tmp_path):
         0x28, 0xF9,        # JR Z back to the status read
         0xED, 0x38, 0x08,  # IN0 A,(RDR0)
         0xED, 0x39, 0x06,  # OUT0 (TDR0),A
-        0x18, 0xF1,        # JR back to the status read
+        0x18, 0xF0,        # JR back to the status read
     )))
 
     result = subprocess.run(
@@ -981,7 +1004,7 @@ def test_cli_serial_standard_io_round_trip(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr.decode(errors="replace")
-    assert result.stdout == b"Z", result.stderr.decode(errors="replace")
+    assert result.stdout == b"Z"
     assert b"Input: STDIN (serial0)" in result.stderr
 
 
@@ -997,7 +1020,7 @@ def test_cli_jsonl_round_trip_keeps_binary_serial_separate_from_diagnostics(tmp_
         0x28, 0xF9,
         0xED, 0x38, 0x08,
         0xED, 0x39, 0x06,
-        0x18, 0xF1,
+        0x18, 0xF0,
     )))
     input_event = json.dumps(
         {
@@ -1175,24 +1198,14 @@ def test_cli_jsonl_emits_complete_speech_and_display_events(
     assert "Loaded ROM" in captured.err
 
 
-def test_cli_state_round_trip_preserves_v3_effective_ram(tmp_path):
-    """A later process running the same ROM must see the saved effective RAM."""
+def test_cli_state_round_trip_preserves_rom_shadow_ram(tmp_path):
+    """A later process must read bytes written behind ROM by an earlier one."""
     state_path = tmp_path / "bsp.state"
-    state_rom = tmp_path / "state-round-trip.bin"
-    state_rom.write_bytes(bytes((
-        0x3E, 0x64,
-        0xED, 0x39, 0x00,
-        0x3E, 0x02,
-        0xED, 0x39, 0x02,
-        0x3A, 0x00, 0xF0,
-        0xB7,
-        0x20, 0x07,
-        0x3E, 0x41,
-        0x32, 0x00, 0xF0,
-        0x18, 0x02,
-        0x3E, 0x5A,
-        0xED, 0x39, 0x06,
-        0x18, 0xFE,
+    writer_rom = tmp_path / "state-writer.bin"
+    writer_rom.write_bytes(bytes((
+        0x3E, 0x5A,        # LD A,5Ah
+        0x32, 0x00, 0xF0,  # LD (F000h),A: shadow RAM behind ROM
+        0x18, 0xFE,        # JR to itself
     )))
 
     writer = subprocess.run(
@@ -1200,9 +1213,9 @@ def test_cli_state_round_trip_preserves_v3_effective_ram(tmp_path):
             sys.executable,
             "-m",
             "qns.bns",
-            str(state_rom),
+            str(writer_rom),
             "--cycles",
-            "200000",
+            "5000",
             "--input",
             "serial0",
             "--output",
@@ -1220,14 +1233,24 @@ def test_cli_state_round_trip_preserves_v3_effective_ram(tmp_path):
     assert state_path.exists()
     assert b"Initializing nonvolatile RAM state" in writer.stderr
     assert b"Saved nonvolatile RAM state" in writer.stderr
-    assert writer.stdout == b"A"
+
+    reader_rom = tmp_path / "state-reader.bin"
+    reader_rom.write_bytes(bytes((
+        0x3E, 0x64,        # LD A,64h: 8-N-1, transmit and receive enabled
+        0xED, 0x39, 0x00,  # OUT0 (CNTLA0),A
+        0x3E, 0x02,        # LD A,2: BSP's initial 9600-baud divisor
+        0xED, 0x39, 0x02,  # OUT0 (CNTLB0),A
+        0x3A, 0x00, 0xF0,  # LD A,(F000h): restored shadow RAM
+        0xED, 0x39, 0x06,  # OUT0 (TDR0),A
+        0x18, 0xFE,        # JR to itself
+    )))
 
     reader = subprocess.run(
         (
             sys.executable,
             "-m",
             "qns.bns",
-            str(state_rom),
+            str(reader_rom),
             "--cycles",
             "200000",
             "--input",
@@ -1281,6 +1304,7 @@ def test_cli_state_dir_creates_directory_state(tmp_path):
     assert {path.name for path in state_dir.iterdir()} == {
         "flash.bin",
         "ram.bin",
+        "shadow.bin",
     }
     assert (state_dir / "flash.bin").stat().st_size == 2 * 1024 * 1024
     assert b"Initializing nonvolatile state directory" in result.stderr
