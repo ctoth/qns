@@ -7,7 +7,8 @@ import sys
 from io import BytesIO, StringIO
 
 import pytest
-from z180 import Reg
+from z180 import Machine, Reg
+from z180.compat import Z180 as CompatZ180
 
 from qns.bns import (
     BNS,
@@ -874,6 +875,16 @@ def test_bns_rejects_unknown_hardware_model():
 def test_bns_rejects_unknown_z_core_path():
     with pytest.raises(ValueError, match="Unsupported z-core path: unknown"):
         BNS(core="unknown")
+
+
+def test_bns_defaults_to_direct_and_keeps_compat_selectable():
+    direct = BNS()
+    compat = BNS(core="compat")
+
+    assert direct.core == "direct"
+    assert isinstance(direct.cpu, Machine)
+    assert compat.core == "compat"
+    assert isinstance(compat.cpu, CompatZ180)
 
 
 @pytest.mark.parametrize(

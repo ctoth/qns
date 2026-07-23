@@ -56,8 +56,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--core",
         choices=("compat", "direct"),
-        default="compat",
-        help="Select the z-core API path (default: compat)",
+        default="direct",
+        help="Select the z-core API path (default: direct)",
     )
     parser.add_argument("--trace", action="store_true",
                         help="Show boot trace instead of running")

@@ -77,7 +77,7 @@ class BNS:
     def __init__(self, clock: int = 12_288_000, audio: bool = False,
                  synth_backend: str = "pcm",
                  model: str = "bsp",
-                 core: str = "compat",
+                 core: str = "direct",
                  trace_io: bool = False, trace_writes: int | None = None,
                  trace_writes_range: tuple[int, int] | None = None,
                  trace_first_writes: int | None = None,
