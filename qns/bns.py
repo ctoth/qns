@@ -811,7 +811,10 @@ class BNS:
             self._pump_serial_inputs()
             actual = 0
             while actual < cycles:
-                actual += self._execute_instruction(pump_inputs=False)
+                step_cycles = self._execute_instruction(pump_inputs=False)
+                if step_cycles == 0:
+                    break
+                actual += step_cycles
             return actual
 
         self._apply_pending_irqs()

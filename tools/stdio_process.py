@@ -65,6 +65,7 @@ class BNSStdioProcess:
         self._stderr_lines: list[str] = []
         self._stderr_lock = threading.Lock()
         self.speech_names: list[str] = []
+        self.speech_texts: list[str] = []
         self.serial = (bytearray(), bytearray())
 
         threading.Thread(
@@ -144,6 +145,9 @@ class BNSStdioProcess:
             name = item.get("name")
             if isinstance(name, str) and name != "PA":
                 self.speech_names.append(name)
+            speech_text = item.get("text")
+            if isinstance(speech_text, str):
+                self.speech_texts.append(speech_text)
         elif device in ("serial0", "serial1"):
             data = item.get("data")
             if not isinstance(data, str):

@@ -8,7 +8,10 @@ from shutil import copyfile
 import pytest
 
 from qns.bns import BNS
+from qns.input_driver import ASCII_TO_BNS_KEY
+from tools.bs2_stdio_harness import FILE_COMMAND_PROMPT, FLASH_INITIALIZATION_PROMPT
 from tools.stdio_process import BNSStdioProcess
+from tools.verify_bs2_external_program import F_KEY, O_CHORD
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REAL_CONFORMANCE = os.environ.get("QNS_Z_CORE_REAL_CONFORMANCE") == "1"
@@ -21,6 +24,8 @@ PROFILE_ROMS = (
     ("bl4", Path("roms/NFB99/BL4ENG/bl4eng.bns"), 0x7F),
     ("tns", Path("roms/NFB99/TNSENG/tnseng.tns"), 0x81),
 )
+
+BS2_2003_ROM = Path("roms/bns2000/BS2ENG.BNS")
 
 
 def _run_to_input_acceptance(
@@ -113,3 +118,63 @@ def test_real_profile_boot_matches_compat_with_same_state(
     )
 
     assert direct_events == compat_events
+
+
+@pytest.mark.skipif(
+    not REAL_CONFORMANCE,
+    reason="set QNS_Z_CORE_REAL_CONFORMANCE=1 for real-ROM input conformance",
+)
+@pytest.mark.parametrize("core", ("compat", "direct"))
+def test_real_bs2_fresh_start_reaches_file_command(tmp_path, core):
+    """A real fresh start accepts n, Shift+O, and f through application use."""
+    rom = REPO_ROOT / BS2_2003_ROM
+    if not rom.is_file():
+        pytest.fail(f"required real-ROM authority is unavailable: {rom}")
+
+    with BNSStdioProcess(
+        rom,
+        model="bs2",
+        core=core,
+        state=tmp_path / f"bs2-{core}.state",
+    ) as process:
+        process.wait_for_speech_suffix(
+            FLASH_INITIALIZATION_PROMPT,
+            "initialize flash system prompt",
+            timeout=120,
+        )
+        process.send_keyboard(text="n")
+        process.wait_for_keyboard(
+            "accepted",
+            chord=ASCII_TO_BNS_KEY[ord("n")],
+            timeout=60,
+        )
+        if process.speech_texts[-1:] != ["page"]:
+            process.wait_for(
+                lambda _event: process.speech_texts[-1:] == ["page"],
+                "post-initialization page speech",
+                timeout=60,
+            )
+        process.send_keyboard(text="O")
+        process.wait_for_keyboard("accepted", chord=O_CHORD, timeout=60)
+        process.wait_for_keyboard("ready", timeout=60)
+        process.send_keyboard(text="f")
+        process.wait_for_keyboard("accepted", chord=F_KEY, timeout=60)
+        process.wait_for_keyboard("ready", timeout=60)
+        process.wait_for_speech_suffix(
+            FILE_COMMAND_PROMPT,
+            "file command prompt",
+            timeout=60,
+        )
+        process.send_keyboard(text="Z")
+        process.wait_for_keyboard(
+            "accepted",
+            chord=ASCII_TO_BNS_KEY[ord("Z")],
+            timeout=60,
+        )
+        process.wait_for_keyboard("ready", timeout=60)
+        if process.speech_texts[-1:] != ["exit"]:
+            process.wait_for(
+                lambda _event: process.speech_texts[-1:] == ["exit"],
+                "file command exit speech",
+                timeout=60,
+            )
