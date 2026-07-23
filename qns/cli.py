@@ -53,6 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="bsp",
         help="Select the hardware profile (default: bsp)",
     )
+    parser.add_argument(
+        "--core",
+        choices=("compat", "direct"),
+        default="compat",
+        help="Select the z-core API path (default: compat)",
+    )
     parser.add_argument("--trace", action="store_true",
                         help="Show boot trace instead of running")
     parser.add_argument("--input", choices=("keyboard", "serial0", "serial1"),
@@ -204,6 +210,7 @@ def main() -> None:
             audio=args.audio,
             synth_backend=args.synth,
             model=args.model,
+            core=args.core,
             trace_io=args.trace_io,
             trace_interrupts=args.trace_interrupts,
             trace_writes=args.trace_writes,

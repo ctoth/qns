@@ -8,6 +8,8 @@ import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 
+from z180 import Reg
+
 from tools.bs2_harness import BS2Harness
 
 CYCLE_LIMIT = 30_000_000
@@ -45,15 +47,6 @@ EXPECTED_SPEECH_SUFFIX = [
 ]
 
 
-def physical_address(logical: int, cbr: int, bbr: int, cbar: int) -> int:
-    """Apply the Z180 core's 4 KiB-page MMU mapping."""
-    page = logical >> 12
-    physical_page = page
-    if page >= (cbar & 0x0F):
-        physical_page += cbr if page >= (cbar >> 4) else bbr
-    return ((physical_page << 12) & 0xFFFFF) | (logical & 0x0FFF)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("rom", type=Path)
@@ -66,7 +59,10 @@ def main() -> None:
         bns = harness.bns
 
         harness.run_until(
-            lambda: bns._command_loop_write_count > 0 and bns.cpu.pc == 0xD657,
+            lambda: (
+                bns._command_loop_write_count > 0
+                and bns.cpu.reg(Reg.PC) == 0xD657
+            ),
             "BS2 editor command loop",
         )
         speech_start = len(bns.ssi263.phoneme_log)
@@ -87,14 +83,9 @@ def main() -> None:
         bns.gas_gauge.write_line = trace_gauge_line
         harness.chord(0x4C)
         harness.wait_for_key()
-        menu_wait_cycle = bns.cpu.cycle_count
-        menu_wait_pc = bns.cpu.pc
-        mapped_pc = physical_address(
-            menu_wait_pc,
-            bns.cpu.cbr,
-            bns.cpu.bbr,
-            bns.cpu.cbar,
-        )
+        menu_wait_cycle = bns.cpu.cycle_count()
+        menu_wait_pc = bns.cpu.reg(Reg.PC)
+        mapped_pc = bns.cpu.mmu_translate(menu_wait_pc)
         nearby = bytes(bns.memory.read((mapped_pc + offset) & 0xFFFFF) for offset in range(-8, 8))
         print(
             f"candidate wait: cycle={menu_wait_cycle} pc={menu_wait_pc:04X} "

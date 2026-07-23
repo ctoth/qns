@@ -299,18 +299,18 @@ name = "qns"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "cffi" },
     { name = "click" },
     { name = "numpy" },
-    { name = "setuptools" },
     { name = "sounddevice" },
     { name = "z180" },
 ]
 
 [package.optional-dependencies]
 dev = [
+    { name = "cffi" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "setuptools" },
 ]
 
 [package.dev-dependencies]
@@ -321,12 +321,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cffi", specifier = ">=1.16.0" },
+    { name = "cffi", marker = "extra == 'dev'", specifier = ">=1.16.0" },
     { name = "click", specifier = ">=8.0.0" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
-    { name = "setuptools", specifier = ">=70.0.0" },
+    { name = "setuptools", marker = "extra == 'dev'", specifier = ">=70.0.0" },
     { name = "sounddevice", specifier = ">=0.4.6" },
     { name = "z180", git = "https://github.com/ctoth/z-core?subdirectory=crates%2Fz180-py&rev=9142185ef8d9d9a93d909e422d3a9a287f1d4f02" },
 ]

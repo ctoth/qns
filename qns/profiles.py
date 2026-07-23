@@ -18,6 +18,8 @@ class HardwareProfile:
     """I/O wiring family: "bsp" (BSPLUS/B_LITE), "bsnew" (BS2/BL2),
     "bl4", or "tns"."""
 
+    ram_size: int
+    rom_size: int
     flash_size: int
     ssi263_port: int
     keyboard_port: int
@@ -42,6 +44,8 @@ PROFILES: dict[str, HardwareProfile] = {
         HardwareProfile(
             name="bsp",
             family="bsp",
+            ram_size=512 * 1024,
+            rom_size=256 * 1024,
             flash_size=0,
             ssi263_port=0xC0,
             keyboard_port=0x40,
@@ -55,6 +59,8 @@ PROFILES: dict[str, HardwareProfile] = {
         HardwareProfile(
             name="bs2",
             family="bsnew",
+            ram_size=512 * 1024,
+            rom_size=256 * 1024,
             flash_size=2 * 1024 * 1024,
             ssi263_port=0xC0,
             keyboard_port=0x40,
@@ -68,6 +74,8 @@ PROFILES: dict[str, HardwareProfile] = {
         HardwareProfile(
             name="bsl",
             family="bsp",
+            ram_size=512 * 1024,
+            rom_size=256 * 1024,
             flash_size=0,
             ssi263_port=0xC0,
             keyboard_port=0x40,
@@ -81,6 +89,8 @@ PROFILES: dict[str, HardwareProfile] = {
         HardwareProfile(
             name="bl2",
             family="bsnew",
+            ram_size=512 * 1024,
+            rom_size=256 * 1024,
             flash_size=2 * 1024 * 1024,
             ssi263_port=0xC0,
             keyboard_port=0x40,
@@ -94,6 +104,8 @@ PROFILES: dict[str, HardwareProfile] = {
         HardwareProfile(
             name="bl4",
             family="bl4",
+            ram_size=512 * 1024,
+            rom_size=256 * 1024,
             flash_size=4 * 1024 * 1024,
             ssi263_port=0x90,
             keyboard_port=0xB0,
@@ -107,6 +119,8 @@ PROFILES: dict[str, HardwareProfile] = {
         HardwareProfile(
             name="tns",
             family="tns",
+            ram_size=512 * 1024,
+            rom_size=256 * 1024,
             flash_size=0,
             ssi263_port=0x90,
             keyboard_port=0xD0,

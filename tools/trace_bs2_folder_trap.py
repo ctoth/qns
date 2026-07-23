@@ -6,22 +6,12 @@ import argparse
 from collections import deque
 from pathlib import Path
 
+from z180 import Reg
+
 from qns.bns import BNS
 
 Z180_ITC = 0x34
 Z180_ITC_TRAP = 0x80
-
-
-def physical_address(logical: int, cbr: int, bbr: int, cbar: int) -> int:
-    """Apply the Z180 core's 4 KiB-page MMU mapping."""
-    logical &= 0xFFFF
-    page = logical >> 12
-    bank_base = cbar & 0x0F
-    common_base = cbar >> 4
-    physical_page = page
-    if page >= bank_base:
-        physical_page += cbr if page >= common_base else bbr
-    return ((physical_page << 12) & 0xFFFFF) | (logical & 0x0FFF)
 
 
 def main() -> None:
@@ -36,7 +26,7 @@ def main() -> None:
 
     accepted_keys = 0
     original_press = bns.keyboard.press
-    original_run = bns.cpu.run
+    original_execute_instruction = bns._execute_instruction
     recent: deque[
         tuple[
             int,
@@ -58,24 +48,24 @@ def main() -> None:
         print(f"[Trap trace] delivered key {accepted_keys}: raw=0x{raw_key:02X}")
         original_press(raw_key)
 
-    def traced_run(requested_cycles: int) -> int:
+    def traced_execute_instruction(*, pump_inputs: bool = True) -> int:
         if accepted_keys < 2:
-            return original_run(requested_cycles)
+            return original_execute_instruction(pump_inputs=pump_inputs)
 
-        pc = bns.cpu.pc
-        cbr = bns.cpu.cbr
-        bbr = bns.cpu.bbr
-        cbar = bns.cpu.cbar
-        sp = bns.cpu.sp
-        ix = bns.cpu.get_reg(bns.cpu.IX)
-        physical = physical_address(pc, cbr, bbr, cbar)
-        stack_physical = physical_address(sp, cbr, bbr, cbar)
+        pc = bns.cpu.reg(Reg.PC)
+        cbr = bns.cpu.io_reg_peek(0x38)
+        bbr = bns.cpu.io_reg_peek(0x39)
+        cbar = bns.cpu.io_reg_peek(0x3A)
+        sp = bns.cpu.reg(Reg.SP)
+        ix = bns.cpu.reg(Reg.IX)
+        physical = bns.cpu.mmu_translate(pc)
+        stack_physical = bns.cpu.mmu_translate(sp)
         fetched = tuple(
-            bns.memory.read(physical_address(pc + offset, cbr, bbr, cbar))
+            bns.memory.read(bns.cpu.mmu_translate((pc + offset) & 0xFFFF))
             for offset in range(8)
         )
         stack_bytes = tuple(
-            bns.memory.read(physical_address(sp + offset, cbr, bbr, cbar))
+            bns.memory.read(bns.cpu.mmu_translate((sp + offset) & 0xFFFF))
             for offset in range(16)
         )
 
@@ -124,20 +114,18 @@ def main() -> None:
                 )
             raise KeyboardInterrupt
 
-        itc_before = bns.cpu.get_reg(Z180_ITC)
-        actual = original_run(1)
+        itc_before = bns.cpu.io_reg_peek(Z180_ITC)
+        actual = original_execute_instruction(pump_inputs=pump_inputs)
 
-        itc_after = bns.cpu.get_reg(Z180_ITC)
+        itc_after = bns.cpu.io_reg_peek(Z180_ITC)
         if not itc_before & Z180_ITC_TRAP and itc_after & Z180_ITC_TRAP:
-            trap_pc = (bns.cpu.pc - 2) & 0xFFFF
-            trap_cbr = bns.cpu.cbr
-            trap_bbr = bns.cpu.bbr
-            trap_cbar = bns.cpu.cbar
-            trap_physical = physical_address(trap_pc, trap_cbr, trap_bbr, trap_cbar)
+            trap_pc = (bns.cpu.reg(Reg.PC) - 2) & 0xFFFF
+            trap_cbr = bns.cpu.io_reg_peek(0x38)
+            trap_bbr = bns.cpu.io_reg_peek(0x39)
+            trap_cbar = bns.cpu.io_reg_peek(0x3A)
+            trap_physical = bns.cpu.mmu_translate(trap_pc)
             trap_bytes = tuple(
-                bns.memory.read(
-                    physical_address(trap_pc + offset, trap_cbr, trap_bbr, trap_cbar)
-                )
+                bns.memory.read(bns.cpu.mmu_translate((trap_pc + offset) & 0xFFFF))
                 for offset in range(8)
             )
             print(
@@ -175,7 +163,7 @@ def main() -> None:
         return actual
 
     bns.keyboard.press = traced_press
-    bns.cpu.run = traced_run
+    bns._execute_instruction = traced_execute_instruction
     bns.run()
 
 
