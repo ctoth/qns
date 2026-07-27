@@ -18,6 +18,7 @@ class AudioPlayer:
         sample_rate: int = 22050,
         channels: int = 1,
         blocksize: int = 2048,
+        prime_ms: int = 250,
     ):
         # 512 frames is 23 ms of headroom, which PulseAudio under WSL does
         # not reliably meet while the emulator thread holds the GIL between
@@ -33,6 +34,26 @@ class AudioPlayer:
         self._buffer: np.ndarray = np.array([], dtype=np.float32)
         self._lock = threading.Lock()
         self._playing = False
+
+        # The emulator queues each phoneme's audio just as the previous
+        # one finishes: measured, a capture is the same length as the
+        # interval before the next phoneme to within half a millisecond.
+        # That leaves no margin at all, so any moment the emulator spends
+        # below real time is immediately an audible hole - and it lands
+        # after the *shortest* phoneme, which has the least audio to
+        # cover the wait.  ("op" in "option" is 41 ms against 116-120 ms
+        # for its neighbours, which is why the gap appears there.)
+        #
+        # Bank a reservoir before starting instead.  The emulator runs
+        # faster than real time whenever the firmware sleeps between
+        # phonemes, so it can build slack during the quiet stretches and
+        # spend it during the burst of work at the start of an utterance.
+        self._prime_frames = int(sample_rate * prime_ms / 1000)
+        self._priming = True
+        self._primed_waits = 0
+        # An utterance shorter than the reservoir would otherwise never
+        # start, so give up waiting after this many starved callbacks.
+        self._max_primed_waits = max(1, int(sample_rate * 0.4 / blocksize))
 
     def start(self) -> None:
         """Start the audio stream."""
@@ -68,6 +89,8 @@ class AudioPlayer:
         with self._lock:
             self._buffer = np.array([], dtype=np.float32)
             self._playing = False
+            self._priming = True
+            self._primed_waits = 0
 
     def play(self, samples: np.ndarray) -> None:
         """Queue samples for playback.
@@ -94,13 +117,31 @@ class AudioPlayer:
     ) -> None:
         """Sounddevice callback - fills output buffer from queue."""
         with self._lock:
-            # Fill buffer from queue if needed
-            while len(self._buffer) < frames:
+            # Drain everything available, not just enough for this block:
+            # the surplus is the reservoir that absorbs the emulator
+            # running briefly below real time.
+            target = max(frames, self._prime_frames if self._priming else 0)
+            while len(self._buffer) < target:
                 try:
                     chunk = self._queue.get_nowait()
                     self._buffer = np.concatenate([self._buffer, chunk])
                 except queue.Empty:
                     break
+
+            if self._priming:
+                if len(self._buffer) >= self._prime_frames:
+                    self._priming = False
+                    self._primed_waits = 0
+                elif self._primed_waits < self._max_primed_waits:
+                    # Still filling.  Hold silence rather than start and
+                    # stutter - but not forever, or an utterance shorter
+                    # than the reservoir would never play at all.
+                    self._primed_waits += 1
+                    outdata[:, 0] = 0
+                    return
+                else:
+                    self._priming = False
+                    self._primed_waits = 0
 
             # Output samples
             if len(self._buffer) >= frames:
@@ -115,3 +156,8 @@ class AudioPlayer:
                     self._buffer = np.array([], dtype=np.float32)
                 outdata[available:, 0] = 0
                 self._playing = False
+                # Ran dry.  Rebuild the reservoir before resuming, so one
+                # late phoneme does not leave us on the same knife-edge
+                # for every phoneme after it.
+                self._priming = True
+                self._primed_waits = 0
