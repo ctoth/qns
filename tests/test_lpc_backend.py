@@ -94,16 +94,37 @@ def test_lpc_stream_reset_restores_a_fresh_voice():
     assert np.array_equal(first, again)
 
 
-def test_lpc_renders_silence_for_the_pause_phoneme():
-    """Code 0 is pause; it must not be given a capture's voice."""
+def test_lpc_pause_is_not_stretched_by_the_duration_model():
+    """A pause must not be rendered at the length the duration model claims.
+
+    Pause has no capture, so the model borrows the first phoneme's length
+    and reports 30 ms.  Measured against the cycle counts of a real
+    --trace-speech run, the firmware writes a pause and the next phoneme
+    without waiting, so a pause elapses in ~0 ms.  Rendering the model's
+    length punched a hole between every phoneme and stretched the greeting
+    from 3.3 to 5.7 seconds.
+    """
+    from qns.ssi263 import playback_length_samples
+
     backend = SSI263LPCSynth(audio_enabled=False)
     backend.get_phoneme_audio(0x2D, 15, 0)
     pause = backend.get_phoneme_audio(0x00, 15, 0)
 
-    assert len(pause) > 0
-    # The filter is allowed to ring out into the pause, but nothing may be
-    # driving it, so the level has to fall well below speech.
+    assert len(pause) < playback_length_samples(0x00, 0)
     assert float(np.abs(pause).max()) < 0.05
+
+
+def test_lpc_pause_matches_the_pcm_backend():
+    """The two capture-based backends must agree on what a pause is.
+
+    pcm has always returned a single sample for a pause; lpc honouring the
+    duration model instead is what made the same trace render 5.7 seconds
+    against pcm's 2.6.
+    """
+    lpc = SSI263LPCSynth(audio_enabled=False).get_phoneme_audio(0x00, 15, 3)
+    pcm = SSI263PCMSynth(audio_enabled=False).get_phoneme_audio(0x00, 15, 3)
+
+    assert len(lpc) == len(pcm)
 
 
 def test_lpc_output_level_tracks_amplitude():

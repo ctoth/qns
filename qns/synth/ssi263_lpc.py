@@ -73,6 +73,25 @@ class SSI263LPCSynth:
         This is stateful by design: calling it advances the filter history
         and pitch phase, which is exactly what removes the boundary.
         """
+        if phoneme & 0x3F == 0:
+            # A pause gets no audio, however long the duration model claims.
+            # The model has no capture to measure and borrows the first
+            # phoneme's length, giving 30 ms; measured against the cycle
+            # counts in a --trace-speech run the firmware writes a pause and
+            # the next phoneme without waiting at all, so pauses really
+            # elapse in ~0 ms.  Honouring the model instead put a hole
+            # between every phoneme and stretched the greeting from 3.3 to
+            # 5.7 seconds.  Silence arrives on its own from the emulator not
+            # feeding the player while the firmware is quiet.
+            #
+            # Continuity is deliberately left alone.  A pause that elapses in
+            # no time is a no-op between two phonemes, so resetting the
+            # stream here would start every phoneme cold - and with 88 pauses
+            # around the greeting's 28 phonemes, that is every phoneme,
+            # which is the isolated-capture choppiness this backend exists
+            # to remove.
+            return np.zeros(1, dtype=np.float32)
+
         samples = playback_length_samples(phoneme, duration)
         return self._stream.render(phoneme & 0x3F, samples, amplitude)
 
