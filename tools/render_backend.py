@@ -59,15 +59,20 @@ def main() -> None:
         help="Which --audio backend to render with (default: lpc)",
     )
     parser.add_argument(
-        "--keep-pauses",
+        "--drop-pauses",
         action="store_true",
-        help="Render pause events too, instead of dropping them",
+        help=(
+            "Leave out pause events.  They are most of the stream - the "
+            "greeting is 88 pauses around 28 phonemes - so dropping them "
+            "no longer previews what --audio plays; useful only for "
+            "listening to the phonemes alone"
+        ),
     )
     args = parser.parse_args()
 
     with open(args.trace, encoding="ascii", newline="") as handle:
         rows = list(csv.DictReader(handle))
-    if not args.keep_pauses:
+    if args.drop_pauses:
         rows = [row for row in rows if int(row["code"]) != 0]
 
     backend = BACKENDS[args.backend](audio_enabled=False)
