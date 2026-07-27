@@ -333,6 +333,98 @@ def find_input_boundary(firmware: bytes) -> InputBoundary | None:
     )
 
 
+@dataclass(frozen=True)
+class SpeechParameters:
+    """Logical addresses of the four retained speech settings.
+
+    `BSPMON.ASM::ISSET` applies these to the SSI-263 on every utterance.
+    They live in the monitor's uninitialised `DS` scratch area and no
+    shipped code path ever gives them a value: a field unit carries them
+    in battery-backed RAM, set once through the parameter handler
+    (`BSSERIAL.ASM::EHVOL`/`EHPITC`/`EHTONE`).  An emulator that starts
+    RAM at zero therefore makes the firmware write amplitude 0 - correct
+    emulation of an uninitialised machine, but silence.
+
+    The firmware's own names for two of these are crossed relative to
+    what the user sets: its `PITCH` variable drives the chip's filter
+    frequency (the user's "tone"), while its `INFL` drives the chip's
+    inflection (the user's "pitch").  The fields here use the user's
+    sense.
+    """
+
+    volume: int
+    """`VOLUME`, the amplitude nibble of the SSI-263 control register."""
+
+    rate: int
+    """`RATE`, the speaking-speed nibble."""
+
+    inflection: int
+    """`INFL`, the chip's inflection register (stored as user pitch x4)."""
+
+    tone: int
+    """`PITCH`, the chip's filter-frequency register."""
+
+
+# ISSET writes each setting as `LD A,(param)` ... `OUT (reg),A`, so the
+# operand of the nearest preceding `LD A,(nn)` names the RAM cell.  The
+# volume write anchors the routine: `OR 50h` into the control register
+# (CTL low, articulation 5) appears nowhere else.
+_ISSET_ANCHOR = (0xF6, 0x50, 0xD3)
+_ISSET_WINDOW = 0x60
+_LOWEST_RAM_ADDRESS = 0x8000
+
+
+def find_speech_parameters(
+    firmware: bytes,
+    ssi263_port: int = 0xC0,
+) -> SpeechParameters | None:
+    """Locate this revision's retained speech-setting RAM cells.
+
+    Returns None unless exactly one `ISSET` matches and all four cells
+    resolve to RAM, so an unrecognised image yields no addresses rather
+    than wrong ones.
+    """
+    bank = firmware[:0x10000]
+    anchor = bytes(_ISSET_ANCHOR) + bytes((ssi263_port + 3,))
+    starts = [
+        offset
+        for offset in range(len(bank) - 3 - len(anchor))
+        if bank[offset] == _LD_A_MEMORY.opcode[0]
+        and bank[offset + 3:offset + 3 + len(anchor)] == anchor
+    ]
+    if len(starts) != 1:
+        return None
+
+    start = starts[0]
+    window = bank[start:start + _ISSET_WINDOW]
+    addresses = {"volume": _operand(window, 0)}
+    for field, register in (("rate", 2), ("inflection", 1), ("tone", 4)):
+        address = _parameter_before_out(window, ssi263_port + register)
+        if address is None:
+            return None
+        addresses[field] = address
+
+    if any(address < _LOWEST_RAM_ADDRESS for address in addresses.values()):
+        return None
+    return SpeechParameters(**addresses)
+
+
+def _parameter_before_out(window: bytes, register: int) -> int | None:
+    """Operand of the last `LD A,(nn)` fully preceding `OUT (register),A`."""
+    out = window.find(bytes((0xD3, register)))
+    if out < 0:
+        return None
+    load = window.rfind(bytes(_LD_A_MEMORY.opcode), 0, out - 2)
+    if load < 0:
+        return None
+    return _operand(window, load)
+
+
+def _operand(data: bytes, offset: int) -> int:
+    """Little-endian 16-bit operand of the instruction at ``offset``."""
+    return data[offset + 1] | (data[offset + 2] << 8)
+
+
 def _find_signature(data: bytes, signature: tuple[_Insn, ...]) -> list[int]:
     """Return every offset where the instruction sequence matches."""
     pattern = [token for insn in signature for token in insn.tokens()]

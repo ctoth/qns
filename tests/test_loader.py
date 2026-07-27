@@ -5,8 +5,32 @@ import pytest
 from qns.loader import (
     EnglishBoundary,
     InputBoundary,
+    SpeechParameters,
     find_english_boundary,
     find_input_boundary,
+    find_speech_parameters,
+)
+
+# BSPMON.ASM::ISSET exactly as linked into roms/bspeng.bns at 0x02D7.
+# Kept verbatim rather than reassembled: the shipped build differs from
+# the source listing (a CP 0Fh/DEC A rate clamp, and a pitch bias read
+# from the flag byte at 0xDA28), and discovery has to survive that.
+ISSET_AS_LINKED = bytes.fromhex(
+    "f5c5"                  # PUSH AF; PUSH BC
+    "3afdd5" "f650" "d3c3"  # LD A,(VOLUME); OR 50h; OUT (C3),A
+    "cd530a"                # CALL ssi_delay
+    "3afed5" "fe0f" "2001" "3d"          # LD A,(RATE); CP 0Fh; JR NZ; DEC A
+    "cb27cb27cb27cb27" "f608" "d3c2"     # SLA A x4; OR 08h; OUT (C2),A
+    "cd530a"
+    "3a20d6" "d3c1"         # LD A,(INFL); OUT (C1),A
+    "cd530a"
+    "3a02da" "47"           # LD A,(flags); LD B,A
+    "3affd5"                # LD A,(PITCH)
+    "e5" "2128da" "cb46" "280c" "cb56" "2008" "cb4e" "2003"
+    "80" "1801" "90" "e1"   # ADD A,B / SUB B inflection bias
+    "f6e0" "d3c4"           # OR E0h; OUT (C4),A
+    "cd530a"
+    "3ec0" "d3c0"           # LD A,C0h; OUT (C0),A
 )
 
 MFULL3_SHAPES = ("bsp", "nfb99-braille-lite", "2003-braille-lite")
@@ -169,3 +193,19 @@ def test_find_input_boundary_requires_all_signatures():
     assert find_input_boundary(bytes(no_wait)) is None
     assert find_input_boundary(bytes(no_reset)) is None
     assert find_input_boundary(bytes(0x10000)) is None
+
+
+def make_isset_image(size: int = 0x10000, offset: int = 0x02D7) -> bytes:
+    """Place the linked ISSET routine into an otherwise empty image."""
+    image = bytearray(size)
+    image[offset:offset + len(ISSET_AS_LINKED)] = ISSET_AS_LINKED
+    return bytes(image)
+
+
+def test_find_speech_parameters_recovers_linked_addresses():
+    assert find_speech_parameters(make_isset_image()) == SpeechParameters(
+        volume=0xD5FD,
+        rate=0xD5FE,
+        inflection=0xD620,
+        tone=0xD5FF,
+    )
