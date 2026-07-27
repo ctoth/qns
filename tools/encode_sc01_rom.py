@@ -23,12 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from qns.synth.sc01_rom import PHONEME_PARAMS  # noqa: E402
 
-# Bit positions each field occupies, listed exactly as the decoder lists
-# them.  Placement below inverts the ORIGINAL decoder's LSB-first reading
-# (result bit i came from the first-listed position onwards), which is what
-# reproduces the real ROM's bytes from the shipped table.  Note that reading
-# is done MSB-first by MAME - that mismatch is the bug this reconstruction
-# exists to undo, so do not "simplify" the placement to match MAME here.
+# Bit positions each field occupies, listed exactly as MAME's decoder lists
+# them.  The first listed position holds the field's most significant bit.
 FIELD_BITS: dict[str, tuple[int, ...]] = {
     "f1": (0, 7, 14, 21),
     "va": (1, 8, 15, 22),
@@ -47,16 +43,13 @@ INVERTED_FIELDS = frozenset({"duration"})
 
 
 def place(value: int, positions: tuple[int, ...], invert: bool) -> int:
-    """Scatter a right-aligned field across positions, LSB first.
-
-    Inverse of the shipped table's decode: value bit i went to positions[i].
-    """
+    """Scatter a right-aligned field across positions, MSB first."""
     width = len(positions)
     if invert:
         value = ~value & ((1 << width) - 1)
     result = 0
     for index, position in enumerate(positions):
-        if (value >> index) & 1:
+        if (value >> (width - 1 - index)) & 1:
             result |= 1 << position
     return result
 
