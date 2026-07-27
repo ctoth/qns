@@ -16,6 +16,12 @@ frequency. **`--audio` speaks live, in real time** - the greeting takes the
 uv run -m qns.bns --audio roms/bspeng.bns          # speaks, then type at it
 ```
 
+**Do not combine `--audio` with `--speech`/`--speech-stream english`.** Those
+set an english callback, and any callback needing instruction boundaries drops
+the core to the per-instruction path at ~4-5M cycles/s - below the 12.288M
+real time needs - so speech develops audible gaps. Watch the text or listen to
+the audio, not both, until observation moves onto z-core's native PC watch.
+
 Both blockers named in earlier notes are resolved, and neither was what it
 looked like. The "~1000x too slow" throughput wall was a **deadlock**: the
 firmware sleeps in a RAM-resident `SLP; RET` stub between phonemes, a sleeping
