@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 from io import BytesIO, StringIO
+from unittest.mock import Mock
 
 import pytest
 from z180 import Machine, Reg
@@ -1450,6 +1451,15 @@ def test_keystrokes_unbuffered_short_circuits_on_windows(monkeypatch):
 # =============================================================================
 
 
+def test_realtime_pacing_spends_audio_runahead_before_sleeping():
+    bns = BNS(realtime=True)
+    bns.synth = Mock()
+    bns.synth.realtime_lead_seconds.return_value = 0.15
+
+    assert bns._realtime_sleep_duration(0.20) == pytest.approx(0.05)
+    assert bns._realtime_sleep_duration(0.10) == 0.0
+
+
 @pytest.mark.parametrize(
     "argv,expected",
     [
@@ -1539,4 +1549,5 @@ def test_every_named_backend_is_constructible():
     for name, backend in SYNTH_BACKENDS.items():
         args = parser.parse_args(settle_audio_backend(["--audio", name, "rom.bns"]))
         assert args.audio == name
-        assert backend(audio_enabled=False) is not None
+        instance = backend(audio_enabled=False)
+        assert instance.realtime_lead_seconds() == 0.0

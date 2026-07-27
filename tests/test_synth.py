@@ -91,6 +91,19 @@ def test_audio_player_queues_samples():
     player.stop()
 
 
+def test_audio_player_requests_only_the_runahead_needed_to_refill():
+    from qns.synth.player import AudioPlayer
+
+    player = AudioPlayer(sample_rate=1000, prime_ms=100)
+    assert player.realtime_lead_seconds() == 0.0
+
+    player.play(np.zeros(40, dtype=np.float32))
+    assert player.realtime_lead_seconds() == pytest.approx(0.06)
+
+    player.play(np.zeros(70, dtype=np.float32))
+    assert player.realtime_lead_seconds() == 0.0
+
+
 @pytest.mark.manual
 def test_audio_player_produces_sound():
     """Manual test: verify audio output works.

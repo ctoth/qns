@@ -53,6 +53,12 @@ class SSI263PCMSynth:
         """Return whether the host audio player still has queued samples."""
         return self._player is not None and self._player.is_playing()
 
+    def realtime_lead_seconds(self) -> float:
+        """Return bounded emulator run-ahead needed to keep audio continuous."""
+        if self._player is None:
+            return 0.0
+        return self._player.realtime_lead_seconds()
+
     @staticmethod
     def _apply_duration(samples: np.ndarray, duration: int) -> np.ndarray:
         """Consume a capture at the speed the duration mode selects.

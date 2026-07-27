@@ -34,6 +34,7 @@ class AudioPlayer:
         self._buffer: np.ndarray = np.array([], dtype=np.float32)
         self._lock = threading.Lock()
         self._playing = False
+        self._queued_frames = 0
 
         # The emulator queues each phoneme's audio just as the previous
         # one finishes: measured, a capture is the same length as the
@@ -89,6 +90,7 @@ class AudioPlayer:
         with self._lock:
             self._buffer = np.array([], dtype=np.float32)
             self._playing = False
+            self._queued_frames = 0
             self._priming = True
             self._primed_waits = 0
 
@@ -101,7 +103,17 @@ class AudioPlayer:
         if samples.dtype != np.float32:
             samples = samples.astype(np.float32)
 
-        self._queue.put(samples)
+        with self._lock:
+            self._queue.put(samples)
+            self._queued_frames += len(samples)
+
+    def realtime_lead_seconds(self) -> float:
+        """Emulator lead needed to restore the active audio reservoir."""
+        with self._lock:
+            if self._queued_frames <= 0:
+                return 0.0
+            missing = max(0, self._prime_frames - self._queued_frames)
+            return missing / self.sample_rate
 
     def is_playing(self) -> bool:
         """Check if audio is currently playing."""
@@ -148,6 +160,7 @@ class AudioPlayer:
                 outdata[:, 0] = self._buffer[:frames]
                 self._buffer = self._buffer[frames:]
                 self._playing = True
+                self._queued_frames = max(0, self._queued_frames - frames)
             else:
                 # Not enough samples - output what we have, pad with silence
                 available = len(self._buffer)
@@ -156,6 +169,7 @@ class AudioPlayer:
                     self._buffer = np.array([], dtype=np.float32)
                 outdata[available:, 0] = 0
                 self._playing = False
+                self._queued_frames = max(0, self._queued_frames - available)
                 # Ran dry.  Rebuild the reservoir before resuming, so one
                 # late phoneme does not leave us on the same knife-edge
                 # for every phoneme after it.

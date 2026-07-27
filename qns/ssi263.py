@@ -192,6 +192,9 @@ class SpeechBackend(Protocol):
     def play(self, state: SSI263State) -> None:
         """Produce audio for one decoded phoneme event."""
 
+    def realtime_lead_seconds(self) -> float:
+        """Return bounded run-ahead needed to keep host audio continuous."""
+
 
 class SSI263:
     """SSI-263 speech synthesizer chip emulator.

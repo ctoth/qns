@@ -920,6 +920,15 @@ class BNS:
         self._finish_execution()
         return actual
 
+    def _realtime_sleep_duration(self, ahead: float) -> float:
+        """Keep low audio buffered by spending bounded emulator run-ahead."""
+        audio_lead = (
+            self.synth.realtime_lead_seconds()
+            if self.synth is not None
+            else 0.0
+        )
+        return max(0.0, ahead - audio_lead)
+
     def load_rom(self, path: Path | str) -> None:
         """Load a pre-extracted .bin, raw firmware image, or update package."""
         path = Path(path)
@@ -1173,8 +1182,9 @@ class BNS:
                     # time also lasts 120 ms of real time - and the audio the
                     # backend queues per phoneme plays continuously.
                     ahead = start_wall + cycles_run / self.clock - time.perf_counter()
-                    if ahead > 0:
-                        time.sleep(ahead)
+                    sleep_duration = self._realtime_sleep_duration(ahead)
+                    if sleep_duration > 0:
+                        time.sleep(sleep_duration)
 
                 watch_hits = (
                     self.cpu.pc_watch_hits()
