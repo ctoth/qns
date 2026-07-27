@@ -1,21 +1,10 @@
 """Resynthesize a phoneme stream from the SSI-263 captures with coarticulation.
 
-The AppleWin captures are 62 isolated recordings, so replaying them gives a
-hard edge at every phoneme boundary - no amount of pacing or crossfading makes
-a re-triggered recording continuous (see tools/render_speech.py --timing
-sustain).  A real formant synthesizer has no boundary at all: its filter
-parameters glide from one phoneme's targets toward the next.
-
-The SSI-263 is a source-filter synthesizer, which is exactly what linear
-prediction models, so each capture can be analysed into an all-pole filter
-plus an excitation description.  Resynthesis then interpolates the *filter*
-across phoneme boundaries and runs one continuous excitation through it,
-which reproduces the chip's timbre while gaining the coarticulation that
-recordings cannot provide.
-
-Reflection coefficients are what gets interpolated: they stay stable under
-interpolation as long as each stays inside the unit circle, which direct LPC
-coefficients do not.
+The model itself - analysis, reflection coefficients, excitation templates -
+lives in :mod:`qns.synth.lpc`, which the live ``--audio lpc`` backend shares.
+This tool is the offline renderer: it has the whole phoneme sequence in hand,
+so unlike the live stream it can straddle each boundary, easing out of one
+phoneme and into the next rather than gliding into each phoneme's head.
 
     uv run tools/lpc_resynth.py speech.csv out.wav
 """
@@ -29,141 +18,14 @@ from pathlib import Path
 
 import numpy as np
 
-from qns.synth.phonemes import SAMPLE_RATE, get_phoneme_samples
-
-ORDER = 14
-FRAME_MS = 5.0
-
-
-def levinson(autocorr: np.ndarray, order: int) -> tuple[np.ndarray, float]:
-    """Solve for reflection coefficients and residual power (Levinson-Durbin)."""
-    error = float(autocorr[0])
-    reflection = np.zeros(order, dtype=np.float64)
-    coeffs = np.zeros(order + 1, dtype=np.float64)
-    coeffs[0] = 1.0
-    if error <= 0:
-        return reflection, 0.0
-
-    for step in range(order):
-        acc = autocorr[step + 1]
-        for index in range(1, step + 1):
-            acc += coeffs[index] * autocorr[step + 1 - index]
-        k = -acc / error
-        k = float(np.clip(k, -0.999, 0.999))
-        reflection[step] = k
-
-        updated = coeffs.copy()
-        for index in range(1, step + 2):
-            updated[index] = coeffs[index] + k * coeffs[step + 1 - index]
-        coeffs = updated
-        error *= 1.0 - k * k
-        if error <= 0:
-            break
-
-    return reflection, max(error, 0.0)
-
-
-def reflection_to_lpc(reflection: np.ndarray) -> np.ndarray:
-    """Convert reflection coefficients to direct-form LPC coefficients."""
-    order = len(reflection)
-    coeffs = np.zeros(order + 1, dtype=np.float64)
-    coeffs[0] = 1.0
-    for step in range(order):
-        k = reflection[step]
-        updated = coeffs.copy()
-        for index in range(1, step + 2):
-            updated[index] = coeffs[index] + k * coeffs[step + 1 - index]
-        coeffs = updated
-    return coeffs
-
-
-def analyse_phoneme(code: int) -> dict:
-    """Analyse one capture into filter, gain, voicing and pitch."""
-    index = (2 if code == 1 else code) - 2
-    samples = get_phoneme_samples(index).astype(np.float64)
-    steady = samples[len(samples) // 4:3 * len(samples) // 4]
-    steady = steady - steady.mean()
-    if len(steady) < ORDER * 2:
-        steady = samples.astype(np.float64)
-
-    windowed = steady * np.hanning(len(steady))
-    full = np.correlate(windowed, windowed, "full")
-    autocorr = full[len(windowed) - 1:len(windowed) + ORDER]
-    reflection, residual = levinson(autocorr, ORDER)
-
-    # Voicing and pitch from the same autocorrelation the periodicity test uses.
-    centered = steady
-    correlation = np.correlate(centered, centered, "full")[len(centered) - 1:]
-    low = int(SAMPLE_RATE / 400)
-    high = min(int(SAMPLE_RATE / 60), len(correlation) - 1)
-    if high > low and correlation[0] > 0:
-        period = low + int(np.argmax(correlation[low:high]))
-        voicing = float(correlation[period] / correlation[0])
-    else:
-        period, voicing = 0, 0.0
-
-    voiced = voicing >= 0.35
-    period = period if period > 0 else int(SAMPLE_RATE / 100)
-
-    # Excitation is taken from the capture itself, not modelled.  Inverse-
-    # filtering the capture through its own LPC filter leaves the residual -
-    # the chip's real excitation - so one period of it carries the true
-    # spectral tilt.  A synthetic pulse has to guess that tilt, and guessing
-    # wrong shows up directly as a too-dark or too-harsh voice.
-    coeffs = reflection_to_lpc(reflection)
-    resid = np.convolve(steady, coeffs, mode="same")
-
-    if voiced:
-        search = resid[:len(resid) - period] if len(resid) > period else resid
-        anchor = int(np.argmax(np.abs(search))) if len(search) else 0
-        anchor = max(0, min(anchor, max(0, len(resid) - period)))
-        template = resid[anchor:anchor + period].copy()
-        if len(template) < period:
-            template = np.pad(template, (0, period - len(template)))
-    else:
-        template = resid.copy()
-
-    rms = float(np.sqrt((template ** 2).mean())) if len(template) else 0.0
-    if rms > 0:
-        template = template / rms
-
-    return {
-        "reflection": reflection,
-        "gain": float(np.sqrt(residual / max(1, len(windowed)))),
-        "voiced": voiced,
-        "period": period,
-        "rms": float(np.sqrt((steady ** 2).mean())),
-        "template": template,
-    }
-
-
-def resample_template(template: np.ndarray, length: int) -> np.ndarray:
-    """Stretch or squeeze one excitation period to the current pitch period."""
-    if len(template) == 0:
-        return np.zeros(length, dtype=np.float64)
-    if len(template) == length:
-        return template
-    return np.interp(
-        np.linspace(0.0, len(template) - 1, length),
-        np.arange(len(template)),
-        template,
-    )
-
-
-def glottal_pulse(period: int) -> np.ndarray:
-    """One glottal excitation pulse, shaped rather than a bare impulse.
-
-    A unit impulse has energy at every frequency up to Nyquist, which reads
-    as a click on each pitch period.  The chip's excitation is a shaped wave
-    (see GLOTTAL_WAVE in sc01_rom.py), so a smooth asymmetric pulse - fast
-    opening, slower close - is much closer and far less harsh.
-    """
-    width = max(2, period // 3)
-    rise = max(1, width // 3)
-    pulse = np.zeros(width, dtype=np.float64)
-    pulse[:rise] = np.linspace(0.0, 1.0, rise, endpoint=False)
-    pulse[rise:] = np.cos(np.linspace(0.0, np.pi / 2, width - rise)) ** 2
-    return pulse - pulse.mean()
+from qns.synth.lpc import (
+    FRAME_MS,
+    ORDER,
+    SAMPLE_RATE,
+    analyse_phoneme,
+    reflection_to_lpc,
+    resample_template,
+)
 
 
 def synthesize(

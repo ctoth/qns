@@ -46,7 +46,17 @@ from .stdio import (
     WatchPCInput,
     parse_input_event,
 )
-from .synth import SSI263PCMSynth, SSI263Synth
+from .synth import SSI263LPCSynth, SSI263PCMSynth, SSI263Synth
+
+# Selectable audio backends, in the order they became usable.  Each trades
+# differently: pcm has the chip's timbre but replays isolated captures, lpc
+# resynthesizes those captures through one continuous filter, and formant
+# models the SC-01 - a different chip - but is continuous by construction.
+SYNTH_BACKENDS = {
+    "pcm": SSI263PCMSynth,
+    "lpc": SSI263LPCSynth,
+    "formant": SSI263Synth,
+}
 
 
 def _read_stdin_character() -> str:
@@ -143,7 +153,7 @@ class BNS:
         Args:
             clock: CPU clock frequency in Hz (default 12.288 MHz for BSPLUS)
             audio: Enable audio output for SSI-263 speech
-            synth_backend: Audio backend: pcm (AppleWin captures) or formant
+            synth_backend: Audio backend: pcm, lpc, or formant
             model: Hardware profile: bsp, bs2, bsl, bl2, bl4, or tns
             core: z-core API path: compat or direct
             trace_io: Log all I/O port reads/writes
@@ -274,13 +284,11 @@ class BNS:
         self.high_bank_latch = 0
 
         # Audio synthesis
-        if synth_backend not in ("pcm", "formant"):
+        if synth_backend not in SYNTH_BACKENDS:
             raise ValueError(f"Unsupported synth backend: {synth_backend}")
         self.synth = None
         if audio:
-            self.synth = (
-                SSI263PCMSynth() if synth_backend == "pcm" else SSI263Synth()
-            )
+            self.synth = SYNTH_BACKENDS[synth_backend]()
             self.ssi263.set_synth(self.synth)
 
         self._setup_io()
