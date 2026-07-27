@@ -1,5 +1,6 @@
 """Main BNS emulator."""
 
+import contextlib
 import queue
 import sys
 import threading
@@ -48,7 +49,7 @@ from .synth import SSI263PCMSynth, SSI263Synth
 
 
 def _read_stdin_character() -> str:
-    """Read one redirected byte or one unbuffered Windows console key."""
+    """Read one redirected byte or one unbuffered console key."""
     if sys.platform == "win32" and sys.stdin.isatty():
         import msvcrt
 
@@ -59,6 +60,46 @@ def _read_stdin_character() -> str:
                 continue
             return character
     return sys.stdin.read(1)
+
+
+@contextlib.contextmanager
+def _keystrokes_unbuffered():
+    """Deliver terminal keystrokes singly, restoring the terminal after.
+
+    A POSIX terminal is line-buffered, so a chord would not reach the
+    firmware until Enter - and Enter is itself a chord.  cbreak turns off
+    canonical mode and echo while leaving ISIG intact, so Ctrl-C still
+    interrupts rather than arriving as a phantom chord.
+
+    Windows needs no mode change: `_read_stdin_character` reads console
+    keys through msvcrt.  Redirected input needs none either.  Both, and
+    any stdin without a real file descriptor, pass straight through.
+    """
+    try:
+        interactive = sys.platform != "win32" and sys.stdin.isatty()
+        fd = sys.stdin.fileno() if interactive else None
+    except (AttributeError, ValueError, OSError):
+        fd = None
+
+    if fd is None:
+        yield
+        return
+
+    import termios
+    import tty
+
+    try:
+        saved = termios.tcgetattr(fd)
+    except termios.error:
+        yield
+        return
+
+    try:
+        tty.setcbreak(fd)
+        yield
+    finally:
+        # TCSADRAIN so queued output is not discarded on the way out.
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
 
 class BNS:
@@ -950,6 +991,7 @@ class BNS:
 
         input_driver: ChordInputDriver | None = None
         pc_watch_reported = False
+        terminal = contextlib.ExitStack()
         if self.stdin_device is not None or self.reset_mode is not None:
             if self.stdin_device in ("keyboard", "jsonl") or self.reset_mode is not None:
                 if self._input_boundary is None:
@@ -999,6 +1041,11 @@ class BNS:
                         self._serial_input_queue.put(data[0])
 
             if self.stdin_device is not None:
+                # Enter cbreak before the reader starts, and leave it from
+                # this thread: the reader is a daemon and would be killed
+                # without unwinding, stranding the user's terminal.
+                if self.stdin_device == "keyboard":
+                    terminal.enter_context(_keystrokes_unbuffered())
                 stdin_thread = threading.Thread(
                     target=read_stdin,
                     daemon=True,
@@ -1118,6 +1165,7 @@ class BNS:
         except KeyboardInterrupt:
             print("\nEmulation stopped by user")
         finally:
+            terminal.close()
             if self.synth:
                 self.synth.stop()
 

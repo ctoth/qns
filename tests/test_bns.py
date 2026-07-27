@@ -12,6 +12,7 @@ from z180.compat import Z180 as CompatZ180
 
 from qns.bns import (
     BNS,
+    _keystrokes_unbuffered,
     _read_stdin_character,
 )
 from qns.cli import main as bns_main
@@ -1410,3 +1411,33 @@ def test_cli_state_dir_creates_directory_state(tmp_path):
 
     assert reloaded.returncode == 0, reloaded.stderr.decode(errors="replace")
     assert b"Loaded nonvolatile state directory" in reloaded.stderr
+
+
+def test_keystrokes_unbuffered_passes_through_redirected_stdin(monkeypatch):
+    """Redirected stdin needs no terminal mode change and must not fail.
+
+    This also covers Windows, where `sys.stdin.isatty()` may be true but
+    `termios` does not exist: the guard has to short-circuit before the
+    import, not rely on catching an ImportError.
+    """
+    monkeypatch.setattr(sys, "stdin", StringIO("abc"))
+
+    with _keystrokes_unbuffered():
+        assert sys.stdin.read(1) == "a"
+
+
+def test_keystrokes_unbuffered_short_circuits_on_windows(monkeypatch):
+    """On win32 the console is read through msvcrt, so leave the tty alone."""
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    class Tty(StringIO):
+        def isatty(self):
+            return True
+
+        def fileno(self):
+            raise AssertionError("must not touch the descriptor on win32")
+
+    monkeypatch.setattr(sys, "stdin", Tty("x"))
+
+    with _keystrokes_unbuffered():
+        assert sys.stdin.read(1) == "x"
