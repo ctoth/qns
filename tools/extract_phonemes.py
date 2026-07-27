@@ -8,10 +8,27 @@ Usage:
 """
 
 import re
+import sys
 from pathlib import Path
 
-APPLEWIN_HEADER = Path(r"C:\Users\Q\src\AppleWin\source\SSI263Phonemes.h")
+DEFAULT_HEADERS = (
+    Path.home() / "src" / "AppleWin" / "source" / "SSI263Phonemes.h",
+    Path(r"C:\Users\Q\src\AppleWin\source\SSI263Phonemes.h"),
+)
 OUTPUT_FILE = Path(__file__).parent.parent / "qns" / "synth" / "phonemes.py"
+
+
+def find_header() -> Path:
+    """Locate AppleWin's SSI263Phonemes.h, or explain how to get it."""
+    if len(sys.argv) > 1:
+        return Path(sys.argv[1])
+    for candidate in DEFAULT_HEADERS:
+        if candidate.exists():
+            return candidate
+    raise SystemExit(
+        "AppleWin's SSI263Phonemes.h not found. Pass its path, or clone it:\n"
+        "  git clone --depth 1 https://github.com/AppleWin/AppleWin ~/src/AppleWin"
+    )
 
 
 def extract_phoneme_info(text: str) -> list[tuple[int, int]]:
@@ -25,8 +42,19 @@ def extract_phoneme_info(text: str) -> list[tuple[int, int]]:
     # Parse {offset,length} pairs
     pairs = re.findall(r"\{(0x[0-9A-Fa-f]+),(0x[0-9A-Fa-f]+)\}", content)
 
-    # Convert byte offsets to sample indices (divide by 2)
-    return [(int(offset, 16) // 2, int(length, 16) // 2) for offset, length in pairs]
+    # nOffset and nLength are already in samples, not bytes: AppleWin indexes
+    # g_nPhonemeData (a short[]) directly with nOffset, and the lengths sum to
+    # exactly the array's declared element count.  Halving them here made every
+    # phoneme read half its length from half its offset.
+    info = [(int(offset, 16), int(length, 16)) for offset, length in pairs]
+
+    total = info[-1][0] + info[-1][1]
+    if total != sum(length for _, length in info):
+        raise ValueError(
+            f"phoneme table is not contiguous: spans {total} samples but "
+            f"lengths sum to {sum(length for _, length in info)}"
+        )
+    return info
 
 
 def extract_phoneme_data(text: str) -> list[int]:
@@ -115,8 +143,9 @@ def generate_phonemes_py(info: list[tuple[int, int]], data: list[int]) -> str:
 
 
 def main():
-    print(f"Reading {APPLEWIN_HEADER}...")
-    text = APPLEWIN_HEADER.read_text()
+    header = find_header()
+    print(f"Reading {header}...")
+    text = header.read_text()
 
     print("Extracting phoneme info...")
     info = extract_phoneme_info(text)
