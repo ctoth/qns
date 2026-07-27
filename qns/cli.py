@@ -6,12 +6,37 @@ from collections.abc import Callable
 from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 
-from .bns import BNS
+from .bns import BNS, SYNTH_BACKENDS
 from .profiles import PROFILES
 from .ssi263 import Phoneme
 from .stdio import JSONLOutput
 
 _SPEECH_STYLES = ("codes", "names", "ipa", "examples", "english")
+DEFAULT_SYNTH_BACKEND = "pcm"
+
+
+def settle_audio_backend(argv: list[str]) -> list[str]:
+    """Let ``--audio`` stay a bare flag even though it now takes a backend.
+
+    ``--audio`` accepts an optional backend name, and argparse hands an
+    optional-valued flag whatever non-dash token follows it.  The long-
+    documented invocation puts the ROM there:
+
+        uv run -m qns.bns --audio roms/bspeng.bns
+
+    which would otherwise be read as a backend named ``roms/bspeng.bns``.
+    Supplying the default explicitly when the next token is plainly not a
+    backend keeps both that form and ``--audio lpc`` working.
+    """
+    settled = []
+    for position, token in enumerate(argv):
+        settled.append(token)
+        if token != "--audio":
+            continue
+        following = argv[position + 1] if position + 1 < len(argv) else None
+        if following not in SYNTH_BACKENDS:
+            settled.append(DEFAULT_SYNTH_BACKEND)
+    return settled
 
 
 def parse_hex_address(value: str) -> int:
@@ -39,13 +64,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("rom_file", help="ROM file to load (.bns or raw firmware)")
 
     # Basic options
-    parser.add_argument("--audio", action="store_true",
-                        help="Enable SSI-263 audio output")
+    parser.add_argument(
+        "--audio",
+        nargs="?",
+        choices=tuple(SYNTH_BACKENDS),
+        const=DEFAULT_SYNTH_BACKEND,
+        default=None,
+        metavar="BACKEND",
+        help=(
+            "Enable SSI-263 audio output, optionally naming the backend: "
+            "pcm (AppleWin captures, the chip's timbre but one isolated "
+            "recording per phoneme), lpc (those captures resynthesized "
+            "through one continuous filter), or formant (SC-01 model, "
+            f"continuous but a different chip).  Default: {DEFAULT_SYNTH_BACKEND}"
+        ),
+    )
     parser.add_argument(
         "--synth",
-        choices=("pcm", "formant"),
-        default="pcm",
-        help="Audio backend: AppleWin PCM captures or SC-01 formant synthesis",
+        choices=tuple(SYNTH_BACKENDS),
+        help=argparse.SUPPRESS,  # superseded by --audio BACKEND
     )
     parser.add_argument(
         "--model",
@@ -192,10 +229,19 @@ def speech_settings(args: argparse.Namespace) -> dict[str, int]:
     }
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """CLI entry point."""
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(
+        settle_audio_backend(sys.argv[1:] if argv is None else argv)
+    )
+
+    # --synth predates --audio taking a backend.  It still selects one, but
+    # only where --audio did not say so itself.
+    if args.synth is not None and args.audio == DEFAULT_SYNTH_BACKEND:
+        args.audio = args.synth
+    if args.synth is not None and args.audio is None:
+        parser.error("--synth selects a backend for --audio; pass --audio too")
 
     if args.stdio and (
         args.input is not None
@@ -261,12 +307,13 @@ def main() -> None:
         stdin_device = None
     else:
         stdin_device = args.input or "keyboard"
-    realtime = args.realtime if args.realtime is not None else bool(args.audio)
+    audio_enabled = args.audio is not None
+    realtime = args.realtime if args.realtime is not None else audio_enabled
 
     with output_context:
         bns = BNS(
-            audio=args.audio,
-            synth_backend=args.synth,
+            audio=audio_enabled,
+            synth_backend=args.audio or DEFAULT_SYNTH_BACKEND,
             model=args.model,
             core=args.core,
             trace_io=args.trace_io,
@@ -323,7 +370,7 @@ def main() -> None:
             speech_trace_file = open(args.trace_speech, "w", encoding="ascii")
             speech_trace_file.write(
                 "cycle,code,name,duration_mode,rate,inflection,"
-                "articulation,amplitude,filter_freq\n"
+                "articulation,amplitude,filter_freq,playback_duration\n"
             )
             speech_trace_file.flush()
 
@@ -333,7 +380,8 @@ def main() -> None:
                 speech_trace_file.write(
                     f"{bns.ssi263.current_cycle},{code},{name},{state.duration},"
                     f"{state.rate},{state.inflection},{state.articulation},"
-                    f"{state.amplitude},{state.filter_freq}\n"
+                    f"{state.amplitude},{state.filter_freq},"
+                    f"{state.playback_duration}\n"
                 )
                 speech_trace_file.flush()
 

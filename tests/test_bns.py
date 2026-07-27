@@ -12,9 +12,11 @@ from z180.compat import Z180 as CompatZ180
 
 from qns.bns import (
     BNS,
+    SYNTH_BACKENDS,
     _keystrokes_unbuffered,
     _read_stdin_character,
 )
+from qns.cli import build_parser, settle_audio_backend
 from qns.cli import main as bns_main
 from qns.input_driver import (
     ASCII_TO_BNS_KEY,
@@ -1441,3 +1443,58 @@ def test_keystrokes_unbuffered_short_circuits_on_windows(monkeypatch):
 
     with _keystrokes_unbuffered():
         assert sys.stdin.read(1) == "x"
+
+
+# =============================================================================
+# --audio backend selection
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (["--audio", "rom.bns"], "pcm"),
+        (["rom.bns", "--audio"], "pcm"),
+        (["--audio", "pcm", "rom.bns"], "pcm"),
+        (["--audio", "lpc", "rom.bns"], "lpc"),
+        (["--audio", "formant", "rom.bns"], "formant"),
+        (["--audio=lpc", "rom.bns"], "lpc"),
+    ],
+)
+def test_audio_flag_selects_a_backend(argv, expected):
+    """--audio names a backend, and stays usable as a bare flag."""
+    args = build_parser().parse_args(settle_audio_backend(argv))
+
+    assert args.audio == expected
+    assert args.rom_file == "rom.bns"
+
+
+def test_audio_flag_does_not_swallow_the_rom_file():
+    """The long-documented form puts the ROM straight after --audio.
+
+    --audio takes an optional value, so argparse would otherwise read
+    `--audio roms/bspeng.bns` as a backend named after the ROM.
+    """
+    args = build_parser().parse_args(
+        settle_audio_backend(["--audio", "roms/bspeng.bns", "--stats"])
+    )
+
+    assert args.rom_file == "roms/bspeng.bns"
+    assert args.audio == "pcm"
+    assert args.stats is True
+
+
+def test_audio_omitted_leaves_audio_disabled():
+    """No --audio at all still means no audio and no backend."""
+    args = build_parser().parse_args(settle_audio_backend(["rom.bns"]))
+
+    assert args.audio is None
+
+
+def test_every_named_backend_is_constructible():
+    """--audio's choices and the machine's backend table cannot drift."""
+    parser = build_parser()
+    for name, backend in SYNTH_BACKENDS.items():
+        args = parser.parse_args(settle_audio_backend(["--audio", name, "rom.bns"]))
+        assert args.audio == name
+        assert backend(audio_enabled=False) is not None
