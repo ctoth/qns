@@ -256,6 +256,15 @@ class SSI263:
         """Whether a phoneme-completion INT1 is scheduled but not yet fired."""
         return self._pending_irq_cycle is not None
 
+    @property
+    def pending_irq_cycle(self) -> int | None:
+        """Cycle a scheduled phoneme completes, or None if none is pending.
+
+        The main loop needs this to know how far it may advance emulated
+        time while the CPU sleeps waiting for that completion.
+        """
+        return self._pending_irq_cycle
+
     def set_synth(self, synth: SpeechBackend | None) -> None:
         """Connect an audio backend that receives decoded phoneme events."""
         self._synth = synth

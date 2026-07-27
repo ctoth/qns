@@ -3,6 +3,7 @@
 import queue
 import sys
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
@@ -93,6 +94,7 @@ class BNS:
                  stdio_output: JSONLOutput | None = None,
                  stdio_watch_pc: int | None = None,
                  speech_settings: dict[str, int] | None = None,
+                 realtime: bool = False,
                  english_callback: Callable[[str], None] | None = None):
         """Initialize the BNS emulator.
 
@@ -117,6 +119,8 @@ class BNS:
             stdio_watch_pc: Program counter reported through structured output
             speech_settings: Retained speech settings seeded into battery-backed
                 RAM at load, overriding RETAINED_SPEECH_DEFAULTS per key
+            realtime: Hold emulated time to wall-clock time, so speech plays at
+                the speed the hardware would speak it
             english_callback: Observer for exact pre-translation firmware text
         """
         profile = PROFILES.get(model)
@@ -149,6 +153,12 @@ class BNS:
         self._english_boundary: EnglishBoundary | None = None
         self._input_boundary: InputBoundary | None = None
         self._speech_settings = RETAINED_SPEECH_DEFAULTS | (speech_settings or {})
+        self.realtime = realtime
+        # Real-time pacing sleeps between chunks, so the chunk sets the
+        # granularity of that sleep.  1000 cycles is 81 us at 12.288 MHz -
+        # far below the host's sleep resolution - so pace in ~1 ms chunks
+        # instead, still two orders of magnitude finer than a phoneme.
+        self._chunk_cycles = 12_288 if realtime else 1000
         self._english_capture_cycle: int | None = None
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
         self._stdio_serial_input_queues = (queue.Queue(), queue.Queue())
@@ -797,14 +807,22 @@ class BNS:
         return actual
 
     def _requires_instruction_steps(self) -> bool:
-        """Return whether callbacks or observers require instruction boundaries."""
+        """Return whether callbacks or observers require instruction boundaries.
+
+        The input boundary is only observed on behalf of ChordInputDriver,
+        which runs only when input or a reset gesture is requested.  Having
+        merely *discovered* the boundary is not a reason to step: that alone
+        held every run to the per-instruction path, which is ~6x slower than
+        letting the core run a whole budget and is the difference between
+        keeping up with real-time speech and falling behind it.
+        """
         return any((
-            self._input_boundary is not None,
             self._english_callback is not None,
             self.profile.flash_size > 0,
             self.gas_gauge is not None,
             self.trace_interrupts,
             self.stdin_device is not None,
+            self.reset_mode is not None,
             self._pc_watch_address is not None,
         ))
 
@@ -991,6 +1009,7 @@ class BNS:
                 print(f"Input: STDIN ({self.stdin_device})")
 
         cycles_run = 0
+        start_wall = time.perf_counter()
         try:
             while max_cycles == 0 or cycles_run < max_cycles:
                 try:
@@ -1018,11 +1037,45 @@ class BNS:
                             pc=watch_pc,
                         )
 
-                # Run in chunks of 1000 cycles
-                chunk = 1000 if max_cycles == 0 else min(1000, max_cycles - cycles_run)
+                chunk_size = self._chunk_cycles
+                chunk = (
+                    chunk_size
+                    if max_cycles == 0
+                    else min(chunk_size, max_cycles - cycles_run)
+                )
                 actual = self._execute_budget(chunk)
                 cycles_run += actual
+
+                if actual == 0:
+                    # The Z180 executed SLP and is waiting for an interrupt
+                    # (the firmware calls a RAM-resident `SLP; RET` stub at
+                    # the end of every phoneme).  A sleeping core advances no
+                    # cycles, so nothing would ever reach the phoneme's
+                    # scheduled completion and the loop would spin forever -
+                    # which is exactly what made a 6M-cycle greeting appear
+                    # to take 40 minutes.  Jump emulated time to the next
+                    # scheduled device event instead; sleeping then costs
+                    # one iteration rather than a million.
+                    wake = self.ssi263.pending_irq_cycle
+                    if wake is not None and wake > cycles_run:
+                        cycles_run = wake if max_cycles == 0 else min(wake, max_cycles)
+                    else:
+                        # Nothing scheduled here, but the Z180's own timers
+                        # still wake the background task, so let time pass
+                        # rather than stopping: asleep is not dead.
+                        cycles_run += chunk
+
                 self.stats['cycles'] = cycles_run
+
+                if self.realtime:
+                    # Hold emulated time to wall-clock time.  The chip already
+                    # paces phonemes correctly in emulated time, so once the
+                    # two clocks agree, a phoneme that lasts 120 ms of emulated
+                    # time also lasts 120 ms of real time - and the audio the
+                    # backend queues per phoneme plays continuously.
+                    ahead = start_wall + cycles_run / self.clock - time.perf_counter()
+                    if ahead > 0:
+                        time.sleep(ahead)
 
                 watch_hits = (
                     self.cpu.pc_watch_hits()

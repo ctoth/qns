@@ -61,7 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--trace", action="store_true",
                         help="Show boot trace instead of running")
-    parser.add_argument("--input", choices=("keyboard", "serial0", "serial1"),
+    parser.add_argument("--realtime", action="store_true",
+                        help="Hold emulation to wall-clock speed (implied by --audio)")
+    parser.add_argument("--no-realtime", dest="realtime", action="store_false",
+                        help="Run as fast as possible even with --audio")
+    parser.set_defaults(realtime=None)
+    parser.add_argument("--input", choices=("keyboard", "none", "serial0", "serial1"),
                         help="Route standard input to the BNS keyboard or an ASCI channel")
     parser.add_argument(
         "--reset",
@@ -246,6 +251,20 @@ def main() -> None:
     )
     display_frame_emitted = False
 
+    # A stdin reader forces the per-instruction execution path, which cannot
+    # keep up with real-time speech.  --audio therefore defaults to no
+    # keyboard unless one is asked for explicitly; --input keyboard --audio
+    # still works, just slower than the hardware speaks.
+    if structured_stdio:
+        stdin_device = "jsonl"
+    elif args.input == "none":
+        stdin_device = None
+    elif args.input:
+        stdin_device = args.input
+    else:
+        stdin_device = None if args.audio else "keyboard"
+    realtime = args.realtime if args.realtime is not None else bool(args.audio)
+
     with output_context:
         bns = BNS(
             audio=args.audio,
@@ -259,7 +278,8 @@ def main() -> None:
             trace_first_writes=args.trace_first_writes,
             dump_writes_file=args.dump_writes,
             speech_settings=speech_settings(args),
-            stdin_device="jsonl" if structured_stdio else (args.input or "keyboard"),
+            stdin_device=stdin_device,
+            realtime=realtime,
             reset=args.reset,
             serial_output=serial_output,
             serial_output_channel=serial_output_channel,
