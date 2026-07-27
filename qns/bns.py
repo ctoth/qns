@@ -194,6 +194,7 @@ class BNS:
         self._english_callback = english_callback
         self._english_boundary: EnglishBoundary | None = None
         self._input_boundary: InputBoundary | None = None
+        self._input_driver: ChordInputDriver | None = None
         self._speech_settings = RETAINED_SPEECH_DEFAULTS | (speech_settings or {})
         self.realtime = realtime
         # Real-time pacing sleeps between chunks, so the chunk sets the
@@ -863,10 +864,27 @@ class BNS:
             self.profile.flash_size > 0,
             self.gas_gauge is not None,
             self.trace_interrupts,
-            self.stdin_device is not None,
+            self._keyboard_needs_steps(),
+            self.stdin_device not in (None, "keyboard"),
             self.reset_mode is not None,
             self._pc_watch_address is not None,
         ))
+
+    def _keyboard_needs_steps(self) -> bool:
+        """Whether a keystroke is in flight and needs boundary observation.
+
+        Stepping costs roughly six times the core's own speed, which is
+        the difference between keeping ahead of real-time speech and
+        falling behind it.  A keyboard that is merely *connected* does
+        not need it: the epochs the observer maintains are only consulted
+        while delivering a chord.  So pay for it during delivery, and run
+        the core at full speed the rest of the time - which is precisely
+        when speech is playing.
+        """
+        if self.stdin_device != "keyboard":
+            return False
+        driver = self._input_driver
+        return driver is None or driver.busy
 
     def _execute_budget(self, cycles: int) -> int:
         """Execute at least the requested cycle budget with correct device ordering."""
@@ -1015,6 +1033,7 @@ class BNS:
                     )
                 else:
                     input_driver = ChordInputDriver(self)
+                    self._input_driver = input_driver
                 if input_driver is not None and self.reset_mode is not None:
                     input_driver.start_reset(self.reset_mode)
 
