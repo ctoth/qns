@@ -22,3 +22,12 @@ qns/_z180_cffi.c
 
 # Logs
 *.log
+
+# ROM images and update packages.  Tests load these by path
+# (tests/test_z_core_migration.py), but the images are proprietary and
+# are not distributed with the source.
+roms/
+
+# Rendered audio and traces from manual listening tests.  Nothing in the
+# tree reads these; regenerate with tools/render_speech.py.
+out/
