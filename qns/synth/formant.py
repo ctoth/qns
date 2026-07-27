@@ -40,11 +40,14 @@ class FormantSynth:
         """
         self.sample_rate = sample_rate
 
-        # Clock frequencies (scaled from original SC-01)
-        # Original: main=720kHz, sclock=40kHz, cclock=20kHz
-        # We scale to match our sample rate
-        self._sclock = float(sample_rate)  # Sample clock
-        self._cclock = sample_rate / 2.0   # Capacitor switching clock
+        # Clock frequencies are the hardware's and must NOT be scaled to the
+        # output rate: _cclock is the switched-capacitor clock and appears in
+        # every filter builder's coefficients, so scaling it detunes every
+        # formant.  The reference design (Votrax Personal Speech System) runs
+        # the chip at 720 kHz, giving sclock = main/18 and cclock = main/36.
+        # Samples are generated at _sclock and resampled to sample_rate.
+        self._sclock = 40000.0  # Sample clock (720kHz / 18)
+        self._cclock = 20000.0  # Capacitor switching clock (720kHz / 36)
 
         # Inflection (pitch modifier, 0-3)
         self._inflection = 0
@@ -156,21 +159,30 @@ class FormantSynth:
             duration_ms = 20 + (self._rom_duration * 1.5)
             num_samples = int(duration_ms * self.sample_rate / 1000)
 
-        # Generate samples
-        samples = np.zeros(num_samples, dtype=np.float32)
-        for i in range(num_samples):
-            # Update chip state (runs at effective 20kHz in original)
-            self._chip_update()
+        # Generate at the chip's own sample clock, then resample.  The chip
+        # state machine ticks at _cclock, half the sample clock, so
+        # _chip_update() runs on every other generated sample (MAME's
+        # votrax.cpp sound_stream_update does the same).
+        chip_samples = max(1, int(num_samples * self._sclock / self.sample_rate))
+        generated = np.zeros(chip_samples, dtype=np.float32)
+        for i in range(chip_samples):
+            if i & 1:
+                self._chip_update()
+            generated[i] = self._analog_calc()
 
-            # Generate one audio sample
-            samples[i] = self._analog_calc()
+        # Output is a small-signal value already roughly within +/-1; clamp
+        # rather than normalize.  Per-phoneme normalization would scale every
+        # phoneme to the same peak, destroying the relative loudness of
+        # vowels against fricatives.
+        np.clip(generated, -1.0, 1.0, out=generated)
 
-        # Normalize output
-        max_val = np.max(np.abs(samples))
-        if max_val > 0:
-            samples = samples / max_val * 0.8  # Leave some headroom
-
-        return samples
+        if chip_samples == num_samples:
+            return generated
+        return np.interp(
+            np.linspace(0.0, chip_samples - 1, num_samples),
+            np.arange(chip_samples),
+            generated,
+        ).astype(np.float32)
 
     def _phone_commit(self, phoneme: int) -> None:
         """Load parameters for a new phoneme."""
