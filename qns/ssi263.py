@@ -212,6 +212,16 @@ class SSI263:
         """Update the current cycle count for timing calculations."""
         self._current_cycle = cycles
 
+    @property
+    def current_cycle(self) -> int:
+        """Cycle count last pushed in by the run loop.
+
+        Observers run inside the emulator's mutable borrow of the CPU and
+        cannot read the cycle count back off it, so they read it here.
+        The run loop refreshes this every chunk.
+        """
+        return self._current_cycle
+
     def _calc_phoneme_duration_cycles(self) -> int:
         """Calculate phoneme duration in CPU cycles.
 

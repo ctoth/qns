@@ -103,6 +103,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Run for N cycles then exit (default: unlimited)")
     parser.add_argument("--trace-io", action="store_true",
                         help="Log all I/O port reads/writes")
+    parser.add_argument(
+        "--trace-speech",
+        type=str,
+        metavar="FILE",
+        help=(
+            "Write every SSI-263 phoneme event to a CSV with its cycle "
+            "count and full decoded register state"
+        ),
+    )
     parser.add_argument("--trace-interrupts", action="store_true",
                         help="Log interrupt activity (IRQ lines, ITC register)")
     parser.add_argument("--trace-writes", type=parse_hex_address, metavar="ADDR",
@@ -226,6 +235,9 @@ def main() -> None:
             stdio_watch_pc=args.watch_pc,
             english_callback=english_callback,
         )
+        speech_observers: list[Callable[[int, str], None]] = []
+        speech_trace: list[tuple[int, ...]] = []
+
         if stdio_output is not None:
             def emit_stdio_speech(_code: int, _name: str) -> None:
                 phoneme = bns.ssi263.get_phonemes(start=-1)[0]
@@ -237,7 +249,7 @@ def main() -> None:
                     example=phoneme.example,
                 )
 
-            bns.ssi263.set_phoneme_callback(emit_stdio_speech)
+            speech_observers.append(emit_stdio_speech)
             if bns.display is not None:
                 bns.display.set_frame_callback(
                     lambda frame: stdio_output.emit("display", cells=list(frame))
@@ -251,7 +263,37 @@ def main() -> None:
                 speech = _format_phoneme(phoneme, args.speech_stream)
                 print(f"Speech {args.speech_stream}: {speech}", flush=True)
 
-            bns.ssi263.set_phoneme_callback(emit_speech_phoneme)
+            speech_observers.append(emit_speech_phoneme)
+
+        if args.trace_speech:
+            # Written and flushed per event: a boot long enough to reach
+            # speech runs for minutes, and a trace only readable after the
+            # run finishes is a trace nobody can work with.
+            speech_trace_file = open(args.trace_speech, "w", encoding="ascii")
+            speech_trace_file.write(
+                "cycle,code,name,duration_mode,rate,inflection,"
+                "articulation,amplitude,filter_freq\n"
+            )
+            speech_trace_file.flush()
+
+            def record_speech_registers(code: int, name: str) -> None:
+                state = bns.ssi263.state()
+                speech_trace.append(())
+                speech_trace_file.write(
+                    f"{bns.ssi263.current_cycle},{code},{name},{state.duration},"
+                    f"{state.rate},{state.inflection},{state.articulation},"
+                    f"{state.amplitude},{state.filter_freq}\n"
+                )
+                speech_trace_file.flush()
+
+            speech_observers.append(record_speech_registers)
+
+        if speech_observers:
+            def dispatch_speech(code: int, name: str) -> None:
+                for observe in speech_observers:
+                    observe(code, name)
+
+            bns.ssi263.set_phoneme_callback(dispatch_speech)
 
         if args.display:
             if bns.display is None:
@@ -303,6 +345,10 @@ def main() -> None:
 
         if args.display and not display_frame_emitted:
             emit_display_frame(bytes(bns.display.buffer))
+
+        if args.trace_speech:
+            speech_trace_file.close()
+            print(f"Wrote {len(speech_trace)} speech events to {args.trace_speech}")
 
         # Post-run actions
         if args.dump_ram:
