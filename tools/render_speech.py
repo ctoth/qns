@@ -23,7 +23,9 @@ from pathlib import Path
 
 import numpy as np
 
+from qns.ssi263 import playback_length_samples
 from qns.synth.formant import FormantSynth
+from qns.synth.phonemes import SAMPLE_RATE
 from qns.synth.sc02_to_sc01 import SC02_TO_SC01
 from qns.synth.ssi263_pcm import SSI263PCMSynth
 
@@ -57,17 +59,18 @@ def load_events(path: Path) -> list[dict[str, int]]:
     return events
 
 
-def chip_duration_cycles(rate: int, duration_mode: int) -> int:
-    """Phoneme duration the SSI-263 registers ask for, in CPU cycles.
+def chip_duration_cycles(
+    phoneme: int,
+    rate: int,
+    playback_duration: int,
+) -> int:
+    """Current emulator duration for one traced phoneme, in CPU cycles.
 
-    Same AppleWin formula the chip emulation schedules INT1 from
-    (qns/ssi263.py).  Used by --timing chip, which reconstructs the pacing
-    the hardware would have imposed rather than the pacing the emulated
-    firmware actually ran at.
+    Uses the same capture-length, rate, and latched duration model that
+    :mod:`qns.ssi263` uses to schedule phoneme completion.
     """
-    duration_ms = (((16 - rate) * 4096) // 1023) * (4 - duration_mode)
-    return (duration_ms * CPU_CLOCK_HZ) // 1000
-
+    samples = playback_length_samples(phoneme, playback_duration, rate)
+    return int(samples * CPU_CLOCK_HZ / SAMPLE_RATE)
 
 
 def _periodicity(samples: np.ndarray, sample_rate: int) -> tuple[int, float]:
@@ -203,10 +206,10 @@ def render(
     if not events:
         return np.zeros(0, dtype=np.float32)
 
-    def duration_mode_of(event: dict[str, int]) -> int:
+    def playback_duration_of(event: dict[str, int]) -> int:
         if force_duration_mode is not None:
             return force_duration_mode
-        return event["duration_mode"]
+        return event.get("playback_duration", event["duration_mode"])
 
     if timing in ("natural", "sustain"):
         # Each phoneme lasts exactly as long as its own source says: the
@@ -229,7 +232,10 @@ def render(
                 piece = piece * (max(0, min(15, amplitude)) / 15.0)
             else:
                 piece = pcm.get_phoneme_audio(
-                    event["code"], amplitude, duration_mode_of(event)
+                    event["code"],
+                    amplitude,
+                    playback_duration_of(event),
+                    event["rate"],
                 )
             if timing == "sustain":
                 target = int((phoneme_ms or 90.0) * sample_rate / 1000)
@@ -296,7 +302,9 @@ def render(
                 running += int(phoneme_ms * CPU_CLOCK_HZ / 1000)
             else:
                 running += chip_duration_cycles(
-                    event["rate"], event["duration_mode"]
+                    event["code"],
+                    event["rate"],
+                    playback_duration_of(event),
                 )
         for event, cycle in zip(events, cycles):
             event["cycle"] = cycle
@@ -333,7 +341,10 @@ def render(
             samples = samples * gain
         else:
             samples = pcm.get_phoneme_audio(
-                event["code"], amplitude, duration_mode_of(event)
+                event["code"],
+                amplitude,
+                playback_duration_of(event),
+                event["rate"],
             )
 
         length = min(len(samples), len(output) - start)
