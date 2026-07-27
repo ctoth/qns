@@ -17,8 +17,13 @@ class AudioPlayer:
         self,
         sample_rate: int = 22050,
         channels: int = 1,
-        blocksize: int = 512,
+        blocksize: int = 2048,
     ):
+        # 512 frames is 23 ms of headroom, which PulseAudio under WSL does
+        # not reliably meet while the emulator thread holds the GIL between
+        # sleeps; 2048 gives 93 ms.  The queue itself never starves the
+        # callback - it pads with silence - so underruns here are host
+        # scheduling jitter, not missing audio.
         self.sample_rate = sample_rate
         self.channels = channels
         self.blocksize = blocksize
@@ -39,6 +44,7 @@ class AudioPlayer:
             channels=self.channels,
             blocksize=self.blocksize,
             dtype=np.float32,
+            latency="high",
             callback=self._audio_callback,
         )
         self._stream.start()
