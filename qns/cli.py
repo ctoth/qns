@@ -251,18 +251,16 @@ def main() -> None:
     )
     display_frame_emitted = False
 
-    # A stdin reader forces the per-instruction execution path, which cannot
-    # keep up with real-time speech.  --audio therefore defaults to no
-    # keyboard unless one is asked for explicitly; --input keyboard --audio
-    # still works, just slower than the hardware speaks.
+    # Keyboard input costs the per-instruction execution path, but that is
+    # affordable at real-time speed: the CPU sleeps between phonemes, so
+    # pacing dominates and speech keeps up either way.  --input none exists
+    # for offline captures that want the core's full speed.
     if structured_stdio:
         stdin_device = "jsonl"
     elif args.input == "none":
         stdin_device = None
-    elif args.input:
-        stdin_device = args.input
     else:
-        stdin_device = None if args.audio else "keyboard"
+        stdin_device = args.input or "keyboard"
     realtime = args.realtime if args.realtime is not None else bool(args.audio)
 
     with output_context:
