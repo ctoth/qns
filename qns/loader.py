@@ -351,26 +351,29 @@ class SpeechParameters:
     the API (`BSAPI.C::api_speech_parms`) in turn calls that byte
     "Pitch" while calling the *inflection* byte "Frequency".
 
+    Each field lists every cell that holds its setting.  Rate and
+    inflection are held twice: ISSET reads a working cell (`RATE`,
+    `INFL`) that the firmware rebuilds for each utterance from a
+    retained shadow (`NRATE`, `NINFL`) - applying, for inflection, the
+    intonation markers `BRL.ASM::INTON` inserts.  Seeding only one of a
+    pair does not hold: the working cell is overwritten from the shadow
+    partway through boot, and the shadow alone leaves the setting wrong
+    until the first rebuild.
+
     Addresses are physical, matching InputBoundary and the addresses our
     memory callbacks receive.
     """
 
-    volume: int
+    volume: tuple[int, ...]
     """`VOLUME` -> amplitude nibble of the control register (C3)."""
 
-    rate: int
-    """`RATE` -> speaking-speed nibble (C2)."""
+    rate: tuple[int, ...]
+    """`RATE`, `NRATE` -> speaking-speed nibble (C2)."""
 
-    inflection: int
-    """`NINFL` -> inflection register (C1).  API name: "Frequency".
+    inflection: tuple[int, ...]
+    """`INFL`, `NINFL` -> inflection register (C1).  API name: "Frequency"."""
 
-    The retained cell, not the `INFL` that ISSET reads: the firmware
-    rebuilds `INFL` from `NINFL` for every utterance, applying the
-    intonation markers `BRL.ASM::INTON` inserts, so a value seeded into
-    `INFL` is overwritten before it ever reaches the chip.
-    """
-
-    filter_frequency: int
+    filter_frequency: tuple[int, ...]
     """`PITCH` -> filter-frequency register (C4).  API name: "Pitch"."""
 
 
@@ -436,48 +439,54 @@ def find_speech_parameters(
             return None
         addresses[field] = address
 
-    retained = _retained_inflection(
-        bank, addresses["inflection"], addresses["volume"]
-    )
-    if retained is None:
-        return None
-    addresses["inflection"] = retained
+    cells = {field: (address,) for field, address in addresses.items()}
+    for field in ("rate", "inflection"):
+        shadow = _retained_shadow(bank, addresses[field], addresses["volume"])
+        if shadow is None:
+            return None
+        cells[field] += (shadow,)
 
-    if any(address < _LOWEST_RAM_ADDRESS for address in addresses.values()):
+    if any(
+        address < _LOWEST_RAM_ADDRESS
+        for field in cells.values()
+        for address in field
+    ):
         return None
     common_base = _COMMON_AREA_CBR << 12
     return SpeechParameters(**{
-        field: address + common_base for field, address in addresses.items()
+        field: tuple(address + common_base for address in addresses)
+        for field, addresses in cells.items()
     })
 
 
-def _retained_inflection(
-    bank: bytes,
-    inflection: int,
-    volume: int,
-) -> int | None:
-    """Address of the `NINFL` shadow the settings handler writes.
+def _retained_shadow(bank: bytes, working: int, volume: int) -> int | None:
+    """Address of the retained shadow a settings handler writes.
 
-    `BSSERIAL.ASM::EHPITC` stores the new value to `INFL` and `NINFL`
-    back to back.  Other sites store `INFL` beside a different working
-    cell, so the settings handler is identified by the company it keeps:
-    it writes the other retained settings within the same routine.
+    `BSSERIAL.ASM::EHPITC` and its rate counterpart store the new value
+    to the working cell and its shadow back to back.  Other routines
+    store the same working cell beside a different cell entirely, so a
+    settings handler is identified by the company it keeps: it writes
+    the other retained settings within the same routine.
+
+    Several handlers may qualify - the live one and BSSPEECH.ASM's dead
+    ISINIT both do - so they are required to agree rather than to be
+    unique.
     """
-    pair = bytes((_LD_MEMORY_A.opcode[0],)) + _address_bytes(inflection) \
+    pair = bytes((_LD_MEMORY_A.opcode[0],)) + _address_bytes(working) \
         + bytes((_LD_MEMORY_A.opcode[0],))
     volume_store = bytes((_LD_MEMORY_A.opcode[0],)) + _address_bytes(volume)
 
-    matches = []
+    shadows = set()
     offset = bank.find(pair)
     while offset >= 0:
         start = max(0, offset - _HANDLER_WINDOW)
         if volume_store in bank[start:offset + _HANDLER_WINDOW]:
-            matches.append(offset)
+            shadows.add(_operand(bank, offset + 3))
         offset = bank.find(pair, offset + 1)
 
-    if len(matches) != 1:
+    if len(shadows) != 1:
         return None
-    return _operand(bank, matches[0] + 3)
+    return shadows.pop()
 
 
 def _address_bytes(address: int) -> bytes:

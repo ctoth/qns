@@ -889,12 +889,15 @@ class BNS:
             return
 
         for field, value in self._speech_settings.items():
-            self.memory.write(getattr(parameters, field), value)
+            for address in getattr(parameters, field):
+                self.memory.write(address, value)
         print(
             "Retained speech settings: "
             + ", ".join(
-                f"{field} {self._speech_settings[field]}"
-                f" @ 0x{getattr(parameters, field):04X}"
+                f"{field} {self._speech_settings[field]} @ "
+                + "/".join(
+                    f"0x{address:05X}" for address in getattr(parameters, field)
+                )
                 for field in RETAINED_SPEECH_DEFAULTS
             )
         )
