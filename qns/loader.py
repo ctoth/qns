@@ -335,7 +335,7 @@ def find_input_boundary(firmware: bytes) -> InputBoundary | None:
 
 @dataclass(frozen=True)
 class SpeechParameters:
-    """Logical addresses of the four retained speech settings.
+    """Physical addresses of the four retained speech settings.
 
     `BSPMON.ASM::ISSET` applies these to the SSI-263 on every utterance.
     They live in the monitor's uninitialised `DS` scratch area and no
@@ -345,24 +345,51 @@ class SpeechParameters:
     RAM at zero therefore makes the firmware write amplitude 0 - correct
     emulation of an uninitialised machine, but silence.
 
-    The firmware's own names for two of these are crossed relative to
-    what the user sets: its `PITCH` variable drives the chip's filter
-    frequency (the user's "tone"), while its `INFL` drives the chip's
-    inflection (the user's "pitch").  The fields here use the user's
-    sense.
+    These names cross badly, so the fields below are named for the chip
+    register each cell reaches, which is the one unambiguous sense.  The
+    firmware variable `PITCH` drives the chip's *filter frequency*, and
+    the API (`BSAPI.C::api_speech_parms`) in turn calls that byte
+    "Pitch" while calling the *inflection* byte "Frequency".
+
+    Addresses are physical, matching InputBoundary and the addresses our
+    memory callbacks receive.
     """
 
     volume: int
-    """`VOLUME`, the amplitude nibble of the SSI-263 control register."""
+    """`VOLUME` -> amplitude nibble of the control register (C3)."""
 
     rate: int
-    """`RATE`, the speaking-speed nibble."""
+    """`RATE` -> speaking-speed nibble (C2)."""
 
     inflection: int
-    """`INFL`, the chip's inflection register (stored as user pitch x4)."""
+    """`NINFL` -> inflection register (C1).  API name: "Frequency".
 
-    tone: int
-    """`PITCH`, the chip's filter-frequency register."""
+    The retained cell, not the `INFL` that ISSET reads: the firmware
+    rebuilds `INFL` from `NINFL` for every utterance, applying the
+    intonation markers `BRL.ASM::INTON` inserts, so a value seeded into
+    `INFL` is overwritten before it ever reaches the chip.
+    """
+
+    filter_frequency: int
+    """`PITCH` -> filter-frequency register (C4).  API name: "Pitch"."""
+
+
+# The midpoint of each setting's documented range.  `BSAPI.H` and
+# `BNSAPI.H` both specify them, agreeing exactly:
+#
+#     Volume 0..15   Pitch 1..32   Rate 1..16   Frequency 0..255
+#
+# where the API's "Pitch" is the filter-frequency cell and its
+# "Frequency" is the inflection cell (see SpeechParameters).  Nothing in
+# the firmware records what a unit actually shipped with - the values in
+# BSSPEECH.ASM::ISINIT are unreachable dead code - so the midpoint is a
+# deliberate neutral choice, not a recovered default.
+RETAINED_SPEECH_DEFAULTS = {
+    "volume": 8,
+    "rate": 9,
+    "inflection": 128,
+    "filter_frequency": 17,
+}
 
 
 # ISSET writes each setting as `LD A,(param)` ... `OUT (reg),A`, so the
@@ -371,6 +398,7 @@ class SpeechParameters:
 # (CTL low, articulation 5) appears nowhere else.
 _ISSET_ANCHOR = (0xF6, 0x50, 0xD3)
 _ISSET_WINDOW = 0x60
+_HANDLER_WINDOW = 0x40
 _LOWEST_RAM_ADDRESS = 0x8000
 
 
@@ -398,15 +426,63 @@ def find_speech_parameters(
     start = starts[0]
     window = bank[start:start + _ISSET_WINDOW]
     addresses = {"volume": _operand(window, 0)}
-    for field, register in (("rate", 2), ("inflection", 1), ("tone", 4)):
+    for field, register in (
+        ("rate", 2),
+        ("inflection", 1),
+        ("filter_frequency", 4),
+    ):
         address = _parameter_before_out(window, ssi263_port + register)
         if address is None:
             return None
         addresses[field] = address
 
+    retained = _retained_inflection(
+        bank, addresses["inflection"], addresses["volume"]
+    )
+    if retained is None:
+        return None
+    addresses["inflection"] = retained
+
     if any(address < _LOWEST_RAM_ADDRESS for address in addresses.values()):
         return None
-    return SpeechParameters(**addresses)
+    common_base = _COMMON_AREA_CBR << 12
+    return SpeechParameters(**{
+        field: address + common_base for field, address in addresses.items()
+    })
+
+
+def _retained_inflection(
+    bank: bytes,
+    inflection: int,
+    volume: int,
+) -> int | None:
+    """Address of the `NINFL` shadow the settings handler writes.
+
+    `BSSERIAL.ASM::EHPITC` stores the new value to `INFL` and `NINFL`
+    back to back.  Other sites store `INFL` beside a different working
+    cell, so the settings handler is identified by the company it keeps:
+    it writes the other retained settings within the same routine.
+    """
+    pair = bytes((_LD_MEMORY_A.opcode[0],)) + _address_bytes(inflection) \
+        + bytes((_LD_MEMORY_A.opcode[0],))
+    volume_store = bytes((_LD_MEMORY_A.opcode[0],)) + _address_bytes(volume)
+
+    matches = []
+    offset = bank.find(pair)
+    while offset >= 0:
+        start = max(0, offset - _HANDLER_WINDOW)
+        if volume_store in bank[start:offset + _HANDLER_WINDOW]:
+            matches.append(offset)
+        offset = bank.find(pair, offset + 1)
+
+    if len(matches) != 1:
+        return None
+    return _operand(bank, matches[0] + 3)
+
+
+def _address_bytes(address: int) -> bytes:
+    """Little-endian encoding of a 16-bit operand."""
+    return bytes((address & 0xFF, address >> 8))
 
 
 def _parameter_before_out(window: bytes, register: int) -> int | None:

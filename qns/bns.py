@@ -23,10 +23,12 @@ from .devices import (
 )
 from .input_driver import ChordInputDriver
 from .loader import (
+    RETAINED_SPEECH_DEFAULTS,
     EnglishBoundary,
     InputBoundary,
     find_english_boundary,
     find_input_boundary,
+    find_speech_parameters,
     load_firmware,
 )
 from .memory import Memory
@@ -90,6 +92,7 @@ class BNS:
                  pc_disk_dir: Path | str | None = None,
                  stdio_output: JSONLOutput | None = None,
                  stdio_watch_pc: int | None = None,
+                 speech_settings: dict[str, int] | None = None,
                  english_callback: Callable[[str], None] | None = None):
         """Initialize the BNS emulator.
 
@@ -112,6 +115,8 @@ class BNS:
             pc_disk_dir: Host directory exposed to the firmware as PC Disk on ASCI0
             stdio_output: Structured output for all emulated device events
             stdio_watch_pc: Program counter reported through structured output
+            speech_settings: Retained speech settings seeded into battery-backed
+                RAM at load, overriding RETAINED_SPEECH_DEFAULTS per key
             english_callback: Observer for exact pre-translation firmware text
         """
         profile = PROFILES.get(model)
@@ -143,6 +148,7 @@ class BNS:
         self._english_callback = english_callback
         self._english_boundary: EnglishBoundary | None = None
         self._input_boundary: InputBoundary | None = None
+        self._speech_settings = RETAINED_SPEECH_DEFAULTS | (speech_settings or {})
         self._english_capture_cycle: int | None = None
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
         self._stdio_serial_input_queues = (queue.Queue(), queue.Queue())
@@ -850,6 +856,8 @@ class BNS:
                 f"0x{self._english_boundary.capture_addr:04X}, "
                 f"SPBUF 0x{self._english_boundary.spbuf:04X}"
             )
+        self._seed_retained_speech_settings(image.data)
+
         self._input_boundary = find_input_boundary(image.data)
         if self._input_boundary is not None:
             print(
@@ -861,6 +869,35 @@ class BNS:
                 f"@ PC 0x{self._input_boundary.command_loop_timer_pc:04X}, "
                 f"reset 0x{self._input_boundary.reset_complete:05X}"
             )
+
+    def _seed_retained_speech_settings(self, firmware: bytes) -> None:
+        """Give the speech settings the values a field unit would retain.
+
+        `BSPMON.ASM::ISSET` applies volume, rate, inflection and filter
+        frequency to the SSI-263 from uninitialised scratch RAM.  No
+        shipped code path ever writes them - a real unit carries them in
+        battery-backed RAM - so a machine that starts RAM at zero makes
+        the firmware faithfully write amplitude 0 and speak silence.
+
+        Seeding here rather than in `reset` is deliberate: this is
+        retained state that survives a reset, which is exactly the
+        property that makes the real hardware work.
+        """
+        parameters = find_speech_parameters(firmware, self.profile.ssi263_port)
+        if parameters is None:
+            print("Retained speech settings: ISSET not found, leaving RAM at 0")
+            return
+
+        for field, value in self._speech_settings.items():
+            self.memory.write(getattr(parameters, field), value)
+        print(
+            "Retained speech settings: "
+            + ", ".join(
+                f"{field} {self._speech_settings[field]}"
+                f" @ 0x{getattr(parameters, field):04X}"
+                for field in RETAINED_SPEECH_DEFAULTS
+            )
+        )
 
     def reset(self) -> None:
         """Reset the emulator."""

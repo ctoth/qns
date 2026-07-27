@@ -33,6 +33,16 @@ ISSET_AS_LINKED = bytes.fromhex(
     "3ec0" "d3c0"           # LD A,C0h; OUT (C0),A
 )
 
+# BSSERIAL.ASM's Echo parameter handlers as linked at 0x02AE: EHPITC
+# stores INFL and its retained NINFL shadow back to back, with EHVOL and
+# EHTONE alongside.  That company is what distinguishes the retained
+# cell from the working one.
+HANDLER_AS_LINKED = bytes.fromhex(
+    "3a9bd4" "cb27" "cb27" "3220d6" "321ed6" "18c2"  # EHPITC: INFL, NINFL
+    "3a9bd4" "32fdd5" "18ba"                          # EHVOL:  VOLUME
+    "3a9bd4" "e61f" "32ffd5" "18b0"                   # EHTONE: PITCH
+)
+
 MFULL3_SHAPES = ("bsp", "nfb99-braille-lite", "2003-braille-lite")
 
 
@@ -196,16 +206,18 @@ def test_find_input_boundary_requires_all_signatures():
 
 
 def make_isset_image(size: int = 0x10000, offset: int = 0x02D7) -> bytes:
-    """Place the linked ISSET routine into an otherwise empty image."""
+    """Place ISSET and the settings handler into an empty image."""
     image = bytearray(size)
+    image[0x02AE:0x02AE + len(HANDLER_AS_LINKED)] = HANDLER_AS_LINKED
     image[offset:offset + len(ISSET_AS_LINKED)] = ISSET_AS_LINKED
     return bytes(image)
 
 
 def test_find_speech_parameters_recovers_linked_addresses():
+    """Round-trip the proven bspeng.bns cells, logical to physical."""
     assert find_speech_parameters(make_isset_image()) == SpeechParameters(
-        volume=0xD5FD,
-        rate=0xD5FE,
-        inflection=0xD620,
-        tone=0xD5FF,
+        volume=0x415FD,
+        rate=0x415FE,
+        inflection=0x4161E,
+        filter_frequency=0x415FF,
     )
