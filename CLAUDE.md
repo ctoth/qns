@@ -9,12 +9,19 @@ Emulator for the Blazie Engineering BNS (Braille 'N Speak) family of devices.
 **The firmware speaks, at real settings.** Its own text-to-speech emits correct
 phoneme codes ~0.23s into emulated boot ("Braille 'n Speak ready, help, one
 page"), and the SSI-263 now receives a real volume, rate, inflection and filter
-frequency. Speech is still an *offline* workflow - trace the phoneme stream,
-render it to a WAV - because of one remaining blocker described in
-`docs/reports/speech-pipeline-investigation.md`:
+frequency. **`--audio` speaks live, in real time** - the greeting takes the
+3.6 s the hardware takes - and the device answers the keyboard.
 
-- Throughput is ~10-15k cycles/s. Correct phoneme pacing costs ~120ms of
-  emulated time each, so live `--audio` is ~1000x too slow.
+```bash
+uv run -m qns.bns --audio roms/bspeng.bns          # speaks, then type at it
+```
+
+Both blockers named in earlier notes are resolved, and neither was what it
+looked like. The "~1000x too slow" throughput wall was a **deadlock**: the
+firmware sleeps in a RAM-resident `SLP; RET` stub between phonemes, a sleeping
+core advances no cycles, so the scheduled wake was never reached and the loop
+span forever. Measured without contention the core runs 4-32M cycles/s against
+the 12.288M real time needs. See `docs/reports/speech-pipeline-investigation.md`.
 
 The old "amplitude 0" blocker is **resolved**, and was not a decode bug. The
 four speech settings live in RAM that no shipped code path initialises - a real
@@ -73,7 +80,7 @@ qns/
 └── prompts/
     ├── handoff.md                    # General handoff
     ├── z180-investigation.md         # Z180 research (RESOLVED)
-    └── silent-startup-investigation.md # Current issue
+    └── silent-startup-investigation.md # Silent startup (RESOLVED)
 ```
 
 ## Related Resources
@@ -148,11 +155,13 @@ pause phonemes (0x00) during the boot sequence.
 
 ## What's Not Working
 
-1. **Live audio output** - see `docs/reports/speech-pipeline-investigation.md`
-   - Firmware writes amplitude 0; both backends scale by `amplitude/15`
-   - Emulation throughput is ~1000x short of real-time speech
-   - (The old "silent startup" theory was wrong - the firmware speaks fine.
-     `prompts/silent-startup-investigation.md` records that resolution.)
+1. **Command responses are gappier than the greeting**
+   - The greeting holds real time because the CPU sleeps between phonemes;
+     while the firmware is working we manage ~6.9M cycles/s against the
+     12.288M real time needs, so the audio queue drains between phonemes
+   - Delivering a chord still needs the per-instruction path.  Moving
+     `keyboard_wait_pc` observation onto z-core's native PC watch should
+     reach the fast path's ~32M cycles/s and close the gaps
 
 2. **Fluency depends on the backend, by construction**
    - `pcm`: correct SSI-263 timbre, but 62 isolated recordings, so choppy

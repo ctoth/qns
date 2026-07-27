@@ -17,7 +17,8 @@ in four independent places:
 | SSI-263 pacing model wrong in 4 ways | phonemes written 82 µs apart | fixed |
 | Formant model run at the output rate | every formant detuned to ~55% | fixed |
 | Speech settings never initialised | amplitude 0, and wrong rate/pitch | fixed |
-| Throughput ~10-15k cycles/s | live audio is ~1000x too slow | **open** |
+| Sleeping CPU deadlocked the run loop | looked like ~1000x too slow | fixed |
+| Speech-power timeout threshold unset | chip silenced mid-word, every 50 ms | fixed |
 
 ## What the firmware actually does
 
@@ -230,16 +231,52 @@ Worth stating once, because every layer disagrees:
 unambiguous sense - while the CLI flags follow the API, so `--pitch` sets
 filter frequency and `--frequency` sets inflection.
 
-## Open: throughput
+## Fixed: the throughput wall was a deadlock
 
-Correct pacing means a phoneme now occupies ~120 ms of emulated time, as it
-should. At ~10-15k cycles/s, that is ~2 minutes of wall clock per phoneme.
-Real-time speech needs ~12.3M cycles/s - roughly a thousandfold gap. A 60M-cycle
-trace runs for hours.
+There was never a thousandfold gap. The "~10-15k cycles/s" figure recorded
+here was two artefacts: several emulator runs competing for one core, and -
+mostly - a run loop that made **no progress at all**.
 
-With the settings fixed this is the *only* remaining blocker for live
-`--audio`. The likely path is a native fast loop in z-core without per-chunk
-Python callbacks.
+The firmware ends every phoneme by calling a RAM-resident `SLP; RET` stub at
+`0xD654` and sleeping until the SSI-263 completes it. A sleeping Z180 advances
+no cycles, so `cpu.run()` returned 0, `cycles_run` stopped increasing, and
+`check_pending_irq` was called forever with a frozen cycle count. The
+scheduled completion could never be reached and the CPU never woke. A 40M-cycle
+capture did not run slowly; it died at ~6.2M cycles and span for eight minutes.
+
+`BNS.run` now advances emulated time to the next scheduled device event when
+the core reports no progress, so sleeping costs one iteration rather than a
+million. Where nothing is scheduled, time still passes: the Z180's own timers
+wake the background task, and asleep is not dead.
+
+Measured without contention:
+
+| path | cycles/s | vs real time (12.288M) |
+|---|---|---|
+| per-instruction stepping | ~4-5.7M | too slow |
+| `cpu.run` over a whole budget | ~32M | 2.6x headroom |
+
+`--audio` holds emulated time to wall-clock time and speaks the greeting in
+the 3.6 s the hardware takes.
+
+## Open: command responses lag real time
+
+The greeting keeps up because the CPU sleeps between phonemes and pacing
+dominates. While the firmware is actually working we manage ~6.9M cycles/s,
+so the audio queue drains between phonemes and a command response is gappier
+than the greeting.
+
+The cause is the per-instruction path, which delivering a chord still needs:
+`_observe_input_boundary` watches for the PC reaching `keyboard_wait_pc`, and
+Python sees every instruction to do it. Stepping is now paid only while a
+keystroke is in flight rather than whenever a keyboard is attached, which took
+this from 4.4M to 6.9M cycles/s - audible, but not enough.
+
+The remaining move is to put that observation on z-core's native PC watch
+(`WatchKind`, `pc_watch_hits()`, already used by `--watch-pc`), which would let
+chord delivery run on the fast path. One correctness question to settle first:
+the observer currently reads `keyboard_queue_count` at the instant of the hit,
+and a native watch reports a count rather than that instantaneous read.
 
 ## The three synthesis approaches
 
@@ -362,10 +399,12 @@ tests green.
 
 ## Suggested next steps
 
-1. Address throughput, or accept that speech is an offline-render workflow.
-3. Make `SpeechBackend` streaming rather than one buffer per phoneme. The
+1. Put `keyboard_wait_pc` observation on z-core's native PC watch, so chord
+   delivery stops forcing the per-instruction path and command responses hold
+   real time like the greeting does.
+2. Make `SpeechBackend` streaming rather than one buffer per phoneme. The
    present interface asks for "audio for this phoneme" and gets a finished
    buffer; that boundary is where continuity dies, and LPC needs a continuous
    pull.
-4. Validate `sc02_to_sc01.py` and the remaining formant divergences against
+3. Validate `sc02_to_sc01.py` and the remaining formant divergences against
    the native core.
