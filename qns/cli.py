@@ -152,7 +152,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--stats", action="store_true",
                         help="Show execution statistics at end")
+    speech = parser.add_argument_group(
+        "retained speech settings",
+        "Values a field unit keeps in battery-backed RAM.  Defaults are "
+        "the midpoint of each range documented in BSAPI.H.",
+    )
+    speech.add_argument("--volume", type=int, metavar="0-15",
+                        help="Speech amplitude (default 8)")
+    speech.add_argument("--rate", type=int, metavar="1-16",
+                        help="Speaking rate (default 9)")
+    speech.add_argument("--pitch", type=int, metavar="1-32",
+                        help="Filter frequency; the API's \"Pitch\" (default 17)")
+    speech.add_argument("--frequency", type=int, metavar="0-255",
+                        help="Inflection; the API's \"Frequency\" (default 128)")
     return parser
+
+
+# CLI names follow BSAPI.H, whose "Pitch" is the filter-frequency cell
+# and whose "Frequency" is the inflection cell.
+_SPEECH_SETTING_FIELDS = {
+    "volume": "volume",
+    "rate": "rate",
+    "pitch": "filter_frequency",
+    "frequency": "inflection",
+}
+
+
+def speech_settings(args: argparse.Namespace) -> dict[str, int]:
+    """Collect the speech settings the user overrode on the command line."""
+    return {
+        field: getattr(args, option)
+        for option, field in _SPEECH_SETTING_FIELDS.items()
+        if getattr(args, option, None) is not None
+    }
 
 
 def main() -> None:
@@ -226,6 +258,7 @@ def main() -> None:
             trace_writes_range=trace_range,
             trace_first_writes=args.trace_first_writes,
             dump_writes_file=args.dump_writes,
+            speech_settings=speech_settings(args),
             stdin_device="jsonl" if structured_stdio else (args.input or "keyboard"),
             reset=args.reset,
             serial_output=serial_output,
