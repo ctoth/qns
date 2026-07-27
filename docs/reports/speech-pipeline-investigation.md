@@ -16,7 +16,7 @@ in four independent places:
 | SC-01 ROM parameters bit-reversed | formant synthesizer had scrambled targets | fixed |
 | SSI-263 pacing model wrong in 4 ways | phonemes written 82 µs apart | fixed |
 | Formant model run at the output rate | every formant detuned to ~55% | fixed |
-| `amplitude = 0` on every event | both backends multiply to silence | **open** |
+| Speech settings never initialised | amplitude 0, and wrong rate/pitch | fixed |
 | Throughput ~10-15k cycles/s | live audio is ~1000x too slow | **open** |
 
 ## What the firmware actually does
@@ -146,34 +146,89 @@ Per-phoneme normalization was replaced with a clamp, as MAME does - scaling
 every phoneme to the same peak destroyed relative loudness of vowels against
 fricatives.
 
-## Open: amplitude is 0
+## Fixed: the speech settings were never initialised
 
-The firmware writes `0x50` to port C3 forty-four times: CTL=0, articulation 5,
-**amplitude 0**. Both backends scale by `amplitude/15`, so `--audio` produces
-digital silence. Every listening test so far used `--force-amplitude 15`.
+The firmware wrote `0x50` to port C3 - CTL=0, articulation 5, **amplitude 0** -
+so both backends multiplied to silence and every listening test needed
+`--force-amplitude 15`.
 
-What is established:
+None of the three hypotheses this section used to list was right. The BNS
+source settles it. `BSPMON.ASM::ISSET`:
 
-- Our decode matches AppleWin's masks exactly (`CONTROL 0x80 / ARTICULATION
-  0x70 / AMPLITUDE 0x0F`).
-- Neighbouring registers corroborate that layout strongly: `C1=0x00` with
-  `C2=0x08` decodes to inflection exactly 2048, neutral pitch.
-- On a real SSI-263, amplitude 0 means no output - yet the real BNS spoke.
+```asm
+ISSET:  LD A,(VOLUME)      ; VOLUME: DS 1 ;SPEECH VOLUME (0-15)
+        OR 050H            ; CTL=0, articulation 5
+        OUT (SSI263+3),A
+```
 
-So one of these is true, and it needs someone with the hardware or the BNS
-source:
+The decode was always correct - amplitude is the low nibble, exactly AppleWin's
+masks, and there is no BNS-specific `D6:D3` split. The firmware wrote `0x50`
+because it read `VOLUME` as 0.
 
-1. The BNS wires register 3 differently from the Apple II cards AppleWin
-   models. (A `D6:D3` amplitude split would read `0x50` as 10 and `0x70` as
-   14 - both plausible speaking levels.)
-2. Volume lives outside the chip on the BNS board and the register is
-   legitimately left at 0.
-3. The firmware sets amplitude on a path not exercised in the first 3.2M
-   cycles.
+**It was never only amplitude.** ISSET applies four settings, and all four read
+zero, so every render before this was also at the wrong rate and pitch:
 
-The bitsavers SC-02/SSI-263A datasheet PDF is a scan with no text layer, so it
-could not settle this. The original BNS assembly source is not on this machine
-(CLAUDE.md's `C:\Users\Q\src\bns` names a user that does not exist here).
+| register | was | decoded | now |
+|---|---|---|---|
+| C3 `VOLUME OR 50h` | `0x50` | volume 0 | `0x58` |
+| C2 `RATE<<4 OR 08h` | `0x08` | rate 0 | `0x98` |
+| C1 `INFL` | `0x00` | inflection 0 | `0x80` |
+| C4 `PITCH OR E0h` | `0xE0` | filter freq 0 | `0xF1` |
+
+These live in the monitor's uninitialised `DS` scratch area. No shipped code
+path gives them a value: `BSSPEECH.ASM::ISINIT` would, but it is dead code -
+searching the linked image for `CALL` to its address finds nothing. A field
+unit carries them in battery-backed RAM, set once through
+`BSSERIAL.ASM::EHVOL`/`EHPITC`/`EHTONE`. Starting RAM at zero therefore made
+the firmware *correctly* speak silence.
+
+`qns.loader.find_speech_parameters` recovers the cells by signature, anchored
+on ISSET's `OR 50h`, and `BNS._seed_retained_speech_settings` seeds them at
+load - not in `reset`, because surviving a reset is exactly the property that
+makes the real hardware work.
+
+Two things the addresses have to get right, both of which failed first:
+
+1. **They are physical.** They carry the same `CBR=34` common-area offset
+   `find_input_boundary` applies. Logical `0xD5FD` is physical `0x415FD`;
+   writing the logical address puts the byte in the ROM image copy, where
+   nothing reads it, and the seed reports success.
+2. **Each setting is held twice.** ISSET reads a working cell (`RATE`, `INFL`)
+   that the firmware rebuilds per utterance from a retained shadow (`NRATE`,
+   `NINFL`), applying for inflection the markers `BRL.ASM::INTON` inserts.
+   Seed only the working cell and it is overwritten partway through boot -
+   rate collapsed back to 0 at cycle 3,235,311, just past where the first
+   check looked. Seed only the shadow and the setting is wrong until the
+   first rebuild. Both are seeded.
+
+### Choosing values
+
+`BSAPI.H` and `BNSAPI.H` document the ranges and agree exactly:
+
+```
+Volume 0..15    Pitch 1..32    Rate 1..16    Frequency 0..255
+```
+
+Defaults are the midpoint of each: **volume 8, rate 9, pitch 17, frequency
+128**, overridable with `--volume/--rate/--pitch/--frequency`. This is a
+deliberate neutral choice, not a recovered default - nothing in the firmware
+records what a unit shipped with. The only nearby hints agree loosely: dead
+`ISINIT` used volume 6, and the ROM's own zero-argument fallback for rate is 10.
+
+### The names cross three ways
+
+Worth stating once, because every layer disagrees:
+
+| firmware variable | chip register | API name |
+|---|---|---|
+| `VOLUME` | C3 amplitude | Volume |
+| `RATE` | C2 rate | Rate |
+| `INFL` | C1 inflection | **Frequency** |
+| `PITCH` | C4 filter frequency | **Pitch** |
+
+`SpeechParameters` names its fields for the chip register - the one
+unambiguous sense - while the CLI flags follow the API, so `--pitch` sets
+filter frequency and `--frequency` sets inflection.
 
 ## Open: throughput
 
@@ -182,8 +237,9 @@ should. At ~10-15k cycles/s, that is ~2 minutes of wall clock per phoneme.
 Real-time speech needs ~12.3M cycles/s - roughly a thousandfold gap. A 60M-cycle
 trace runs for hours.
 
-This is the blocker for live `--audio` independent of amplitude. The likely
-path is a native fast loop in z-core without per-chunk Python callbacks.
+With the settings fixed this is the *only* remaining blocker for live
+`--audio`. The likely path is a native fast loop in z-core without per-chunk
+Python callbacks.
 
 ## The three synthesis approaches
 
@@ -234,6 +290,10 @@ Judged by ear by the project owner, same phoneme stream throughout:
   glide given a full syllable's length from the SC-01 ROM.
 - LPC with captured residual: most fluent so far, timbre close to the PCM
   reference.
+
+All of the above were rendered with `--force-amplitude 15` and, unknowingly,
+at rate 0 and filter frequency 0. They should be re-judged now that the
+firmware supplies real settings - traces no longer need any forcing.
 
 ## Tools added
 
@@ -302,8 +362,7 @@ tests green.
 
 ## Suggested next steps
 
-1. Resolve the amplitude question (needs hardware knowledge or BNS source).
-2. Address throughput, or accept that speech is an offline-render workflow.
+1. Address throughput, or accept that speech is an offline-render workflow.
 3. Make `SpeechBackend` streaming rather than one buffer per phoneme. The
    present interface asks for "audio for this phoneme" and gets a finished
    buffer; that boundary is where continuity dies, and LPC needs a continuous

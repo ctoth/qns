@@ -6,17 +6,23 @@ Emulator for the Blazie Engineering BNS (Braille 'N Speak) family of devices.
 
 **Z180 CPU boots successfully.** Firmware runs, memory works, keyboard interrupt functional.
 
-**The firmware speaks.** Its own text-to-speech emits correct phoneme codes
-~0.23s into emulated boot ("Braille 'n Speak ready, help, one page"). Speech is
-currently an *offline* workflow - trace the phoneme stream, render it to a WAV -
-because of two open blockers described in
+**The firmware speaks, at real settings.** Its own text-to-speech emits correct
+phoneme codes ~0.23s into emulated boot ("Braille 'n Speak ready, help, one
+page"), and the SSI-263 now receives a real volume, rate, inflection and filter
+frequency. Speech is still an *offline* workflow - trace the phoneme stream,
+render it to a WAV - because of one remaining blocker described in
 `docs/reports/speech-pipeline-investigation.md`:
 
-1. The firmware writes **amplitude 0** to the SSI-263, so both backends
-   multiply to silence. Needs hardware knowledge to resolve; renders use
-   `--force-amplitude 15` meanwhile.
-2. Throughput is ~10-15k cycles/s. Correct phoneme pacing costs ~120ms of
-   emulated time each, so live `--audio` is ~1000x too slow.
+- Throughput is ~10-15k cycles/s. Correct phoneme pacing costs ~120ms of
+  emulated time each, so live `--audio` is ~1000x too slow.
+
+The old "amplitude 0" blocker is **resolved**, and was not a decode bug. The
+four speech settings live in RAM that no shipped code path initialises - a real
+unit retains them on battery - so a machine booting RAM at zero made the
+firmware correctly write silence, at the wrong rate and pitch too. `qns.loader`
+discovers the cells and `BNS` seeds them at load; `--force-amplitude` is no
+longer needed. Override with `--volume/--rate/--pitch/--frequency` (names follow
+`BSAPI.H`, so `--pitch` is filter frequency and `--frequency` is inflection).
 
 ```bash
 # Trace the phoneme stream (streams to CSV as it runs)
@@ -74,8 +80,12 @@ qns/
 
 - **z-core**: `https://github.com/ctoth/z-core` - production Z180 core and Python binding
 - **z180emu**: `C:\Users\Q\src\z180emu\` - legacy CFFI benchmark core
-- **BNS source**: `C:\Users\Q\src\bns\` - Original Blazie source (ASM)
-- **Technical report**: `C:\Users\Q\src\bns\EMULATION_REPORT.md`
+- **BNS source**: `C:\Users\David\Dropbox\Daiverd and Q\bns\` - Original Blazie
+  source. `bsp/` holds the firmware: `BSSPEECH.ASM` and `BSPMON.ASM` (ISSET,
+  the SSI-263 driver), `BSSERIAL.ASM` (Echo parameter handlers), `BRL.ASM`
+  (text to phonemes), `LIB/BSPORTS.LIB` (port map), `include/BSAPI.H` and
+  `include/BNSAPI.H` (documented speech-parameter ranges).
+- **Technical report**: `C:\Users\David\Dropbox\Daiverd and Q\bns\EMULATION_REPORT.md`
 - **AppleWin SSI-263**: `C:\Users\Q\src\AppleWin\source\SSI263.cpp`
 
 ## Hardware Target
