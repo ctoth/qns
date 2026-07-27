@@ -23,11 +23,20 @@ PHONE_NAMES = [
 
 
 def bitswap(val: int, *bits: int) -> int:
-    """Extract bits from val at specified positions, LSB first."""
+    """Extract bits from val at specified positions, MSB first.
+
+    Matches MAME's util::bitswap(), which votrax.cpp uses to read this ROM:
+    the FIRST listed position becomes the most significant bit of the
+    right-aligned result.  Reading LSB-first instead bit-reverses every
+    field, which silently swapped formant frequencies (e.g. it gave the low
+    back vowel AH an F2 of 12 and the front vowel A an F2 of 13, when the
+    real values are 3 and 11).
+    """
     result = 0
+    width = len(bits)
     for i, bit in enumerate(bits):
         if val & (1 << bit):
-            result |= (1 << i)
+            result |= 1 << (width - 1 - i)
     return result
 
 
