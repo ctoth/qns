@@ -124,6 +124,26 @@ def _phoneme_length_samples(phoneme: int) -> int:
     return 0
 
 
+def playback_length_samples(phoneme: int, duration: int) -> int:
+    """How many samples one phoneme plays for under a duration mode.
+
+    The duration mode decimates the waveform (1, 4/3, 2 or 4), which is what
+    decides both when the chip reports the phoneme complete and how much
+    audio a backend has to produce to fill that time.  Both need the same
+    number, so both ask here.
+    """
+    samples = _phoneme_length_samples(phoneme)
+    if samples <= 0:
+        return 0
+    if duration == 1:
+        return (samples * 3) // 4
+    if duration == 2:
+        return samples // 2
+    if duration == 3:
+        return samples // 4
+    return samples
+
+
 @dataclass(frozen=True)
 class Phoneme:
     """One captured SSI-263 phoneme with its datasheet description."""
@@ -316,17 +336,9 @@ class SSI263:
         and only estimates a duration for a log line.  Using it here gave
         256 ms phonemes, roughly four times too long.
         """
-        samples = _phoneme_length_samples(self.phoneme)
+        samples = playback_length_samples(self.phoneme, self.playback_duration)
         if samples <= 0:
             return 0
-
-        duration = self.playback_duration
-        if duration == 1:
-            samples = (samples * 3) // 4
-        elif duration == 2:
-            samples //= 2
-        elif duration == 3:
-            samples //= 4
 
         return int(samples * self._clock / _PHONEME_SAMPLE_RATE)
 
