@@ -28,6 +28,7 @@ from .loader import (
     RETAINED_SPEECH_DEFAULTS,
     EnglishBoundary,
     InputBoundary,
+    SpeechParameters,
     find_english_boundary,
     find_input_boundary,
     find_speech_parameters,
@@ -205,7 +206,9 @@ class BNS:
         self._english_boundary: EnglishBoundary | None = None
         self._input_boundary: InputBoundary | None = None
         self._input_driver: ChordInputDriver | None = None
-        self._speech_settings = RETAINED_SPEECH_DEFAULTS | (speech_settings or {})
+        self._speech_overrides = dict(speech_settings or {})
+        self._speech_settings = RETAINED_SPEECH_DEFAULTS | self._speech_overrides
+        self._speech_parameters: SpeechParameters | None = None
         self.realtime = realtime
         # Real-time pacing sleeps between chunks, so the chunk sets the
         # granularity of that sleep.  1000 cycles is 81 us at 12.288 MHz -
@@ -977,24 +980,37 @@ class BNS:
                 f"0x{timeout.address:05X}"
             )
 
-        parameters = find_speech_parameters(firmware, self.profile.ssi263_port)
-        if parameters is None:
+        self._speech_parameters = find_speech_parameters(
+            firmware,
+            self.profile.ssi263_port,
+        )
+        if self._speech_parameters is None:
             print("Retained speech settings: ISSET not found, leaving RAM at 0")
             return
 
-        for field, value in self._speech_settings.items():
-            for address in getattr(parameters, field):
-                self.memory.write(address, value)
+        self._write_retained_speech_settings(self._speech_settings)
         print(
             "Retained speech settings: "
             + ", ".join(
                 f"{field} {self._speech_settings[field]} @ "
                 + "/".join(
-                    f"0x{address:05X}" for address in getattr(parameters, field)
+                    f"0x{address:05X}"
+                    for address in getattr(self._speech_parameters, field)
                 )
                 for field in RETAINED_SPEECH_DEFAULTS
             )
         )
+
+    def _write_retained_speech_settings(
+        self,
+        settings: dict[str, int],
+    ) -> None:
+        """Write selected retained settings to every firmware-owned cell."""
+        if self._speech_parameters is None:
+            return
+        for field, value in settings.items():
+            for address in getattr(self._speech_parameters, field):
+                self.memory.write(address, value)
 
     def reset(self) -> None:
         """Reset the emulator."""
@@ -1229,6 +1245,7 @@ class BNS:
     def load_state(self, path: Path | str) -> None:
         """Load the BNS nonvolatile RAM state."""
         self.memory.load_state(path)
+        self._write_retained_speech_settings(self._speech_overrides)
         print(f"Loaded nonvolatile RAM state: {path}")
 
     def save_state(self, path: Path | str) -> None:
@@ -1239,6 +1256,7 @@ class BNS:
     def load_state_dir(self, path: Path | str) -> None:
         """Load BNS nonvolatile state from a directory."""
         self.memory.load_state_dir(path)
+        self._write_retained_speech_settings(self._speech_overrides)
         print(f"Loaded nonvolatile state directory: {path}")
 
     def save_state_dir(self, path: Path | str) -> None:
