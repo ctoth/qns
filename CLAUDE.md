@@ -6,11 +6,24 @@ Emulator for the Blazie Engineering BNS (Braille 'N Speak) family of devices.
 
 **Z180 CPU boots successfully.** Firmware runs, memory works, keyboard interrupt functional.
 
-**Silent startup mystery.** All ROMs take silent path - SSI-263 only receives pause phonemes.
+**The firmware speaks.** Its own text-to-speech emits correct phoneme codes
+~0.23s into emulated boot ("Braille 'n Speak ready, help, one page"). Speech is
+currently an *offline* workflow - trace the phoneme stream, render it to a WAV -
+because of two open blockers described in
+`docs/reports/speech-pipeline-investigation.md`:
+
+1. The firmware writes **amplitude 0** to the SSI-263, so both backends
+   multiply to silence. Needs hardware knowledge to resolve; renders use
+   `--force-amplitude 15` meanwhile.
+2. Throughput is ~10-15k cycles/s. Correct phoneme pacing costs ~120ms of
+   emulated time each, so live `--audio` is ~1000x too slow.
 
 ```bash
-# Run emulator (boots but doesn't speak)
-uv run python -m qns.bns --audio roms/NFB99/BSPENG/bspeng.bns
+# Trace the phoneme stream (streams to CSV as it runs)
+uv run -m qns.bns --cycles 6000000 --trace-speech speech.csv roms/bspeng.bns
+
+# Render it offline and listen (paplay works under WSLg)
+uv run tools/lpc_resynth.py speech.csv out.wav && paplay out.wav
 
 # SSI-263 synth works standalone
 uv run pytest tests/test_synth.py::test_synth_speaks_phoneme -v -s
@@ -125,11 +138,18 @@ pause phonemes (0x00) during the boot sequence.
 
 ## What's Not Working
 
-1. **Speech Output** - Firmware takes "silent startup" path
-   - ONFLG flag check at BS.ASM:2169 causes skip
-   - See `prompts/silent-startup-investigation.md`
+1. **Live audio output** - see `docs/reports/speech-pipeline-investigation.md`
+   - Firmware writes amplitude 0; both backends scale by `amplitude/15`
+   - Emulation throughput is ~1000x short of real-time speech
+   - (The old "silent startup" theory was wrong - the firmware speaks fine.
+     `prompts/silent-startup-investigation.md` records that resolution.)
 
-2. **Missing Peripherals**
+2. **Fluency depends on the backend, by construction**
+   - `pcm`: correct SSI-263 timbre, but 62 isolated recordings, so choppy
+   - `formant`: continuous, but SC-01 - the wrong chip's voice
+   - `tools/lpc_resynth.py`: correct timbre and continuous, not yet a backend
+
+3. **Missing Peripherals**
    - RTC (0x60-0x6F) - returns 0xFF
    - Status ports may need proper emulation
 
