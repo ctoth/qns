@@ -52,7 +52,12 @@ class SSI263LPCSynth:
 
     def play(self, state: SSI263State) -> None:
         """Produce audio for one decoded phoneme event from the chip."""
-        self._emit(state.phoneme, state.amplitude, state.playback_duration)
+        self._emit(
+            state.phoneme,
+            state.amplitude,
+            state.playback_duration,
+            state.rate,
+        )
 
     def speak_phoneme(self, phoneme: int, amplitude: int = 15) -> None:
         """Play a phoneme directly, outside emulator integration."""
@@ -67,6 +72,7 @@ class SSI263LPCSynth:
         phoneme: int,
         amplitude: int = 15,
         duration: int = 0,
+        rate: int = 8,
     ) -> np.ndarray:
         """Resynthesize one phoneme, continuing on from the previous one.
 
@@ -92,12 +98,18 @@ class SSI263LPCSynth:
             # to remove.
             return np.zeros(1, dtype=np.float32)
 
-        samples = playback_length_samples(phoneme, duration)
+        samples = playback_length_samples(phoneme, duration, rate)
         return self._stream.render(phoneme & 0x3F, samples, amplitude)
 
-    def _emit(self, phoneme: int, amplitude: int, duration: int = 0) -> None:
+    def _emit(
+        self,
+        phoneme: int,
+        amplitude: int,
+        duration: int = 0,
+        rate: int = 8,
+    ) -> None:
         if self._phoneme_callback is not None:
             self._phoneme_callback(phoneme)
-        audio = self.get_phoneme_audio(phoneme, amplitude, duration)
+        audio = self.get_phoneme_audio(phoneme, amplitude, duration, rate)
         if self._player is not None:
             self._player.play(audio)

@@ -101,6 +101,7 @@ _MODE_IRQ_DISABLED = 0
 # The phoneme waveform table is the model for how long a phoneme lasts.
 # Imported lazily: qns.synth imports back from this module.
 _PHONEME_SAMPLE_RATE = 22050
+_CAPTURE_RATE = 8
 _phoneme_lengths: tuple[int, ...] | None = None
 
 
@@ -124,24 +125,32 @@ def _phoneme_length_samples(phoneme: int) -> int:
     return 0
 
 
-def playback_length_samples(phoneme: int, duration: int) -> int:
-    """How many samples one phoneme plays for under a duration mode.
+def playback_length_samples(
+    phoneme: int,
+    duration: int,
+    rate: int = _CAPTURE_RATE,
+) -> int:
+    """How many samples one phoneme plays for under rate and duration.
 
     The duration mode decimates the waveform (1, 4/3, 2 or 4), which is what
-    decides both when the chip reports the phoneme complete and how much
-    audio a backend has to produce to fill that time.  Both need the same
-    number, so both ask here.
+    combines with the 4-bit rate control to decide both when the chip reports
+    the phoneme complete and how much audio a backend has to produce to fill
+    that time.  The fixed captures have no recorded register settings, so
+    rate 8 is their neutral playback point; the chip's documented linear
+    ``16 - rate`` timing scale changes their length around that point.
     """
     samples = _phoneme_length_samples(phoneme)
     if samples <= 0:
         return 0
     if duration == 1:
-        return (samples * 3) // 4
-    if duration == 2:
-        return samples // 2
-    if duration == 3:
-        return samples // 4
-    return samples
+        samples = (samples * 3) // 4
+    elif duration == 2:
+        samples //= 2
+    elif duration == 3:
+        samples //= 4
+
+    rate = rate & 0x0F
+    return max(1, (samples * (16 - rate)) // (16 - _CAPTURE_RATE))
 
 
 @dataclass(frozen=True)
@@ -161,7 +170,7 @@ class SSI263State:
     phoneme: int        # 6-bit phoneme code (0-63)
     duration: int       # 2-bit mode selector as written (0 = IRQ disabled)
     inflection: int     # 12-bit inflection (0-4095), 2048 = neutral pitch
-    rate: int           # 4-bit rate (0-15), 0 = fastest
+    rate: int           # 4-bit rate (0-15), 0 = slowest
     articulation: int   # 3-bit articulation (0-7)
     amplitude: int      # 4-bit amplitude (0-15)
     filter_freq: int    # 8-bit filter frequency (0-255), 0xFF = silence
@@ -336,7 +345,11 @@ class SSI263:
         and only estimates a duration for a log line.  Using it here gave
         256 ms phonemes, roughly four times too long.
         """
-        samples = playback_length_samples(self.phoneme, self.playback_duration)
+        samples = playback_length_samples(
+            self.phoneme,
+            self.playback_duration,
+            self.rate,
+        )
         if samples <= 0:
             return 0
 

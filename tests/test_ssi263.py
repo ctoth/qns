@@ -59,6 +59,20 @@ def test_chip_snapshot_reaches_backend_play() -> None:
     assert states[-1].amplitude == 15
 
 
+def test_chip_rate_changes_phoneme_completion_pacing() -> None:
+    def completion_cycles(rate: int) -> int:
+        chip = SSI263()
+        chip.write(chip.base_port + chip.REG_DURPHON, 0xC2)
+        chip.write(chip.base_port + chip.REG_RATEINF, rate << 4)
+        chip.set_cycle_count(1_000)
+        chip.write(chip.base_port + chip.REG_CTRLAMP, 0x0F)
+
+        assert chip.pending_irq_cycle is not None
+        return chip.pending_irq_cycle - chip.current_cycle
+
+    assert completion_cycles(0) > completion_cycles(15)
+
+
 def test_chip_writes_are_silent_and_capture_named_phonemes(capsys) -> None:
     chip = SSI263()
 

@@ -77,6 +77,19 @@ def test_lpc_matches_the_chips_own_phoneme_duration():
         assert len(rendered) == playback_length_samples(0x2D, duration)
 
 
+def test_lpc_uses_rate_dependent_playback_length():
+    from qns.ssi263 import playback_length_samples
+
+    slow_backend = SSI263LPCSynth(audio_enabled=False)
+    fast_backend = SSI263LPCSynth(audio_enabled=False)
+    slow = slow_backend.get_phoneme_audio(0x2D, 15, duration=0, rate=0)
+    fast = fast_backend.get_phoneme_audio(0x2D, 15, duration=0, rate=15)
+
+    assert len(slow) == playback_length_samples(0x2D, duration=0, rate=0)
+    assert len(fast) == playback_length_samples(0x2D, duration=0, rate=15)
+    assert len(slow) > len(fast)
+
+
 def test_lpc_stream_reset_restores_a_fresh_voice():
     """reset() has to clear every piece of carried state, not just some.
 

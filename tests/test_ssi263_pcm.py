@@ -3,7 +3,7 @@
 import numpy as np
 
 from qns.bns import BNS
-from qns.ssi263 import SSI263
+from qns.ssi263 import SSI263, playback_length_samples
 from qns.synth.phonemes import get_phoneme_samples
 from qns.synth.ssi263_pcm import SSI263PCMSynth
 
@@ -27,6 +27,17 @@ def test_pcm_backend_honors_zero_amplitude() -> None:
     assert np.any(synth.get_phoneme_audio(2, amplitude=15))
     assert not np.any(synth.get_phoneme_audio(2, amplitude=0))
     assert not np.any(synth.get_phoneme_audio(0, amplitude=15))
+
+
+def test_pcm_backend_uses_rate_dependent_playback_length() -> None:
+    synth = SSI263PCMSynth(audio_enabled=False)
+
+    slow = synth.get_phoneme_audio(2, amplitude=15, rate=0)
+    fast = synth.get_phoneme_audio(2, amplitude=15, rate=15)
+
+    assert len(slow) == playback_length_samples(2, duration=0, rate=0)
+    assert len(fast) == playback_length_samples(2, duration=0, rate=15)
+    assert len(slow) > len(fast)
 
 
 def test_chip_drives_pcm_backend_on_wake_and_active_phoneme_write() -> None:

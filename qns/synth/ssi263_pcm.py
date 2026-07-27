@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from ..ssi263 import SSI263State
+from ..ssi263 import SSI263State, playback_length_samples
 from .phonemes import PHONEME_INFO, SAMPLE_RATE, get_phoneme_samples
 from .player import AudioPlayer
 
@@ -44,7 +44,12 @@ class SSI263PCMSynth:
 
     def play(self, state: SSI263State) -> None:
         """Produce audio for one decoded phoneme event from the chip."""
-        self._emit(state.phoneme, state.amplitude, state.playback_duration)
+        self._emit(
+            state.phoneme,
+            state.amplitude,
+            state.playback_duration,
+            state.rate,
+        )
 
     def speak_phoneme(self, phoneme: int, amplitude: int = 15) -> None:
         """Play a phoneme directly, outside emulator integration."""
@@ -88,6 +93,7 @@ class SSI263PCMSynth:
         phoneme: int,
         amplitude: int = 15,
         duration: int = 0,
+        rate: int = 8,
     ) -> np.ndarray:
         """Return the available fixed capture as normalized float32 samples.
 
@@ -109,12 +115,26 @@ class SSI263PCMSynth:
         gain = max(0, min(15, amplitude)) / 15.0
         samples = get_phoneme_samples(data_index).astype(np.float32)
         samples = self._apply_duration(samples, duration)
+        target_length = playback_length_samples(phoneme, duration, rate)
+        if target_length != len(samples):
+            positions = np.linspace(0, len(samples) - 1, target_length)
+            samples = np.interp(
+                positions,
+                np.arange(len(samples)),
+                samples,
+            ).astype(np.float32)
         return samples * (gain / 32768.0)
 
-    def _emit(self, phoneme: int, amplitude: int, duration: int = 0) -> None:
+    def _emit(
+        self,
+        phoneme: int,
+        amplitude: int,
+        duration: int = 0,
+        rate: int = 8,
+    ) -> None:
         if self._phoneme_callback is not None:
             self._phoneme_callback(phoneme)
         if self._player is not None:
             self._player.play(
-                self.get_phoneme_audio(phoneme, amplitude, duration)
+                self.get_phoneme_audio(phoneme, amplitude, duration, rate)
             )
