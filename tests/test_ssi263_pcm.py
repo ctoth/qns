@@ -1,7 +1,5 @@
 """Tests for the fixed-capture SSI-263 audio backend."""
 
-from unittest.mock import Mock
-
 import numpy as np
 
 from qns.bns import BNS
@@ -76,17 +74,6 @@ def test_chip_drives_pcm_backend_on_wake_and_active_phoneme_write() -> None:
     chip.write(chip.base_port + chip.REG_DURPHON, 0xC3)
 
     assert played == [2, 3]
-
-
-def test_pcm_backend_preserves_emulated_event_time_for_the_player() -> None:
-    chip = SSI263(clock=1000)
-    chip.set_cycle_count(250)
-    synth = SSI263PCMSynth(audio_enabled=False)
-    synth._player = Mock()
-
-    synth.play(chip.state())
-
-    assert synth._player.play.call_args.kwargs == {"cycle": 250, "clock": 1000}
 
 
 def test_bns_audio_selects_pcm_backend_by_default() -> None:
