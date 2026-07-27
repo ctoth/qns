@@ -95,6 +95,7 @@ qns/
 │   ├── decode_sc01_rom.py    # Regenerates qns/synth/sc01_rom.py
 │   ├── extract_firmware.py   # Package -> .bin extraction (uses qns.loader)
 │   ├── render_backend.py     # Trace -> WAV through a live --audio backend
+│   ├── lpc_track_experiment.py # Unfinished time-varying LPC (not a backend)
 │   └── rom_analyzer.py       # ROM bank/structure analysis
 ├── tests/                    # pytest suite (uv run pytest tests/)
 ├── roms/NFB99/               # ROM images (update packages)
@@ -194,11 +195,20 @@ pause phonemes (0x00) during the boot sequence.
 2. **Fluency depends on the backend, by construction**
    - `pcm`: correct SSI-263 timbre, but 62 isolated recordings, so choppy
    - `formant`: continuous, but SC-01 - the wrong chip's voice
-   - `lpc`: correct timbre and continuous, and now a live backend.  It
-     keeps 61% of the normal level through a phoneme boundary against
-     `pcm`'s 37% (`tests/test_lpc_backend.py`).  Unlike the offline
-     `tools/lpc_resynth.py` it has no lookahead, so it glides into each
-     phoneme's head rather than straddling the boundary
+   - `lpc`: continuous, and now a live backend, but it loses stop
+     consonants - a 41 ms burst becomes stationary noise at the same
+     average level, so /p/ and /k/ measure 5-10x below `pcm`'s peak.
+     Unlike the offline `tools/lpc_resynth.py` it has no lookahead, so it
+     glides into each phoneme's head rather than straddling the boundary
+   - **By ear, `pcm` is still the most accurate.**  The underlying
+     choppiness is neither backend's fault: the captures were recorded as
+     isolated utterances and 82% of them decay to 34% of their middle
+     level in their final 10%, which modulates amplitude at the phoneme
+     rate.  Filter gliding does not touch it and makes it worse
+   - `tools/lpc_track_experiment.py` is the unfinished idea that matches
+     `pcm`'s stop bursts exactly.  See
+     `docs/reports/lpc-backend-investigation.md` for the measurements, the
+     four theories that were refuted, and what to do next
 
 3. **Missing Peripherals**
    - RTC (0x60-0x6F) - returns 0xFF
