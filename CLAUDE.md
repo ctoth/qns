@@ -14,6 +14,18 @@ frequency. **`--audio` speaks live, in real time** - the greeting takes the
 
 ```bash
 uv run -m qns.bns --audio roms/bspeng.bns          # speaks, then type at it
+uv run -m qns.bns --audio lpc roms/bspeng.bns      # pcm (default), lpc, or formant
+```
+
+To compare the backends by ear without a working sound device, or without
+waiting out a real-time boot each time, render a trace through the very
+backend `--audio` uses:
+
+```bash
+uv run -m qns.bns --cycles 60000000 --input none \
+    --trace-speech greeting.csv roms/bspeng.bns
+uv run tools/render_backend.py greeting.csv out/lpc.wav --backend lpc
+paplay out/lpc.wav
 ```
 
 **Do not combine `--audio` with `--speech`/`--speech-stream english`.** Those
@@ -56,6 +68,8 @@ qns/
 │   ├── synth/                # SSI-263 audio backends
 │   │   ├── __init__.py       # Exports SSI263Synth, SSI263PCMSynth, FormantSynth
 │   │   ├── phonemes.py       # AppleWin captures: 62 phonemes @ 22050 Hz
+│   │   ├── lpc.py            # LPC analysis + LPCStream continuous voice
+│   │   ├── ssi263_lpc.py     # LPC-resynthesis backend
 │   │   ├── ssi263_pcm.py     # PCM-capture backend (default)
 │   │   ├── ssi263_synth.py   # Formant-synthesis backend
 │   │   ├── formant.py        # SC-01 formant model (from MAME votrax)
@@ -80,6 +94,7 @@ qns/
 │   ├── extract_phonemes.py   # Extract phonemes from AppleWin
 │   ├── decode_sc01_rom.py    # Regenerates qns/synth/sc01_rom.py
 │   ├── extract_firmware.py   # Package -> .bin extraction (uses qns.loader)
+│   ├── render_backend.py     # Trace -> WAV through a live --audio backend
 │   └── rom_analyzer.py       # ROM bank/structure analysis
 ├── tests/                    # pytest suite (uv run pytest tests/)
 ├── roms/NFB99/               # ROM images (update packages)
@@ -146,13 +161,20 @@ pause phonemes (0x00) during the boot sequence.
    - The image boundary is discovered from the package's own length/CRC
      metadata (0x3000 classic, 0x7000/0x8000 Millennium)
 
-3. **SSI-263 Synthesizer** - Two selectable audio backends (`--synth`)
+3. **SSI-263 Synthesizer** - Three selectable audio backends (`--audio BACKEND`)
    - `pcm` (default): AppleWin phoneme captures
+   - `lpc`: those same captures analysed into an all-pole filter plus
+     excitation (`qns/synth/lpc.py`) and resynthesized through one
+     continuous, gliding filter - the chip's timbre without the boundaries
    - `formant`: SC-01 formant synthesis ported from MAME's Votrax,
      with the SC-02 to SC-01 mapping from the datasheet
      (see `docs/sc02-phoneme-mapping.md` and `datasheet.pdf`)
    - The chip (`qns/ssi263.py`) owns register decode and pushes decoded
      `SSI263State` snapshots to a backend via `set_synth()`
+   - Every backend renders each phoneme for exactly
+     `qns.ssi263.playback_length_samples()`, the same duration model the
+     chip schedules its completion interrupt from, so audio cannot drift
+     against the emulated clock
 
 4. **Memory System** - Physical addressing works
    - z-core owns the 512 KiB RAM hot path and Z180 MMU translation
@@ -172,7 +194,11 @@ pause phonemes (0x00) during the boot sequence.
 2. **Fluency depends on the backend, by construction**
    - `pcm`: correct SSI-263 timbre, but 62 isolated recordings, so choppy
    - `formant`: continuous, but SC-01 - the wrong chip's voice
-   - `tools/lpc_resynth.py`: correct timbre and continuous, not yet a backend
+   - `lpc`: correct timbre and continuous, and now a live backend.  It
+     keeps 61% of the normal level through a phoneme boundary against
+     `pcm`'s 37% (`tests/test_lpc_backend.py`).  Unlike the offline
+     `tools/lpc_resynth.py` it has no lookahead, so it glides into each
+     phoneme's head rather than straddling the boundary
 
 3. **Missing Peripherals**
    - RTC (0x60-0x6F) - returns 0xFF
