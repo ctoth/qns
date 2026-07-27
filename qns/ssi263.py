@@ -91,6 +91,39 @@ PHONEMES: dict[int, tuple[str, str, str]] = {
 }
 
 
+# DURPHON mode selector values, shifted down from the datasheet's register
+# encoding (0xC0/0x80/0x40/0x00).
+_MODE_PHONEME_TRANSITIONED = 3
+_MODE_PHONEME_IMMEDIATE = 2
+_MODE_FRAME_IMMEDIATE = 1
+_MODE_IRQ_DISABLED = 0
+
+# The phoneme waveform table is the model for how long a phoneme lasts.
+# Imported lazily: qns.synth imports back from this module.
+_PHONEME_SAMPLE_RATE = 22050
+_phoneme_lengths: tuple[int, ...] | None = None
+
+
+def _phoneme_length_samples(phoneme: int) -> int:
+    """Waveform length of one phoneme, in samples at _PHONEME_SAMPLE_RATE."""
+    global _phoneme_lengths
+    if _phoneme_lengths is None:
+        from .synth.phonemes import PHONEME_INFO
+
+        _phoneme_lengths = tuple(length for _, length in PHONEME_INFO)
+
+    code = phoneme & 0x3F
+    if code == 0:
+        # Pause has no capture; AppleWin uses the first phoneme's length.
+        return _phoneme_lengths[0] if _phoneme_lengths else 0
+    if code == 1:
+        code = 2
+    index = code - 2
+    if 0 <= index < len(_phoneme_lengths):
+        return _phoneme_lengths[index]
+    return 0
+
+
 @dataclass(frozen=True)
 class Phoneme:
     """One captured SSI-263 phoneme with its datasheet description."""
@@ -106,12 +139,16 @@ class SSI263State:
     """Decoded SSI-263 register state captured at one phoneme event."""
 
     phoneme: int        # 6-bit phoneme code (0-63)
-    duration: int       # 2-bit duration mode (0-3), 0 = IRQ disabled
+    duration: int       # 2-bit mode selector as written (0 = IRQ disabled)
     inflection: int     # 12-bit inflection (0-4095), 2048 = neutral pitch
     rate: int           # 4-bit rate (0-15), 0 = fastest
     articulation: int   # 3-bit articulation (0-7)
     amplitude: int      # 4-bit amplitude (0-15)
     filter_freq: int    # 8-bit filter frequency (0-255), 0xFF = silence
+    # Duration mode that actually governs playback speed.  Frame timing mode
+    # forces it to 3 regardless of the bits written, and a mode-0 write keeps
+    # whatever the last CTL H->L latched, so this is not always `duration`.
+    playback_duration: int = 0
 
 
 class SpeechBackend(Protocol):
@@ -166,6 +203,19 @@ class SSI263:
 
         self.speaking = False
 
+        # Mode latched at the last CTL H->L transition.  The two high bits of
+        # DURPHON select one of three modes, or 0 meaning "disable A/!R output
+        # only; does not change previous A/!R response" - so a mode-0 write
+        # must NOT be read as "this phoneme has no interrupt", which would
+        # silently remove the handshake that paces the whole utterance.
+        self._mode_function = 0     # 1 = frame timing, 2/3 = phoneme timing
+        self._mode_enable_ints = False
+
+        # A/!R status, returned inverted in bit 7 of any register read.  Set
+        # when a phoneme completes (even with interrupts disabled), cleared by
+        # writes to registers 0-2 or by entering standby.
+        self._d7 = False
+
         # Timing for INT1 (phoneme completion interrupt)
         self._pending_irq_cycle: int | None = None  # Cycle when INT1 should fire
         self._current_cycle: int = 0  # Current cycle count (set via set_cycle_count)
@@ -177,8 +227,29 @@ class SSI263:
 
     @property
     def irq_enabled(self) -> bool:
-        """Whether the current duration mode enables the completion IRQ."""
-        return self.duration != 0
+        """Whether the latched mode enables the completion IRQ.
+
+        This is the mode captured at the last CTL H->L transition, not the
+        mode bits of the most recent DURPHON write: writing mode 0 disables
+        the A/!R output without changing the retained response.
+        """
+        return self._mode_enable_ints
+
+    @property
+    def playback_duration(self) -> int:
+        """Duration mode that governs how fast a phoneme plays out.
+
+        Frame timing mode plays every phoneme at the shortest duration
+        regardless of the bits written.
+        """
+        if self._mode_function == _MODE_FRAME_IMMEDIATE:
+            return 3
+        return self.duration
+
+    @property
+    def request_pending(self) -> bool:
+        """Whether A/!R is asserted, i.e. the last phoneme has completed."""
+        return self._d7
 
     @property
     def irq_pending(self) -> bool:
@@ -225,31 +296,77 @@ class SSI263:
     def _calc_phoneme_duration_cycles(self) -> int:
         """Calculate phoneme duration in CPU cycles.
 
-        Uses the AppleWin formula from SSI263.cpp line 95:
-            phonemeDuration_ms = (((16 - rate) * 4096) / 1023) * (4 - dur_mode)
+        A phoneme lasts as long as it takes to play out, which is the length
+        of the phoneme's waveform divided by the decimation the duration mode
+        selects (1, 4/3, 2 or 4).  This is how AppleWin's SSI263 completes a
+        phoneme: it decrements m_phonemeLengthRemaining per output sample and
+        signals completion when it reaches zero.
+
+        Note the formula in AppleWin's SSI_Output() - (((16-rate)*4096)/1023)
+        * (4-dur) - is not this: it lives inside a LOG_SSI263B debug logger
+        and only estimates a duration for a log line.  Using it here gave
+        256 ms phonemes, roughly four times too long.
         """
-        duration_ms = (((16 - self.rate) * 4096) // 1023) * (4 - self.duration)
-        return (duration_ms * self._clock) // 1000
+        samples = _phoneme_length_samples(self.phoneme)
+        if samples <= 0:
+            return 0
+
+        duration = self.playback_duration
+        if duration == 1:
+            samples = (samples * 3) // 4
+        elif duration == 2:
+            samples //= 2
+        elif duration == 3:
+            samples //= 4
+
+        return int(samples * self._clock / _PHONEME_SAMPLE_RATE)
 
     def check_pending_irq(self, current_cycle: int) -> None:
-        """Fire the scheduled INT1 once its cycle is reached. Call from main loop."""
+        """Complete a scheduled phoneme once its cycle is reached.
+
+        Call from the main loop.  Completion always raises A/!R (D7), even
+        when interrupts are disabled; INT1 is only asserted when the latched
+        mode enables them.
+        """
         if self._pending_irq_cycle is not None and current_cycle >= self._pending_irq_cycle:
             self._pending_irq_cycle = None
             self.speaking = False  # Phoneme finished
-            if self._irq_callback:
+            if not self.control:
+                self._d7 = True
+            if self.irq_enabled and self._irq_callback:
                 self._irq_callback(1)  # Assert INT1
 
     def read(self, port: int) -> int:
-        """Read from SSI-263 register."""
-        reg = port - self.base_port
-        if reg == self.REG_FILTER:
-            # Status: bit 7 = A/R (request) - 0 = ready for new phoneme
-            return 0x00 if not self.speaking else 0x80
-        return 0xFF
+        """Read A/!R inverted in bit 7, regardless of which register.
+
+        Bit 7 is high once a phoneme has completed, i.e. the chip is
+        requesting the next one.  Returning "busy" here instead would make
+        the firmware queue phonemes as fast as it could execute.
+        """
+        return 0x80 if self._d7 else 0x00
+
+    def _latch_mode_and_ints(self) -> None:
+        """Latch mode and interrupt enable, as CTL H->L does on the chip.
+
+        A mode-0 write disables the A/!R output but retains the previously
+        selected response, so the function is only replaced for modes 1-3.
+        """
+        if self.duration != _MODE_IRQ_DISABLED:
+            self._mode_function = self.duration
+            self._mode_enable_ints = True
+        else:
+            self._mode_enable_ints = False
 
     def write(self, port: int, value: int) -> None:
         """Decode one register write and trigger phoneme events."""
         reg = port - self.base_port
+
+        # Writes to registers 0-2 complete the handshake: they de-assert the
+        # interrupt and clear A/!R.
+        if reg <= self.REG_RATEINF:
+            self._d7 = False
+            if self._irq_callback:
+                self._irq_callback(0)
 
         if reg == self.REG_DURPHON:
             self.duration = (value >> 6) & 0x03
@@ -277,11 +394,15 @@ class SSI263:
             self.articulation = (value >> 4) & 0x07
             self.amplitude = value & 0x0F
             if was_standby and not self.control:
-                # CTL transition 1->0: wake up and play current phoneme
+                # CTL transition 1->0: latch the mode, then play the phoneme
+                self._latch_mode_and_ints()
                 self._speak_phoneme()
             elif not was_standby and self.control:
-                # CTL transition 0->1: go to standby
+                # CTL transition 0->1: standby de-asserts the interrupt too
                 self.speaking = False
+                self._d7 = False
+                if self._irq_callback:
+                    self._irq_callback(0)
 
         elif reg == self.REG_FILTER:
             self.filter_freq = value & 0xFF
@@ -296,6 +417,7 @@ class SSI263:
             articulation=self.articulation,
             amplitude=self.amplitude,
             filter_freq=self.filter_freq,
+            playback_duration=self.playback_duration,
         )
 
     def _speak_phoneme(self) -> None:
@@ -313,11 +435,12 @@ class SSI263:
             self._synth.play(self.state())
 
         # The real SSI-263 asserts the A/R line AFTER the phoneme finishes,
-        # which triggers INT1 and lets the ISR queue the next phoneme
-        if self.irq_enabled and self._irq_callback:
-            self._pending_irq_cycle = (
-                self._current_cycle + self._calc_phoneme_duration_cycles()
-            )
+        # which triggers INT1 and lets the ISR queue the next phoneme.  The
+        # completion is scheduled whether or not interrupts are enabled,
+        # because it also drives the A/!R status bit.
+        self._pending_irq_cycle = (
+            self._current_cycle + self._calc_phoneme_duration_cycles()
+        )
 
     def get_io_handlers(self) -> list[tuple[int, Callable[[int], int], Callable[[int, int], None]]]:
         """Return (port, read_handler, write_handler) for all ports."""

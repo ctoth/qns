@@ -44,7 +44,7 @@ class SSI263PCMSynth:
 
     def play(self, state: SSI263State) -> None:
         """Produce audio for one decoded phoneme event from the chip."""
-        self._emit(state.phoneme, state.amplitude)
+        self._emit(state.phoneme, state.amplitude, state.playback_duration)
 
     def speak_phoneme(self, phoneme: int, amplitude: int = 15) -> None:
         """Play a phoneme directly, outside emulator integration."""
@@ -54,7 +54,41 @@ class SSI263PCMSynth:
         """Return whether the host audio player still has queued samples."""
         return self._player is not None and self._player.is_playing()
 
-    def get_phoneme_audio(self, phoneme: int, amplitude: int = 15) -> np.ndarray:
+    @staticmethod
+    def _apply_duration(samples: np.ndarray, duration: int) -> np.ndarray:
+        """Consume a capture at the speed the duration mode selects.
+
+        The captures are one fixed recording per phoneme, and the SSI-263's
+        duration mode decides how fast that recording is played out.
+        AppleWin's SSI263.cpp does this by averaging groups of input samples
+        per output sample (and, in mode 1, discarding every fourth):
+
+            mode 0  1:1                          longest
+            mode 1  drop every 4th sample        3/4 length
+            mode 2  average 2 samples per output 1/2 length
+            mode 3  average 4 samples per output 1/4 length
+
+        Ignoring this plays every phoneme at its slowest length, which runs
+        each capture's decay tail out into the next phoneme.
+        """
+        if duration <= 0 or len(samples) == 0:
+            return samples
+        if duration == 1:
+            keep = np.arange(len(samples)) % 4 != 3
+            return samples[keep]
+
+        group = 2 if duration == 2 else 4
+        usable = (len(samples) // group) * group
+        if usable == 0:
+            return samples
+        return samples[:usable].reshape(-1, group).mean(axis=1)
+
+    def get_phoneme_audio(
+        self,
+        phoneme: int,
+        amplitude: int = 15,
+        duration: int = 0,
+    ) -> np.ndarray:
         """Return the available fixed capture as normalized float32 samples.
 
         AppleWin provides 62 captures for SSI-263 codes 2 through 63.  Code 0
@@ -74,10 +108,13 @@ class SSI263PCMSynth:
 
         gain = max(0, min(15, amplitude)) / 15.0
         samples = get_phoneme_samples(data_index).astype(np.float32)
+        samples = self._apply_duration(samples, duration)
         return samples * (gain / 32768.0)
 
-    def _emit(self, phoneme: int, amplitude: int) -> None:
+    def _emit(self, phoneme: int, amplitude: int, duration: int = 0) -> None:
         if self._phoneme_callback is not None:
             self._phoneme_callback(phoneme)
         if self._player is not None:
-            self._player.play(self.get_phoneme_audio(phoneme, amplitude))
+            self._player.play(
+                self.get_phoneme_audio(phoneme, amplitude, duration)
+            )
