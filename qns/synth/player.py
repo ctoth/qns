@@ -34,6 +34,11 @@ class AudioPlayer:
         self._buffer: np.ndarray = np.array([], dtype=np.float32)
         self._lock = threading.Lock()
         self._playing = False
+        self._timeline_origin_cycle: int | None = None
+        self._timeline_origin_frame = 0
+        self._timeline_clock: int | None = None
+        self._timeline_end_frame = 0
+        self._timeline_playhead = 0
 
         # The emulator queues each phoneme's audio just as the previous
         # one finishes: measured, a capture is the same length as the
@@ -91,17 +96,60 @@ class AudioPlayer:
             self._playing = False
             self._priming = True
             self._primed_waits = 0
+            self._timeline_origin_cycle = None
+            self._timeline_origin_frame = 0
+            self._timeline_clock = None
+            self._timeline_end_frame = 0
+            self._timeline_playhead = 0
 
-    def play(self, samples: np.ndarray) -> None:
+    def play(
+        self,
+        samples: np.ndarray,
+        *,
+        cycle: int | None = None,
+        clock: int | None = None,
+    ) -> None:
         """Queue samples for playback.
 
         Args:
             samples: Audio samples (float32, -1.0 to 1.0)
+            cycle: Emulated cycle at which these samples begin.
+            clock: Emulated cycles per second.
         """
         if samples.dtype != np.float32:
             samples = samples.astype(np.float32)
 
-        self._queue.put(samples)
+        if cycle is None or clock is None:
+            self._queue.put(samples)
+            return
+
+        with self._lock:
+            if (
+                self._timeline_origin_cycle is None
+                or self._timeline_clock != clock
+                or cycle < self._timeline_origin_cycle
+            ):
+                self._timeline_origin_cycle = cycle
+                self._timeline_origin_frame = self._timeline_playhead
+                self._timeline_clock = clock
+                self._timeline_end_frame = self._timeline_playhead
+
+            elapsed_cycles = cycle - self._timeline_origin_cycle
+            desired_start = (
+                self._timeline_origin_frame
+                + round(elapsed_cycles * self.sample_rate / clock)
+            )
+            occupied_until = max(
+                self._timeline_end_frame,
+                self._timeline_playhead,
+            )
+            gap = max(0, desired_start - occupied_until)
+            if gap:
+                samples = np.concatenate(
+                    [np.zeros(gap, dtype=np.float32), samples]
+                )
+            self._timeline_end_frame = occupied_until + len(samples)
+            self._queue.put(samples)
 
     def is_playing(self) -> bool:
         """Check if audio is currently playing."""
@@ -161,3 +209,4 @@ class AudioPlayer:
                 # for every phoneme after it.
                 self._priming = True
                 self._primed_waits = 0
+            self._timeline_playhead += frames

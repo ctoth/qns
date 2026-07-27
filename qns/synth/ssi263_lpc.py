@@ -57,6 +57,8 @@ class SSI263LPCSynth:
             state.amplitude,
             state.playback_duration,
             state.rate,
+            state.cycle,
+            state.clock,
         )
 
     def speak_phoneme(self, phoneme: int, amplitude: int = 15) -> None:
@@ -107,9 +109,11 @@ class SSI263LPCSynth:
         amplitude: int,
         duration: int = 0,
         rate: int = 8,
+        cycle: int | None = None,
+        clock: int | None = None,
     ) -> None:
         if self._phoneme_callback is not None:
             self._phoneme_callback(phoneme)
         audio = self.get_phoneme_audio(phoneme, amplitude, duration, rate)
         if self._player is not None:
-            self._player.play(audio)
+            self._player.play(audio, cycle=cycle, clock=clock)

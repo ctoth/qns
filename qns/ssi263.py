@@ -178,6 +178,8 @@ class SSI263State:
     # forces it to 3 regardless of the bits written, and a mode-0 write keeps
     # whatever the last CTL H->L latched, so this is not always `duration`.
     playback_duration: int = 0
+    cycle: int = 0
+    clock: int = 12_288_000
 
 
 class SpeechBackend(Protocol):
@@ -452,6 +454,8 @@ class SSI263:
             amplitude=self.amplitude,
             filter_freq=self.filter_freq,
             playback_duration=self.playback_duration,
+            cycle=self._current_cycle,
+            clock=self._clock,
         )
 
     def _speak_phoneme(self) -> None:

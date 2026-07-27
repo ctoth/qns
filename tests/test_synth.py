@@ -91,6 +91,25 @@ def test_audio_player_queues_samples():
     player.stop()
 
 
+def test_audio_player_places_timed_samples_on_one_continuous_timeline():
+    """An emulated pause is queued explicitly instead of draining the player."""
+    from qns.synth.player import AudioPlayer
+
+    player = AudioPlayer(sample_rate=1000, prime_ms=0)
+    first = np.ones(100, dtype=np.float32)
+    second = np.full(100, 2.0, dtype=np.float32)
+
+    player.play(first, cycle=0, clock=1000)
+    player.play(second, cycle=250, clock=1000)
+
+    queued = np.concatenate(
+        [player._queue.get_nowait(), player._queue.get_nowait()]
+    )
+    np.testing.assert_array_equal(queued[:100], first)
+    np.testing.assert_array_equal(queued[100:250], np.zeros(150))
+    np.testing.assert_array_equal(queued[250:], second)
+
+
 @pytest.mark.manual
 def test_audio_player_produces_sound():
     """Manual test: verify audio output works.

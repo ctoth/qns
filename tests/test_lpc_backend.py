@@ -3,8 +3,11 @@
 Run with: uv run pytest tests/test_lpc_backend.py -v
 """
 
+from unittest.mock import Mock
+
 import numpy as np
 
+from qns.ssi263 import SSI263
 from qns.synth import SSI263LPCSynth, SSI263PCMSynth
 from qns.synth.lpc import SAMPLE_RATE, LPCStream
 
@@ -88,6 +91,17 @@ def test_lpc_uses_rate_dependent_playback_length():
     assert len(slow) == playback_length_samples(0x2D, duration=0, rate=0)
     assert len(fast) == playback_length_samples(0x2D, duration=0, rate=15)
     assert len(slow) > len(fast)
+
+
+def test_lpc_backend_preserves_emulated_event_time_for_the_player():
+    chip = SSI263(clock=1000)
+    chip.set_cycle_count(250)
+    backend = SSI263LPCSynth(audio_enabled=False)
+    backend._player = Mock()
+
+    backend.play(chip.state())
+
+    assert backend._player.play.call_args.kwargs == {"cycle": 250, "clock": 1000}
 
 
 def test_lpc_stream_reset_restores_a_fresh_voice():
