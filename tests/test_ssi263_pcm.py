@@ -8,6 +8,15 @@ from qns.synth.phonemes import get_phoneme_samples
 from qns.synth.ssi263_pcm import SSI263PCMSynth
 
 
+def _dominant_voiced_frequency(samples: np.ndarray) -> float:
+    """Return the strongest low-frequency component of a voiced capture."""
+    windowed = samples * np.hanning(len(samples))
+    spectrum = np.abs(np.fft.rfft(windowed))
+    frequencies = np.fft.rfftfreq(len(samples), 1 / 22050)
+    voiced = (frequencies >= 70) & (frequencies <= 350)
+    return float(frequencies[voiced][np.argmax(spectrum[voiced])])
+
+
 def test_pcm_backend_uses_captured_ssi263_samples() -> None:
     synth = SSI263PCMSynth(audio_enabled=False)
 
@@ -38,6 +47,17 @@ def test_pcm_backend_uses_rate_dependent_playback_length() -> None:
     assert len(slow) == playback_length_samples(2, duration=0, rate=0)
     assert len(fast) == playback_length_samples(2, duration=0, rate=15)
     assert len(slow) > len(fast)
+
+
+def test_pcm_rate_changes_duration_without_changing_pitch() -> None:
+    synth = SSI263PCMSynth(audio_enabled=False)
+
+    captured = synth.get_phoneme_audio(2, amplitude=15, rate=8)
+    captured_pitch = _dominant_voiced_frequency(captured)
+    for rate in (0, 9):
+        changed = synth.get_phoneme_audio(2, amplitude=15, rate=rate)
+        changed_pitch = _dominant_voiced_frequency(changed)
+        assert abs(changed_pitch - captured_pitch) / captured_pitch < 0.03
 
 
 def test_chip_drives_pcm_backend_on_wake_and_active_phoneme_write() -> None:

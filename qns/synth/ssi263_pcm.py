@@ -1,10 +1,4 @@
-"""Approximate SSI-263 audio using the AppleWin fixed PCM captures.
-
-The captures provide one waveform for each available phoneme at one unknown
-register setting.  This backend therefore honors phoneme and amplitude but
-does not pretend to synthesize undocumented articulation, inflection, rate,
-duration, or filter-frequency effects.
-"""
+"""Approximate SSI-263 audio using the AppleWin fixed PCM captures."""
 
 from collections.abc import Callable
 
@@ -88,6 +82,45 @@ class SSI263PCMSynth:
             return samples
         return samples[:usable].reshape(-1, group).mean(axis=1)
 
+    @staticmethod
+    def _apply_rate(samples: np.ndarray, target_length: int) -> np.ndarray:
+        """Change speaking time without resampling the capture's pitch.
+
+        Faster rates cut the capture short, as the chip does when it reaches
+        the next phoneme sooner.  Slower rates repeat a pitch-synchronous
+        section from the steady middle instead of stretching every sample,
+        which would transpose the voice.
+        """
+        if target_length <= len(samples):
+            return samples[:target_length]
+
+        middle = samples[len(samples) // 4:3 * len(samples) // 4]
+        if len(middle) < 8:
+            return np.pad(samples, (0, target_length - len(samples)))
+
+        centered = middle - middle.mean()
+        correlation = np.correlate(centered, centered, "full")[len(middle) - 1:]
+        low = int(SAMPLE_RATE / 400)
+        high = min(int(SAMPLE_RATE / 60), len(correlation) - 1)
+        if high <= low or correlation[0] <= 0:
+            return np.resize(samples, target_length)
+
+        period = low + int(np.argmax(correlation[low:high]))
+        strength = float(correlation[period] / correlation[0])
+        if strength < 0.35:
+            return np.resize(samples, target_length)
+
+        onset_end = max(period, (len(samples) // 4 // period) * period)
+        loop_periods = max(1, min(4, (len(samples) // 2) // period))
+        loop = samples[onset_end:onset_end + period * loop_periods]
+        if len(loop) == 0:
+            return np.resize(samples, target_length)
+
+        repeats = (target_length - onset_end + len(loop) - 1) // len(loop)
+        return np.concatenate([samples[:onset_end], np.tile(loop, repeats)])[
+            :target_length
+        ]
+
     def get_phoneme_audio(
         self,
         phoneme: int,
@@ -117,12 +150,7 @@ class SSI263PCMSynth:
         samples = self._apply_duration(samples, duration)
         target_length = playback_length_samples(phoneme, duration, rate)
         if target_length != len(samples):
-            positions = np.linspace(0, len(samples) - 1, target_length)
-            samples = np.interp(
-                positions,
-                np.arange(len(samples)),
-                samples,
-            ).astype(np.float32)
+            samples = self._apply_rate(samples, target_length)
         return samples * (gain / 32768.0)
 
     def _emit(
