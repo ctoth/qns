@@ -347,7 +347,7 @@ def render(
                 event["rate"],
             )
 
-        length = min(len(samples), len(output) - start)
+        length = min(len(samples), span, len(output) - start)
         if length > 0:
             output[start:start + length] += samples[:length]
 

@@ -1,7 +1,10 @@
 """Offline speech renderer timing tests."""
 
+import numpy as np
+
 from qns.ssi263 import playback_length_samples
 from qns.synth.phonemes import SAMPLE_RATE
+from qns.synth.ssi263_pcm import SSI263PCMSynth
 from tools.render_speech import CPU_CLOCK_HZ, chip_duration_cycles, render
 
 
@@ -44,3 +47,39 @@ def test_chip_timing_uses_traced_playback_duration() -> None:
         events[0]["rate"],
         events[0]["playback_duration"],
     )
+
+
+def test_trace_timing_caps_pcm_at_the_next_event(monkeypatch) -> None:
+    def identifiable_audio(
+        _synth,
+        phoneme,
+        _amplitude,
+        _duration,
+        _rate,
+    ):
+        return np.full(10, phoneme, dtype=np.float32)
+
+    monkeypatch.setattr(
+        SSI263PCMSynth,
+        "get_phoneme_audio",
+        identifiable_audio,
+    )
+    sample_rate = 1_000
+    cycle_span = 2 * CPU_CLOCK_HZ // sample_rate
+    first = _event(0)
+    first["code"] = 1
+    second = _event(cycle_span)
+    second["code"] = 2
+
+    output = render(
+        [first, second],
+        sample_rate=sample_rate,
+        backend="pcm",
+        tail_seconds=0.005,
+        timing="trace",
+        force_amplitude=None,
+    )
+
+    np.testing.assert_array_equal(output[:2], np.ones(2))
+    np.testing.assert_array_equal(output[2:-1], np.full(len(output) - 3, 2))
+    assert output[-1] == 0
