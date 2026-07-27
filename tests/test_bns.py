@@ -1491,6 +1491,48 @@ def test_audio_omitted_leaves_audio_disabled():
     assert args.audio is None
 
 
+@pytest.mark.parametrize(
+    ("option", "value"),
+    (
+        ("volume", 0),
+        ("volume", 15),
+        ("rate", 1),
+        ("rate", 16),
+        ("pitch", 1),
+        ("pitch", 32),
+        ("frequency", 0),
+        ("frequency", 255),
+    ),
+)
+def test_retained_speech_options_accept_documented_endpoints(option, value):
+    args = build_parser().parse_args(
+        ["rom.bns", f"--{option}", str(value)]
+    )
+
+    assert getattr(args, option) == value
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    (
+        ("volume", -1),
+        ("volume", 16),
+        ("rate", 0),
+        ("rate", 17),
+        ("pitch", 0),
+        ("pitch", 33),
+        ("frequency", -1),
+        ("frequency", 256),
+    ),
+)
+def test_retained_speech_options_reject_values_outside_documented_range(
+    option,
+    value,
+):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["rom.bns", f"--{option}", str(value)])
+
+
 def test_every_named_backend_is_constructible():
     """--audio's choices and the machine's backend table cannot drift."""
     parser = build_parser()

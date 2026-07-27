@@ -47,6 +47,22 @@ def parse_hex_address(value: str) -> int:
         raise argparse.ArgumentTypeError(f"Invalid hex address: {value}")
 
 
+def _bounded_int(minimum: int, maximum: int) -> Callable[[str], int]:
+    """Build an argparse integer parser restricted to an inclusive range."""
+    def parse(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"invalid integer: {value}")
+        if not minimum <= parsed <= maximum:
+            raise argparse.ArgumentTypeError(
+                f"must be between {minimum} and {maximum}: {value}"
+            )
+        return parsed
+
+    return parse
+
+
 def _format_phoneme(phoneme: Phoneme, style: str) -> str:
     """Render one phoneme as codes, names, ipa, or examples."""
     if style == "codes":
@@ -199,13 +215,13 @@ def build_parser() -> argparse.ArgumentParser:
         "Values a field unit keeps in battery-backed RAM.  Defaults are "
         "the midpoint of each range documented in BSAPI.H.",
     )
-    speech.add_argument("--volume", type=int, metavar="0-15",
+    speech.add_argument("--volume", type=_bounded_int(0, 15), metavar="0-15",
                         help="Speech amplitude (default 8)")
-    speech.add_argument("--rate", type=int, metavar="1-16",
+    speech.add_argument("--rate", type=_bounded_int(1, 16), metavar="1-16",
                         help="Speaking rate (default 9)")
-    speech.add_argument("--pitch", type=int, metavar="1-32",
+    speech.add_argument("--pitch", type=_bounded_int(1, 32), metavar="1-32",
                         help="Filter frequency; the API's \"Pitch\" (default 17)")
-    speech.add_argument("--frequency", type=int, metavar="0-255",
+    speech.add_argument("--frequency", type=_bounded_int(0, 255), metavar="0-255",
                         help="Inflection; the API's \"Frequency\" (default 128)")
     return parser
 
