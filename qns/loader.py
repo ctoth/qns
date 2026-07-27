@@ -459,6 +459,59 @@ def find_speech_parameters(
     })
 
 
+@dataclass(frozen=True)
+class SpeechPowerTimeout:
+    """The speech-power turn-off threshold and the value it should hold."""
+
+    address: int
+    """Physical address of `SPTIMVA`."""
+
+    value: int
+    """What the firmware's own initialiser stores there."""
+
+
+# BSBGTASK.ASM::TIMSTAT, which quiesces the speech chip once the idle
+# counter reaches its threshold:
+#
+#     LD A,(SPTIMER) / LD HL,SPTIMVA / CP (HL) / CALL NC,SPOFF
+#
+# `CALL NC` fires on SPTIMER >= SPTIMVA, so a threshold left at zero
+# makes it fire on every pass - writing `VOLUME AND 70h`, which is
+# always amplitude zero, roughly every 50 ms.  That silences a phoneme
+# mid-word.  The threshold's initialiser is not reached on our boot, so
+# take the value it would have stored.
+_TIMSTAT_SIGNATURE = (
+    _LD_A_MEMORY, _LD_HL_IMMEDIATE, _Insn("cp (hl)", (0xBE,)),
+    _Insn("call nc,nn", (0xD4,), operand_bytes=2),
+)
+
+
+def find_speech_power_timeout(firmware: bytes) -> SpeechPowerTimeout | None:
+    """Locate `SPTIMVA` and the constant the firmware initialises it to."""
+    bank = firmware[:0x10000]
+    matches = _find_signature(bank, _TIMSTAT_SIGNATURE)
+    if len(matches) != 1:
+        return None
+    threshold = _operand(bank, matches[0] + len(_LD_A_MEMORY.tokens()))
+    if threshold < _LOWEST_RAM_ADDRESS:
+        return None
+
+    # `LD A,n / LD (SPTIMVA),A` is the only place the constant appears.
+    store = bytes((_LD_A_IMMEDIATE.opcode[0],))
+    tail = bytes((_LD_MEMORY_A.opcode[0],)) + _address_bytes(threshold)
+    values = {
+        bank[offset + 1]
+        for offset in range(len(bank) - 5)
+        if bank[offset] == store[0] and bank[offset + 2:offset + 5] == tail
+    }
+    if len(values) != 1:
+        return None
+    return SpeechPowerTimeout(
+        address=threshold + (_COMMON_AREA_CBR << 12),
+        value=values.pop(),
+    )
+
+
 def _retained_shadow(bank: bytes, working: int, volume: int) -> int | None:
     """Address of the retained shadow a settings handler writes.
 

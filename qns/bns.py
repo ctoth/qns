@@ -31,6 +31,7 @@ from .loader import (
     find_english_boundary,
     find_input_boundary,
     find_speech_parameters,
+    find_speech_power_timeout,
     load_firmware,
 )
 from .memory import Memory
@@ -942,6 +943,14 @@ class BNS:
         retained state that survives a reset, which is exactly the
         property that makes the real hardware work.
         """
+        timeout = find_speech_power_timeout(firmware)
+        if timeout is not None:
+            self.memory.write(timeout.address, timeout.value)
+            print(
+                f"Speech power timeout: {timeout.value} @ "
+                f"0x{timeout.address:05X}"
+            )
+
         parameters = find_speech_parameters(firmware, self.profile.ssi263_port)
         if parameters is None:
             print("Retained speech settings: ISSET not found, leaving RAM at 0")
