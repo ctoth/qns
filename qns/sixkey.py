@@ -24,7 +24,27 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from .keysource import KeyEvent
+# The virtual key codes are Win32's, and shared with the terminal
+# decoders, so they live with the key source.  Named here too, because
+# this is where they mean a chord.
+from .keysource import (  # noqa: F401  (re-exported for callers)
+    VK_BACK,
+    VK_DOWN,
+    VK_END,
+    VK_ESCAPE,
+    VK_F4,
+    VK_F5,
+    VK_HOME,
+    VK_LEFT,
+    VK_MENU,
+    VK_NEXT,
+    VK_PRIOR,
+    VK_RETURN,
+    VK_RIGHT,
+    VK_SPACE,
+    VK_UP,
+    KeyEvent,
+)
 
 DOT_BITS = (0x01, 0x02, 0x04, 0x08, 0x10, 0x20)
 SPACE_BIT = 0x40
@@ -34,25 +54,6 @@ SIX_KEY_LAYOUTS: dict[str, str] = {
     "6-key": "fdsjkl",
     "6-key-dvorak": "ueohtn",
 }
-
-# Windows virtual key codes for the keys shared by every layout.
-VK_BACK = 0x08
-VK_RETURN = 0x0D
-VK_MENU = 0x12
-VK_ESCAPE = 0x1B
-VK_SPACE = 0x20
-VK_PRIOR = 0x21
-VK_NEXT = 0x22
-VK_END = 0x23
-VK_HOME = 0x24
-VK_LEFT = 0x25
-VK_UP = 0x26
-VK_RIGHT = 0x27
-VK_DOWN = 0x28
-# Emulator controls rather than chords: the BNS has no function keys, so
-# these are free to mean something to the host.
-VK_F4 = 0x73
-VK_F5 = 0x74
 
 # Named keys that stand in for a whole chord.  Each is the exact byte the
 # user could also produce by chording the dots by hand, so these are

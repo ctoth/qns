@@ -199,6 +199,11 @@ pause phonemes (0x00) during the boot sequence.
      `uv run tools/probe_terminal_keys.py` to see what a terminal supports;
      ones that report no releases fall back to ending a chord on a gap in
      arrival times, and redirected input ends it at a line break
+   - On those terminals the named keys arrive as escape sequences, which
+     `VTKeyDecoder` reads before any character reaches the chord tables -
+     `ESC [ D` ends in the dot-3 key, so an undecoded Left would spell a
+     cell.  Escape shares its first byte with every sequence, so it is
+     settled by the same quiet interval that ends a chord
    - The six-key devices are in `CHORD_STDIN_DEVICES` so
      `_requires_instruction_steps` still pays for boundary observation only
      while a chord is in flight.  Pinning the core to the per-instruction

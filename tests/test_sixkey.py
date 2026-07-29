@@ -208,6 +208,122 @@ def test_reader_stops_reading_at_ctrl_c(monkeypatch):
     assert chords == []
 
 
+def test_named_keys_are_decoded_before_the_timing_fallback(monkeypatch):
+    """A terminal that ignores the mode still names its keys, in VT.
+
+    Read as characters instead, their final bytes are dot keys: `ESC [ D`
+    for Left ends in the dot-3 key, so the arrow used to spell a cell
+    nobody typed.
+    """
+    chords, actions = _control_actions(b"fd\x1b[D\n", monkeypatch)
+
+    # The half-built cell goes first, then Left's own chord - space+3.
+    assert chords == [0x03, 0x44]
+    assert actions == []
+
+
+def test_vt_ctrl_arrows_keep_their_own_chords(monkeypatch):
+    """xterm spells Ctrl+Left `ESC [ 1 ; 5 D`; it is the dot-2 chord."""
+    chords, actions = _control_actions(b"\x1b[1;5D", monkeypatch)
+
+    assert chords == [0x42]
+    assert actions == []
+
+
+def test_ss3_function_keys_reach_the_controls(monkeypatch):
+    """xterm's F4 is `ESC O S`, whose final byte is the dot-2 key."""
+    chords, actions = _control_actions(b"\x1bOS", monkeypatch)
+
+    assert (chords, actions) == ([], ["exit"])
+
+    chords, actions = _control_actions(b"\x1b[15~", monkeypatch)  # F5
+    assert (chords, actions) == ([], ["restart"])
+
+
+def test_named_keys_reach_a_real_terminal_reader(monkeypatch):
+    """The same keys, over a pty in cbreak, as the emulator runs it."""
+    import pty
+    import sys
+    import threading
+    import time
+    import tty
+
+    master, slave = pty.openpty()
+    tty.setcbreak(slave)
+
+    class _Tty:
+        def fileno(self):
+            return slave
+
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(sys, "stdin", _Tty())
+    chords, actions = [], []
+    reader = threading.Thread(
+        target=_six_key_reader,
+        args=("6-key", chords.append, actions.append),
+        daemon=True,
+    )
+    reader.start()
+
+    def expect(count, what):
+        deadline = time.monotonic() + 5.0
+        while len(chords) < count and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(chords) == count, f"{what}: {[hex(c) for c in chords]}"
+
+    try:
+        # Escape is only distinguishable from a sequence by the silence
+        # that follows it.
+        os.write(master, b"\x1b")
+        expect(1, "escape")
+        # Left, whose final byte is the dot-3 key read as a character.
+        os.write(master, b"\x1b[D")
+        expect(2, "left")
+        os.write(master, b"fd")
+        expect(3, "f+d")
+
+        assert chords == [0x75, 0x44, 0x03]
+
+        # xterm's F4 ends in the dot-2 key, and must still exit.
+        os.write(master, b"\x1bOS")
+        deadline = time.monotonic() + 5.0
+        while not actions and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert actions == ["exit"]
+        assert chords == [0x75, 0x44, 0x03]
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+def test_a_lone_escape_settles_as_the_escape_key(monkeypatch):
+    """Escape shares its first byte with every sequence, so it waits."""
+    from qns.keysource import VK_ESCAPE, VTKeyDecoder
+
+    decoder = VTKeyDecoder(timeout=0.04)
+
+    assert list(decoder.feed("\x1b", now=0.000)) == []
+    assert list(decoder.poll(now=0.020)) == []  # the rest may still arrive
+    settled = list(decoder.poll(now=0.050))
+    assert [event.vk for event in settled] == [VK_ESCAPE]
+
+    # Reaching the end of the input settles it too, clock or no clock.
+    piped = VTKeyDecoder(timeout=None)
+    assert list(piped.feed("\x1b", now=0.0)) == []
+    assert [event.vk for event in piped.flush()] == [VK_ESCAPE]
+
+
+def test_escape_and_enter_spell_their_chords_over_a_pipe(monkeypatch):
+    """Redirected input keeps the line ending as its cell delimiter."""
+    chords, actions = _control_actions(b"fd\nj\n\x1b", monkeypatch)
+
+    # f+d, then j, then Escape's chord: space+1+3+5+6.
+    assert chords == [0x03, 0x08, 0x75]
+    assert actions == []
+
+
 def _bare_machine(*, armed: bool):
     """A machine with only the control-request state its methods touch."""
     import threading
