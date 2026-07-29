@@ -3,7 +3,7 @@
 import numpy as np
 
 from qns.bns import BNS
-from qns.ssi263 import SSI263, playback_length_samples
+from qns.ssi263 import SSI263, SSI263State, playback_length_samples
 from qns.synth.phonemes import get_phoneme_samples
 from qns.synth.ssi263_pcm import SSI263PCMSynth
 
@@ -15,6 +15,17 @@ def _dominant_voiced_frequency(samples: np.ndarray) -> float:
     frequencies = np.fft.rfftfreq(len(samples), 1 / 22050)
     voiced = (frequencies >= 70) & (frequencies <= 350)
     return float(frequencies[voiced][np.argmax(spectrum[voiced])])
+
+
+def _autocorrelation_voiced_frequency(samples: np.ndarray) -> float:
+    """Return the fundamental implied by the strongest voiced period."""
+    middle = samples[len(samples) // 4:3 * len(samples) // 4]
+    centered = middle - middle.mean()
+    correlation = np.correlate(centered, centered, "full")[len(middle) - 1:]
+    low = int(22050 / 400)
+    high = min(int(22050 / 60), len(correlation) - 1)
+    period = low + int(np.argmax(correlation[low:high]))
+    return 22050 / period
 
 
 def test_pcm_backend_uses_captured_ssi263_samples() -> None:
@@ -58,6 +69,68 @@ def test_pcm_rate_changes_duration_without_changing_pitch() -> None:
         changed = synth.get_phoneme_audio(2, amplitude=15, rate=rate)
         changed_pitch = _dominant_voiced_frequency(changed)
         assert abs(changed_pitch - captured_pitch) / captured_pitch < 0.03
+
+
+def test_pcm_transitions_to_inflection_target_over_encoded_frames() -> None:
+    played: list[np.ndarray] = []
+
+    class Player:
+        def play(self, samples: np.ndarray) -> None:
+            played.append(samples)
+
+    def state(
+        phoneme: int,
+        duration: int,
+        inflection: int,
+    ) -> SSI263State:
+        return SSI263State(
+            phoneme=phoneme,
+            duration=duration,
+            inflection=inflection,
+            rate=8,
+            articulation=5,
+            amplitude=15,
+            filter_freq=17,
+            playback_duration=duration,
+            transitioned_inflection=True,
+        )
+
+    synth = SSI263PCMSynth(audio_enabled=False)
+    synth._player = Player()
+    normal = synth.get_phoneme_audio(2)
+
+    # Firmware high inflection is target 19/rate 3: five frames total.
+    synth.play(state(0, 3, 3288))
+    assert synth._current_inflection_level == 16.6
+    synth.play(state(2, 0, 3288))
+
+    assert synth._current_inflection_level == 19.0
+    assert len(played[-1]) == len(normal)
+    assert not np.array_equal(played[-1], normal)
+    pitch_ratio = (
+        _autocorrelation_voiced_frequency(played[-1])
+        / _autocorrelation_voiced_frequency(normal)
+    )
+    assert 1.0 < pitch_ratio < (1024 / 808)
+
+    # Firmware normal inflection is target 16/rate 0: eight frames total.
+    synth.play(state(2, 0, 3072))
+    assert synth._current_inflection_level == 17.5
+    synth.play(state(2, 0, 3072))
+    assert synth._current_inflection_level == 16.0
+
+
+def test_pcm_inflection_does_not_impose_pitch_on_unvoiced_capture() -> None:
+    synth = SSI263PCMSynth(audio_enabled=False)
+
+    normal = synth.get_phoneme_audio(52)
+    transitioned = synth.get_phoneme_audio(
+        52,
+        inflection=3288,
+        transitioned_inflection=True,
+    )
+
+    np.testing.assert_array_equal(transitioned, normal)
 
 
 def test_chip_drives_pcm_backend_on_wake_and_active_phoneme_write() -> None:
