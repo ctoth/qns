@@ -33,21 +33,27 @@
 | Test | Hypothesis | Result | Rules Out | Supports |
 |------|------------|--------|-----------|----------|
 | Live `--audio-log` BS2 capture | Callback/device failure | Regular callback cadence, no status errors, 46.06 seconds of player-inserted silence | Irregular PortAudio callback cadence and PCM stretching | Producer-side starvation |
+| `analyze_pcm_log.py` reduction | Emulator gaps vs re-priming vs bad chunks | 30 speech chunks were normal 35-108 ms PCM; enqueue gaps left 17.83 seconds uncovered, typically about 0.54 seconds per spoken phoneme | Pathological one-frame speech generation; re-priming as the sole cause | Emulator execution is much slower than the SSI-263 audio timeline |
 
 ## Current Best Theory
 
-Not yet determined. The existing CSV must be reduced into per-enqueue intervals,
-chunk sizes, and enqueue-to-delivery latency before changing code.
+The Windows direct core is forced through Python instruction stepping for this
+BS2 profile, making ordinary SSI-263 events arrive about six times slower than
+their PCM duration. AudioPlayer re-primes after every resulting underrun, so a
+native-execution fix alone can still suffer a new 400 ms hold whenever a small
+timing miss drains the queue. The two previously rejected changes addressed
+these coupled causes separately; the evidence predicts that both are required
+together.
 
 ## Open Questions
 
-- How much wall time lies between ordinary phoneme enqueues?
-- Which enqueued chunks are real speech and which are one-frame control/reset
-  artifacts?
 - Does the emulator spend the gaps executing, sleeping, or waiting for the
   player reservoir?
+- Does combining safe native execution with continuous post-start playback keep
+  the producer ahead of callbacks on the real Windows run?
 
 ## Next Action
 
-Analyze the retained CSV per enqueue and callback delivery, then instrument the
-SSI-263 write/emulator boundary only if the CSV cannot distinguish the theories.
+Inspect the two reverted slices and current instruction-step authorities, then
+write a regression for their combined requirement before changing production
+code.
