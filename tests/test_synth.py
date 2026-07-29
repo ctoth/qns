@@ -123,6 +123,30 @@ def test_audio_player_requests_runahead_without_repriming_after_underrun():
     assert np.all(output == 1.0)
 
 
+def test_audio_player_does_not_release_initial_priming_for_control_frames():
+    from qns.synth.player import AudioPlayer
+
+    player = AudioPlayer(sample_rate=1000, blocksize=100, prime_ms=250)
+    player.play(np.ones(1, dtype=np.float32))
+    output = np.empty((100, 1), dtype=np.float32)
+
+    for _ in range(player._max_primed_waits + 2):
+        player._audio_callback(output, 100, None, None)
+        assert np.all(output == 0)
+
+    assert player._priming
+
+    player.play(np.ones(100, dtype=np.float32))
+    for _ in range(player._max_primed_waits):
+        player._audio_callback(output, 100, None, None)
+        assert np.all(output == 0)
+
+    player._audio_callback(output, 100, None, None)
+
+    assert not player._priming
+    assert np.all(output == 1.0)
+
+
 def test_audio_player_logs_callback_delivery_and_inserted_silence(
     monkeypatch,
     tmp_path,

@@ -77,8 +77,10 @@ class AudioPlayer:
         self._prime_frames = int(sample_rate * prime_ms / 1000)
         self._priming = True
         self._primed_waits = 0
+        self._substantive_audio_queued = False
         # An utterance shorter than the reservoir would otherwise never
-        # start, so give up waiting after this many starved callbacks.
+        # start, so give up waiting after this many starved callbacks once
+        # more than a one-frame control sample has reached the queue.
         self._max_primed_waits = max(1, int(sample_rate * 0.4 / blocksize))
 
     def start(self) -> None:
@@ -128,6 +130,7 @@ class AudioPlayer:
             self._queued_frames = 0
             self._priming = True
             self._primed_waits = 0
+            self._substantive_audio_queued = False
 
         self._finish_log()
 
@@ -143,6 +146,8 @@ class AudioPlayer:
         with self._lock:
             self._queue.put(samples)
             self._queued_frames += len(samples)
+            if len(samples) > 1:
+                self._substantive_audio_queued = True
             self._log_event(
                 "enqueue",
                 frames=len(samples),
@@ -188,11 +193,15 @@ class AudioPlayer:
                 if len(self._buffer) >= self._prime_frames:
                     self._priming = False
                     self._primed_waits = 0
-                elif self._primed_waits < self._max_primed_waits:
+                elif (
+                    not self._substantive_audio_queued
+                    or self._primed_waits < self._max_primed_waits
+                ):
                     # Still filling.  Hold silence rather than start and
                     # stutter - but not forever, or an utterance shorter
                     # than the reservoir would never play at all.
-                    self._primed_waits += 1
+                    if self._substantive_audio_queued:
+                        self._primed_waits += 1
                     outdata[:, 0] = 0
                     self._log_event(
                         "callback",

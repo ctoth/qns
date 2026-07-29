@@ -54,23 +54,22 @@
 | Exact SPBUF-start lead | A bounded native chunk can expose the exact buffer-start write before capture | Five real captures (`initialize...`, `Braille...ready`, `help`, `1`, `page`) had first-SPBUF-write leads of 5,783, 5,505, 571, 424, and 755 cycles; the post-capture translation writes started above SPBUF, never at its exact address | Unbounded 12,288-cycle observation and broad 256-byte arming range | Observe in 256-cycle native chunks and arm only on the exact physical SPBUF address |
 | Exact-command callback log after narrow arming | The bounded exact-address observer removes producer starvation | Enqueue span fell from 26.12 to 3.37 seconds, callback span fell from 25.83 to 3.14 seconds, and internal silent callbacks fell from 216 to 1 | English-observer producer starvation | Keep the bounded observer slice; isolate the one remaining callback |
 | Remaining callback location | One phoneme gap remains | The sole internal silent callback was at 0.592 seconds, after a callback played only the ten accumulated one-frame control samples and before the first 2,301-frame speech enqueue at 0.629 seconds | Phoneme starvation | No phoneme PCM is separated by silence; the remaining raw gap is initial priming releasing on control samples |
+| Initial priming fallback | One-frame control samples should not start the short-utterance timeout | After the fallback timer was deferred until a chunk longer than one frame, the exact-command log retained all 2.983 seconds of PCM in a continuous 2.956-second callback span with zero internal silent callbacks | Current fallback counts callbacks before real PCM exists | Keep the deferred fallback |
 
 ## Current Best Theory
 
-The exact-address observer fixes the English-path producer starvation: all
-spoken PCM is delivered without an internal silent callback. One raw callback
-gap remains before spoken PCM because the player's short-utterance fallback
-releases priming after accumulating only ten one-frame control samples. The
-observer slice is independently measured and should be committed before a
-separate player-priming slice.
+The exact-address observer fixes the English-path producer starvation, and
+deferring the player's bounded short-utterance fallback until substantive PCM
+exists fixes the pre-speech control-sample release. The exact command now has
+zero internal silent callbacks across its complete startup phrase.
 
 ## Open Questions
 
-- Can initial priming ignore one-frame control samples while preserving the
-  short-utterance fallback once real speech has arrived?
+- Physical listening remains the audible oracle; callback continuity cannot
+  assess the PCM backend's independently diagnosed lack of pitch inflection.
 
 ## Next Action
 
-Commit the bounded exact-address observer after its 349-passed, 8-skipped full
-suite, passing Ruff gate, and clean diff audit. Afterward, start a separate
-test-first slice for the player's pre-speech control-sample priming behavior.
+Commit the deferred-fallback slice after its 350-passed, 8-skipped full suite,
+passing Ruff gate, clean CRLF-aware diff audit, and zero-gap exact-command log.
+Then request the user's physical listening result.
