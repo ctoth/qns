@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
+import threading
 from dataclasses import dataclass
 
 ENABLE_WIN32_INPUT_MODE = "\x1b[?9001h"
@@ -164,6 +165,7 @@ def _parse_record(payload: bytes) -> KeyEvent | None:
 
 
 KEY_EVENT = 0x0001
+FOCUS_EVENT = 0x0010
 ENABLE_PROCESSED_INPUT = 0x0001
 ENABLE_LINE_INPUT = 0x0002
 ENABLE_ECHO_INPUT = 0x0004
@@ -234,6 +236,15 @@ def windows_console_key_events():
     must act on `KeyEvent.interrupt` itself.  Ctrl-Break is not enough on
     its own: not every keyboard has the key.
 
+    Enter this from the thread that owns the run's cleanup, not from the
+    reader itself: a reader blocked in `ReadConsoleInput` when the run
+    ends never returns to unwind, and a daemon thread's frames are not
+    unwound at exit either, so the console would keep line input, echo
+    and processing switched off after the process is gone.  Leaving
+    scope therefore cancels the reader as well as restoring the mode -
+    the cancelled reader raises OSError, and a synthetic focus record
+    unblocks it if it is already waiting.
+
     Raises OSError when the current standard input is not a console - a
     redirected stdin, or one a caller substituted - so the caller can
     fall back to reading that stream instead.
@@ -254,13 +265,25 @@ def windows_console_key_events():
     if not kernel32.SetConsoleMode(handle, mode):
         raise OSError(ctypes.get_last_error(), "could not set console mode")
 
+    cancelled = threading.Event()
+
     def read_events() -> list[KeyEvent]:
-        """Block for the next console records, returning key transitions."""
+        """Block for the next console records, returning key transitions.
+
+        Raises OSError once the context has been left, so a reader that
+        outlives the run stops rather than competing with the shell for
+        the console it has just handed back.
+        """
+        if cancelled.is_set():
+            raise OSError("console reader cancelled")
         buffer = (InputRecord * 32)()
         count = wintypes.DWORD()
-        if not kernel32.ReadConsoleInputW(
+        read = kernel32.ReadConsoleInputW(
             handle, ctypes.byref(buffer), 32, ctypes.byref(count)
-        ):
+        )
+        if cancelled.is_set():
+            raise OSError("console reader cancelled")
+        if not read:
             raise OSError(ctypes.get_last_error(), "ReadConsoleInput failed")
         events = []
         for record in buffer[:count.value]:
@@ -278,9 +301,25 @@ def windows_console_key_events():
             ))
         return events
 
+    def wake_reader() -> None:
+        """Return a waiting ReadConsoleInput, without spelling a key.
+
+        A focus record is a record the reader discards, so unblocking it
+        cannot be mistaken for input by this process or the next one.
+        """
+        record = InputRecord()
+        record.EventType = FOCUS_EVENT
+        written = wintypes.DWORD()
+        kernel32.WriteConsoleInputW(
+            handle, ctypes.byref(record), 1, ctypes.byref(written)
+        )
+
     try:
         yield read_events
     finally:
+        cancelled.set()
+        with contextlib.suppress(OSError):
+            wake_reader()
         kernel32.SetConsoleMode(handle, saved.value)
 
 

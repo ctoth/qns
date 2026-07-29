@@ -1,11 +1,17 @@
 """Six-key Braille entry: decoding key transitions and assembling chords."""
 
+import contextlib
 import io
 import os
 
 from qns.bns import _six_key_reader
 from qns.keysource import KeyEvent, Win32InputDecoder
+from qns.loader import InputBoundary
 from qns.sixkey import SixKeyAssembler, TimedChordAssembler
+
+# The linked NFB99 English chord-acceptance addresses, as tests/test_bns.py
+# installs them: enough for a run loop to accept a keyboard at all.
+_ANY_BOUNDARY = InputBoundary(0x4327C, 0x41A32, 0x1AF5, 0x41653, 0x0A0D, 0x414AF)
 
 # Captured from a live WSL terminal by tools/probe_terminal_keys.py: Alt
 # pressed and released, Alt pressed again, then 'd' and 'f' pressed
@@ -262,6 +268,75 @@ def test_f4_exits_and_f5_restarts(monkeypatch):
 def test_ctrl_c_still_asks_to_exit(monkeypatch):
     chords, actions = _control_actions(CTRL_C_RECORD, monkeypatch)
     assert (chords, actions) == ([], ["exit"])
+
+
+def test_reader_uses_the_console_the_run_loop_opened():
+    """The daemon reader is handed a reader; it must never open one."""
+    from qns.bns import _six_key_reader
+    from qns.sixkey import VK_F4
+
+    batches = [
+        [press("f"), press("d")],
+        [press("f", down=False), press("d", down=False)],
+        [press(vk=VK_F4)],
+    ]
+
+    def read_events():
+        if not batches:
+            raise OSError("cancelled")
+        return batches.pop(0)
+
+    chords, actions = [], []
+    _six_key_reader("6-key", chords.append, actions.append, read_events)
+
+    assert chords == [0x03]  # f=dot 1, d=dot 2
+    assert actions == ["exit"]
+
+
+def test_console_mode_is_released_when_a_finite_run_ends(monkeypatch):
+    """A run that simply reaches its cycle budget must hand the console back.
+
+    The reader owns nothing: it is a daemon blocked in a read, whose
+    frames are never unwound, so a mode it held would outlive the
+    process and leave the invoking console without echo or line input.
+    """
+    import sys
+    import threading
+
+    import qns.bns
+    from qns.bns import BNS
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    opened, closed = [], []
+    reading = threading.Event()
+
+    @contextlib.contextmanager
+    def fake_console():
+        opened.append(threading.current_thread().name)
+        cancelled = threading.Event()
+
+        def read_events():
+            reading.set()
+            cancelled.wait()  # as ReadConsoleInput blocks, until cancelled
+            raise OSError("cancelled")
+
+        try:
+            yield read_events
+        finally:
+            cancelled.set()
+            closed.append(threading.current_thread().name)
+
+    monkeypatch.setattr(qns.bns, "windows_console_key_events", fake_console)
+
+    machine = BNS(stdin_device="6-key")
+    machine._input_boundary = _ANY_BOUNDARY
+    monkeypatch.setattr(BNS, "_execute_budget", lambda self, cycles: cycles)
+
+    machine.run(max_cycles=1000)
+
+    assert reading.wait(2.0), "the reader never reached the console"
+    assert opened == ["MainThread"]
+    assert closed == ["MainThread"]
 
 
 def test_console_handle_follows_the_current_stdin(monkeypatch):

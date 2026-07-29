@@ -124,7 +124,8 @@ def _six_key_control(event) -> str | None:
     return None
 
 
-def _six_key_reader(layout: str, emit, control=lambda action: None) -> None:
+def _six_key_reader(layout: str, emit, control=lambda action: None,
+                    read_events=None) -> None:
     """Assemble six-key chords from host key transitions until stdin ends.
 
     Prefers real key transitions - `ReadConsoleInput` on a Windows
@@ -132,28 +133,26 @@ def _six_key_reader(layout: str, emit, control=lambda action: None) -> None:
     ends exactly where the hardware would end it: when the last key comes
     back up.  A terminal that reports no releases leaves only arrival
     times, so those characters go to the timing fallback instead.
+
+    `read_events` is the native console reader when the run loop opened
+    one.  It is opened there rather than here because this runs on a
+    daemon thread, which never unwinds: the console mode has to be owned
+    by whoever cleans up after the run.
     """
-    if sys.platform == "win32":
-        console = contextlib.ExitStack()
-        try:
-            read_events = console.enter_context(windows_console_key_events())
-        except OSError:
-            read_events = None
-        if read_events is not None:
-            assembler = SixKeyAssembler(layout=layout)
-            with console:
-                while True:
-                    try:
-                        events = read_events()
-                    except OSError:
-                        return
-                    for event in events:
-                        action = _six_key_control(event)
-                        if action is not None:
-                            control(action)
-                            return
-                        for chord in assembler.feed(event):
-                            emit(chord)
+    if read_events is not None:
+        assembler = SixKeyAssembler(layout=layout)
+        while True:
+            try:
+                events = read_events()
+            except OSError:
+                return  # the run loop cancelled us, or the console ended
+            for event in events:
+                action = _six_key_control(event)
+                if action is not None:
+                    control(action)
+                    return
+                for chord in assembler.feed(event):
+                    emit(chord)
 
     try:
         fd = sys.stdin.fileno()
@@ -1234,6 +1233,7 @@ class BNS:
             self.synth.start()
 
         input_driver: ChordInputDriver | None = None
+        console_reader = None
         pc_watch_reported = False
         terminal = contextlib.ExitStack()
         if self.stdin_device is not None or self.reset_mode is not None:
@@ -1271,6 +1271,7 @@ class BNS:
                         self.stdin_device,
                         input_driver.queue.put,
                         self._request_control,
+                        console_reader,
                     )
                 elif self.stdin_device == "jsonl":
                     for line in sys.stdin:
@@ -1303,11 +1304,20 @@ class BNS:
                 if self.stdin_device in CHORD_STDIN_DEVICES:
                     terminal.enter_context(_keystrokes_unbuffered())
                 if self.stdin_device in ("6-key", "6-key-dvorak"):
-                    # Ask the terminal to report key releases.  The exit
-                    # stack turns the mode back off however the run ends;
-                    # leaving it on would hand the user's shell input
-                    # records instead of characters.
-                    terminal.enter_context(win32_input_mode(_terminal_fd()))
+                    # Ask for key releases, and hold whatever was asked
+                    # for on this thread: the exit stack undoes it however
+                    # the run ends, where the reader - a daemon blocked in
+                    # a read - would never undo anything.  A native
+                    # console reports transitions directly; a pty has to
+                    # be asked, and leaving that mode enabled would hand
+                    # the user's shell records instead of characters.
+                    if sys.platform == "win32":
+                        with contextlib.suppress(OSError):
+                            console_reader = terminal.enter_context(
+                                windows_console_key_events()
+                            )
+                    if console_reader is None:
+                        terminal.enter_context(win32_input_mode(_terminal_fd()))
                 stdin_thread = threading.Thread(
                     target=read_stdin,
                     daemon=True,
