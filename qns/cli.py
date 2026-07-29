@@ -487,9 +487,6 @@ def main(argv: list[str] | None = None) -> None:
         else:
             bns.run(max_cycles=args.cycles)
 
-        if bns.restart_requested:
-            _restart_with_same_settings()
-
         if args.speech:
             if args.speech == "english":
                 speech = " ".join(english_chunks)
@@ -524,6 +521,13 @@ def main(argv: list[str] | None = None) -> None:
 
         if stdio_output is not None:
             stdio_output.emit("system", state="exited")
+
+        # Last, so that a restart saves and closes everything a normal exit
+        # would.  Restarting before the nonvolatile state was written would
+        # discard the session's RAM - the emulated battery-backed memory -
+        # which is the opposite of resuming with the same settings.
+        if bns.restart_requested:
+            _restart_with_same_settings()
 
 
 if __name__ == "__main__":

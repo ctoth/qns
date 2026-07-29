@@ -299,3 +299,34 @@ def test_failed_restart_exits_rather_than_carrying_on(monkeypatch):
 
     with pytest.raises(SystemExit):
         qns.cli._restart_with_same_settings()
+
+
+def test_restart_saves_nonvolatile_state_before_execing(tmp_path, monkeypatch):
+    """F5 must not discard the emulated battery-backed RAM.
+
+    The state file is written among the post-run actions, so a restart
+    that execs before them would resume with the session's RAM thrown
+    away - the opposite of keeping the same settings.
+    """
+    import qns.cli
+
+    state = tmp_path / "state.bin"
+    original_run = qns.cli.BNS.run
+
+    def run_then_ask_for_restart(self, *args, **kwargs):
+        result = original_run(self, *args, **kwargs)
+        self.restart_requested = True
+        return result
+
+    saved_when_execed = []
+    monkeypatch.setattr(qns.cli.BNS, "run", run_then_ask_for_restart)
+    monkeypatch.setattr(qns.cli.os, "execv",
+                        lambda path, argv: saved_when_execed.append(state.exists()))
+
+    qns.cli.main([
+        "--cycles", "1000", "--input", "none",
+        "--state", str(state), "roms/bspeng.bns",
+    ])
+
+    assert saved_when_execed == [True]
+    assert state.stat().st_size > 0
