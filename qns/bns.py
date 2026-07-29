@@ -33,6 +33,7 @@ from .loader import (
     find_input_boundary,
     find_speech_parameters,
     find_speech_power_timeout,
+    find_voice_inflection_flag,
     load_firmware,
 )
 from .memory import Memory
@@ -1017,6 +1018,14 @@ class BNS:
             print(
                 f"Speech power timeout: {timeout.value} @ "
                 f"0x{timeout.address:05X}"
+            )
+
+        voice_inflection_flag = find_voice_inflection_flag(firmware)
+        if voice_inflection_flag is not None:
+            self.memory.write(voice_inflection_flag, 1)
+            print(
+                "Voice inflection enabled @ "
+                f"0x{voice_inflection_flag:05X}"
             )
 
         self._speech_parameters = find_speech_parameters(

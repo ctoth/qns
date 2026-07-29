@@ -394,6 +394,41 @@ RETAINED_SPEECH_DEFAULTS = {
     "filter_frequency": 17,
 }
 
+# BS.ASM::DOPITCH recognizes the translator's low/normal/high marker bytes,
+# calculates INFL +/- 1Bh, then consults _VIFLAG before writing the new value.
+# Source initialization stores 1 in that retained flag by default.
+_DOPITCH_SIGNATURE = (
+    0xFE, 0x3C, 0x28, None,
+    0xFE, 0x3D, 0x28, None,
+    0xFE, 0x3E, 0xC0,
+    0x3A, None, None, 0xC6, 0x1B, 0x18, None,
+    0x3A, None, None, 0xD6, 0x1B, 0x30, None,
+    0x3A, None, None, 0xF5,
+    0x3A, None, None, 0xCB, 0x47, 0x28, None,
+    0xF1, 0x32, None, None, 0x32, None, None, 0xED, 0x39,
+)
+_DOPITCH_VIFLAG_OPERAND = 30
+
+
+def find_voice_inflection_flag(firmware: bytes) -> int | None:
+    """Locate the physical `_VIFLAG` byte read by English DOPITCH."""
+    bank = firmware[:0x10000]
+    matches = [
+        start
+        for start in range(len(bank) - len(_DOPITCH_SIGNATURE) + 1)
+        if all(
+            expected is None or bank[start + offset] == expected
+            for offset, expected in enumerate(_DOPITCH_SIGNATURE)
+        )
+    ]
+    if len(matches) != 1:
+        return None
+    operand = matches[0] + _DOPITCH_VIFLAG_OPERAND
+    logical = bank[operand] | (bank[operand + 1] << 8)
+    if logical < _LOWEST_RAM_ADDRESS:
+        return None
+    return logical + (_COMMON_AREA_CBR << 12)
+
 
 # ISSET writes each setting as `LD A,(param)` ... `OUT (reg),A`, so the
 # operand of the nearest preceding `LD A,(nn)` names the RAM cell.  The

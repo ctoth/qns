@@ -91,6 +91,18 @@ def test_load_rom_rejects_update_package_without_valid_image_crc(tmp_path):
         bns.load_rom(package_path)
 
 
+def test_fresh_ram_enables_firmware_voice_inflection(tmp_path):
+    from test_loader import make_dopitch_image
+
+    rom_path = tmp_path / "dopitch.rom"
+    rom_path.write_bytes(make_dopitch_image())
+    bns = BNS(model="bs2")
+
+    bns.load_rom(rom_path)
+
+    assert bns.memory.read(0x41A05) == 1
+
+
 def test_english_stdio_characters_use_firmware_keyboard_chords():
     """Terminal characters map to physical English keyboard chords."""
     assert ASCII_TO_BNS_KEY[ord("a")] == 0x01

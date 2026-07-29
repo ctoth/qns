@@ -44,6 +44,19 @@ HANDLER_AS_LINKED = bytes.fromhex(
     "3a9bd4" "e61f" "32ffd5" "18b0"                          # EHTONE: PITCH
 )
 
+DOPITCH_AS_LINKED = bytes.fromhex(
+    "fe3c2801"                # CP PITCHDN; JR Z,LOW1
+    "fe3d2802"                # CP PITCHNM; JR Z,NORMAL
+    "fe3ec0"                  # CP PITCHUP; RET NZ
+    "3a20d6" "c61b" "1801"    # LD A,(INFL); ADD A,1Bh; JR DOPIT0
+    "3a20d6" "d61b" "3001"    # LD A,(INFL); SUB 1Bh; JR NC,DOPIT0
+    "3a1ed6"                  # LD A,(NINFL)
+    "f5" "3a05da"             # PUSH AF; LD A,(_VIFLAG)
+    "cb47" "2801" "f1"        # BIT 0,A; JR Z,DOPIT1; POP AF
+    "3220d6" "321fd6"         # LD (INFL),A; LD (NXTINFL),A
+    "ed39c1"                  # OUT0 (SSI263+1),A
+)
+
 MFULL3_SHAPES = ("bsp", "nfb99-braille-lite", "2003-braille-lite")
 
 
@@ -214,6 +227,13 @@ def make_isset_image(size: int = 0x10000, offset: int = 0x02D7) -> bytes:
     return bytes(image)
 
 
+def make_dopitch_image(size: int = 0x10000, offset: int = 0x4200) -> bytes:
+    """Place the linked English DOPITCH shape into an empty image."""
+    image = bytearray(size)
+    image[offset:offset + len(DOPITCH_AS_LINKED)] = DOPITCH_AS_LINKED
+    return bytes(image)
+
+
 def test_find_speech_parameters_recovers_linked_addresses():
     """Round-trip the proven bspeng.bns cells, logical to physical."""
     assert find_speech_parameters(make_isset_image()) == SpeechParameters(
@@ -222,3 +242,9 @@ def test_find_speech_parameters_recovers_linked_addresses():
         inflection=(0x41620, 0x4161E),
         filter_frequency=(0x415FF,),
     )
+
+
+def test_find_voice_inflection_flag_recovers_linked_address():
+    from qns.loader import find_voice_inflection_flag
+
+    assert find_voice_inflection_flag(make_dopitch_image()) == 0x41A05
