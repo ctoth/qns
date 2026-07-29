@@ -1,7 +1,9 @@
 """Main BNS emulator."""
 
 import contextlib
+import os
 import queue
+import select
 import sys
 import threading
 import time
@@ -24,6 +26,12 @@ from .devices import (
     Watchdog,
 )
 from .input_driver import ChordInputDriver
+from .keysource import (
+    Win32InputDecoder,
+    win32_input_mode,
+    windows_console_key_events,
+)
+from .sixkey import SixKeyAssembler, TimedChordAssembler
 from .loader import (
     RETAINED_SPEECH_DEFAULTS,
     EnglishBoundary,
@@ -61,6 +69,17 @@ SYNTH_BACKENDS = {
 }
 
 
+# Standard-input devices that deliver Braille chords through
+# ChordInputDriver.  They share the driver's cost model: boundary
+# observation is paid for only while a chord is actually in flight.
+CHORD_STDIN_DEVICES = ("keyboard", "6-key", "6-key-dvorak")
+
+# Quiet interval that ends a chord when the terminal reports no key
+# releases.  Dots pressed together arrive within a few milliseconds;
+# successive cells are far further apart even at speed.
+SIX_KEY_CHORD_TIMEOUT = 0.04
+
+
 def _read_stdin_character() -> str:
     """Read one redirected byte or one unbuffered console key."""
     if sys.platform == "win32" and sys.stdin.isatty():
@@ -73,6 +92,80 @@ def _read_stdin_character() -> str:
                 continue
             return character
     return sys.stdin.read(1)
+
+
+def _terminal_fd() -> int | None:
+    """The interactive terminal's descriptor, or None if there is none."""
+    try:
+        return sys.stdin.fileno() if sys.stdin.isatty() else None
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def _six_key_reader(layout: str, emit) -> None:
+    """Assemble six-key chords from host key transitions until stdin ends.
+
+    Prefers real key transitions - `ReadConsoleInput` on a Windows
+    console, win32-input-mode records over a pty - because a chord then
+    ends exactly where the hardware would end it: when the last key comes
+    back up.  A terminal that reports no releases leaves only arrival
+    times, so those characters go to the timing fallback instead.
+    """
+    if sys.platform == "win32":
+        console = contextlib.ExitStack()
+        try:
+            read_events = console.enter_context(windows_console_key_events())
+        except OSError:
+            read_events = None
+        if read_events is not None:
+            assembler = SixKeyAssembler(layout=layout)
+            with console:
+                while True:
+                    try:
+                        events = read_events()
+                    except OSError:
+                        return
+                    for event in events:
+                        for chord in assembler.feed(event):
+                            emit(chord)
+
+    try:
+        fd = sys.stdin.fileno()
+        interactive = sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        return
+
+    decoder = Win32InputDecoder()
+    transitions = SixKeyAssembler(layout=layout)
+    # Redirected input carries no timing worth reading, so let a line
+    # ending delimit the cell rather than a stopwatch.
+    timed = TimedChordAssembler(
+        layout=layout, timeout=SIX_KEY_CHORD_TIMEOUT if interactive else None
+    )
+
+    while True:
+        timeout = timed.wait_timeout
+        if timeout is not None:
+            ready, _, _ = select.select([fd], [], [], timeout)
+            if not ready:
+                for chord in timed.poll():
+                    emit(chord)
+                continue
+        try:
+            data = os.read(fd, 1024)
+        except OSError:
+            return
+        if not data:
+            for chord in timed.flush():
+                emit(chord)
+            return
+        events, text = decoder.feed(data)
+        for event in events:
+            for chord in transitions.feed(event):
+                emit(chord)
+        for character in text:
+            for chord in timed.feed_char(character):
+                emit(chord)
 
 
 @contextlib.contextmanager
@@ -906,7 +999,7 @@ class BNS:
             ),
             self.trace_interrupts,
             self._keyboard_needs_steps(),
-            self.stdin_device not in (None, "keyboard"),
+            self.stdin_device not in (None, *CHORD_STDIN_DEVICES),
             self.reset_mode is not None,
             self._pc_watch_address is not None,
         ))
@@ -922,7 +1015,7 @@ class BNS:
         the core at full speed the rest of the time - which is precisely
         when speech is playing.
         """
-        if self.stdin_device != "keyboard":
+        if self.stdin_device not in CHORD_STDIN_DEVICES:
             return False
         driver = self._input_driver
         return driver is None or driver.busy
@@ -1093,7 +1186,10 @@ class BNS:
         pc_watch_reported = False
         terminal = contextlib.ExitStack()
         if self.stdin_device is not None or self.reset_mode is not None:
-            if self.stdin_device in ("keyboard", "jsonl") or self.reset_mode is not None:
+            if (
+                self.stdin_device in (*CHORD_STDIN_DEVICES, "jsonl")
+                or self.reset_mode is not None
+            ):
                 if self._input_boundary is None:
                     if self.reset_mode is not None:
                         raise RuntimeError(
@@ -1117,6 +1213,10 @@ class BNS:
                 if self.stdin_device == "keyboard":
                     while character := _read_stdin_character():
                         input_driver.queue.put(character)
+                elif self.stdin_device in ("6-key", "6-key-dvorak"):
+                    # Chords arrive already assembled, as dot bitmasks;
+                    # ChordInputDriver's queue takes those directly.
+                    _six_key_reader(self.stdin_device, input_driver.queue.put)
                 elif self.stdin_device == "jsonl":
                     for line in sys.stdin:
                         try:
@@ -1145,8 +1245,14 @@ class BNS:
                 # Enter cbreak before the reader starts, and leave it from
                 # this thread: the reader is a daemon and would be killed
                 # without unwinding, stranding the user's terminal.
-                if self.stdin_device == "keyboard":
+                if self.stdin_device in CHORD_STDIN_DEVICES:
                     terminal.enter_context(_keystrokes_unbuffered())
+                if self.stdin_device in ("6-key", "6-key-dvorak"):
+                    # Ask the terminal to report key releases.  The exit
+                    # stack turns the mode back off however the run ends;
+                    # leaving it on would hand the user's shell input
+                    # records instead of characters.
+                    terminal.enter_context(win32_input_mode(_terminal_fd()))
                 stdin_thread = threading.Thread(
                     target=read_stdin,
                     daemon=True,

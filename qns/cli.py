@@ -128,8 +128,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-realtime", dest="realtime", action="store_false",
                         help="Run as fast as possible even with --audio")
     parser.set_defaults(realtime=None)
-    parser.add_argument("--input", choices=("keyboard", "none", "serial0", "serial1"),
-                        help="Route standard input to the BNS keyboard or an ASCI channel")
+    parser.add_argument(
+        "--input",
+        choices=("keyboard", "6-key", "6-key-dvorak", "none", "serial0", "serial1"),
+        help="Route standard input to the BNS keyboard, six-key Braille entry "
+             "(fdsjkl, or ueohtn for Dvorak), or an ASCI channel",
+    )
     parser.add_argument(
         "--reset",
         choices=("warm", "cold"),
