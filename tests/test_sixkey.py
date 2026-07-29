@@ -575,6 +575,8 @@ def test_restart_reexecs_the_original_command_line(monkeypatch):
 
     import qns.cli
 
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "executable", "/venv/bin/python3")
     monkeypatch.setattr(
         sys, "orig_argv", ["/usr/bin/python3", "-m", "qns.bns", "--audio", "rom.bns"]
     )
@@ -584,9 +586,12 @@ def test_restart_reexecs_the_original_command_line(monkeypatch):
 
     qns.cli._restart_with_same_settings()
 
+    # argv[0] is sys.executable, not sys.orig_argv[0]: under `uv run` on
+    # Windows those differ, and only sys.executable is guaranteed to have
+    # this project's venv (and so its dependencies) importable.
     assert execs == [(
-        "/usr/bin/python3",
-        ["/usr/bin/python3", "-m", "qns.bns", "--audio", "rom.bns"],
+        "/venv/bin/python3",
+        ["/venv/bin/python3", "-m", "qns.bns", "--audio", "rom.bns"],
     )]
 
 
@@ -600,6 +605,7 @@ def test_windows_restart_waits_for_the_replacement(monkeypatch):
     import qns.cli
 
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "executable", r"C:\venv\Scripts\python.exe")
     monkeypatch.setattr(sys, "orig_argv", ["python.exe", "-m", "qns.bns", "rom.bns"])
     monkeypatch.setattr(qns.cli.os, "execv",
                         lambda path, argv: pytest.fail("execv on Windows"))
@@ -614,7 +620,9 @@ def test_windows_restart_waits_for_the_replacement(monkeypatch):
     with pytest.raises(SystemExit) as exit_info:
         qns.cli._restart_with_same_settings()
 
-    assert waited == [["python.exe", "-m", "qns.bns", "rom.bns"]]
+    # sys.executable, not sys.orig_argv[0]: see the matching regression
+    # note in test_restart_reexecs_the_original_command_line.
+    assert waited == [[r"C:\venv\Scripts\python.exe", "-m", "qns.bns", "rom.bns"]]
     assert exit_info.value.code == 3
 
 
@@ -625,6 +633,7 @@ def test_failed_restart_exits_rather_than_carrying_on(monkeypatch):
 
     import qns.cli
 
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(sys, "orig_argv", ["/nonexistent/python", "-m", "qns.bns"])
 
     def refuse(path, argv):
@@ -643,6 +652,8 @@ def test_restart_saves_nonvolatile_state_before_execing(tmp_path, monkeypatch):
     that execs before them would resume with the session's RAM thrown
     away - the opposite of keeping the same settings.
     """
+    import sys
+
     import qns.cli
 
     state = tmp_path / "state.bin"
@@ -654,6 +665,7 @@ def test_restart_saves_nonvolatile_state_before_execing(tmp_path, monkeypatch):
         return result
 
     saved_when_execed = []
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(qns.cli.BNS, "run", run_then_ask_for_restart)
     monkeypatch.setattr(qns.cli.os, "execv",
                         lambda path, argv: saved_when_execed.append(state.exists()))

@@ -279,6 +279,13 @@ def _restart_with_same_settings() -> None:
     `-m qns.bns` included.  The run loop has already restored the
     terminal and stopped the audio device by this point.
 
+    `sys.orig_argv[0]` is discarded in favour of `sys.executable`: under
+    `uv run` on Windows the two differ - orig_argv[0] names uv's managed
+    base interpreter, which has no access to this project's venv and so
+    no `z180` to import, while `sys.executable` is always the interpreter
+    actually running right now, guaranteed importable.  The interpreter
+    flags and script arguments after argv[0] are passed through unchanged.
+
     Windows has no real in-process exec: the CRT builds a fresh process
     and destroys this one, so the shell sees its child exit and takes the
     console back while the replacement is still typing into it - the very
@@ -287,7 +294,7 @@ def _restart_with_same_settings() -> None:
     status as ours, so the shell keeps waiting on one process throughout.
     """
     print("Restarting...", flush=True)
-    argv = list(sys.orig_argv)
+    argv = [sys.executable] + list(sys.orig_argv[1:])
     if sys.platform == "win32":
         _restart_as_child(argv)
     try:
