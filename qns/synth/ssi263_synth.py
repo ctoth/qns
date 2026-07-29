@@ -95,6 +95,12 @@ class SSI263Synth:
         """Return whether the host audio player still has queued samples."""
         return self._player is not None and self._player.is_playing()
 
+    def realtime_lead_seconds(self) -> float:
+        """Return bounded emulator run-ahead needed to keep audio continuous."""
+        if self._player is None:
+            return 0.0
+        return self._player.realtime_lead_seconds()
+
     def wait_until_done(self) -> None:
         """Block until speech completes."""
         while self.is_speaking():

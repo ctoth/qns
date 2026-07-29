@@ -333,6 +333,271 @@ def find_input_boundary(firmware: bytes) -> InputBoundary | None:
     )
 
 
+@dataclass(frozen=True)
+class SpeechParameters:
+    """Physical addresses of the four retained speech settings.
+
+    `BSPMON.ASM::ISSET` applies these to the SSI-263 on every utterance.
+    They live in the monitor's uninitialised `DS` scratch area and no
+    shipped code path ever gives them a value: a field unit carries them
+    in battery-backed RAM, set once through the parameter handler
+    (`BSSERIAL.ASM::EHVOL`/`EHPITC`/`EHTONE`).  An emulator that starts
+    RAM at zero therefore makes the firmware write amplitude 0 - correct
+    emulation of an uninitialised machine, but silence.
+
+    These names cross badly, so the fields below are named for the chip
+    register each cell reaches, which is the one unambiguous sense.  The
+    firmware variable `PITCH` drives the chip's *filter frequency*, and
+    the API (`BSAPI.C::api_speech_parms`) in turn calls that byte
+    "Pitch" while calling the *inflection* byte "Frequency".
+
+    Each field lists every cell that holds its setting.  Rate and
+    inflection are held twice: ISSET reads a working cell (`RATE`,
+    `INFL`) that the firmware rebuilds for each utterance from a
+    retained shadow (`NRATE`, `NINFL`) - applying, for inflection, the
+    intonation markers `BRL.ASM::INTON` inserts.  Seeding only one of a
+    pair does not hold: the working cell is overwritten from the shadow
+    partway through boot, and the shadow alone leaves the setting wrong
+    until the first rebuild.
+
+    Addresses are physical, matching InputBoundary and the addresses our
+    memory callbacks receive.
+    """
+
+    volume: tuple[int, ...]
+    """`VOLUME` -> amplitude nibble of the control register (C3)."""
+
+    rate: tuple[int, ...]
+    """`RATE`, `NRATE` -> speaking-speed nibble (C2)."""
+
+    inflection: tuple[int, ...]
+    """`INFL`, `NINFL` -> inflection register (C1).  API name: "Frequency"."""
+
+    filter_frequency: tuple[int, ...]
+    """`PITCH` -> filter-frequency register (C4).  API name: "Pitch"."""
+
+
+# The midpoint of each setting's documented range.  `BSAPI.H` and
+# `BNSAPI.H` both specify them, agreeing exactly:
+#
+#     Volume 0..15   Pitch 1..32   Rate 1..16   Frequency 0..255
+#
+# where the API's "Pitch" is the filter-frequency cell and its
+# "Frequency" is the inflection cell (see SpeechParameters).  Nothing in
+# the firmware records what a unit actually shipped with - the values in
+# BSSPEECH.ASM::ISINIT are unreachable dead code - so the midpoint is a
+# deliberate neutral choice, not a recovered default.
+RETAINED_SPEECH_DEFAULTS = {
+    "volume": 8,
+    "rate": 9,
+    "inflection": 128,
+    "filter_frequency": 17,
+}
+
+# BS.ASM::DOPITCH recognizes the translator's low/normal/high marker bytes,
+# calculates INFL +/- 1Bh, then consults _VIFLAG before writing the new value.
+# Source initialization stores 1 in that retained flag by default.
+_DOPITCH_SIGNATURE = (
+    0xFE, 0x3C, 0x28, None,
+    0xFE, 0x3D, 0x28, None,
+    0xFE, 0x3E, 0xC0,
+    0x3A, None, None, 0xC6, 0x1B, 0x18, None,
+    0x3A, None, None, 0xD6, 0x1B, 0x30, None,
+    0x3A, None, None, 0xF5,
+    0x3A, None, None, 0xCB, 0x47, 0x28, None,
+    0xF1, 0x32, None, None, 0x32, None, None, 0xED, 0x39,
+)
+_DOPITCH_VIFLAG_OPERAND = 30
+
+
+def find_voice_inflection_flag(firmware: bytes) -> int | None:
+    """Locate the physical `_VIFLAG` byte read by English DOPITCH."""
+    bank = firmware[:0x10000]
+    matches = [
+        start
+        for start in range(len(bank) - len(_DOPITCH_SIGNATURE) + 1)
+        if all(
+            expected is None or bank[start + offset] == expected
+            for offset, expected in enumerate(_DOPITCH_SIGNATURE)
+        )
+    ]
+    if len(matches) != 1:
+        return None
+    operand = matches[0] + _DOPITCH_VIFLAG_OPERAND
+    logical = bank[operand] | (bank[operand + 1] << 8)
+    if logical < _LOWEST_RAM_ADDRESS:
+        return None
+    return logical + (_COMMON_AREA_CBR << 12)
+
+
+# ISSET writes each setting as `LD A,(param)` ... `OUT (reg),A`, so the
+# operand of the nearest preceding `LD A,(nn)` names the RAM cell.  The
+# volume write anchors the routine: `OR 50h` into the control register
+# (CTL low, articulation 5) appears nowhere else.
+_ISSET_ANCHOR = (0xF6, 0x50, 0xD3)
+_ISSET_WINDOW = 0x60
+_HANDLER_WINDOW = 0x40
+_LOWEST_RAM_ADDRESS = 0x8000
+
+
+def find_speech_parameters(
+    firmware: bytes,
+    ssi263_port: int = 0xC0,
+) -> SpeechParameters | None:
+    """Locate this revision's retained speech-setting RAM cells.
+
+    Returns None unless exactly one `ISSET` matches and all four cells
+    resolve to RAM, so an unrecognised image yields no addresses rather
+    than wrong ones.
+    """
+    bank = firmware[:0x10000]
+    anchor = bytes(_ISSET_ANCHOR) + bytes((ssi263_port + 3,))
+    starts = [
+        offset
+        for offset in range(len(bank) - 3 - len(anchor))
+        if bank[offset] == _LD_A_MEMORY.opcode[0]
+        and bank[offset + 3:offset + 3 + len(anchor)] == anchor
+    ]
+    if len(starts) != 1:
+        return None
+
+    start = starts[0]
+    window = bank[start:start + _ISSET_WINDOW]
+    addresses = {"volume": _operand(window, 0)}
+    for field, register in (
+        ("rate", 2),
+        ("inflection", 1),
+        ("filter_frequency", 4),
+    ):
+        address = _parameter_before_out(window, ssi263_port + register)
+        if address is None:
+            return None
+        addresses[field] = address
+
+    cells = {field: (address,) for field, address in addresses.items()}
+    for field in ("rate", "inflection"):
+        shadow = _retained_shadow(bank, addresses[field], addresses["volume"])
+        if shadow is None:
+            return None
+        cells[field] += (shadow,)
+
+    if any(
+        address < _LOWEST_RAM_ADDRESS
+        for field in cells.values()
+        for address in field
+    ):
+        return None
+    common_base = _COMMON_AREA_CBR << 12
+    return SpeechParameters(**{
+        field: tuple(address + common_base for address in addresses)
+        for field, addresses in cells.items()
+    })
+
+
+@dataclass(frozen=True)
+class SpeechPowerTimeout:
+    """The speech-power turn-off threshold and the value it should hold."""
+
+    address: int
+    """Physical address of `SPTIMVA`."""
+
+    value: int
+    """What the firmware's own initialiser stores there."""
+
+
+# BSBGTASK.ASM::TIMSTAT, which quiesces the speech chip once the idle
+# counter reaches its threshold:
+#
+#     LD A,(SPTIMER) / LD HL,SPTIMVA / CP (HL) / CALL NC,SPOFF
+#
+# `CALL NC` fires on SPTIMER >= SPTIMVA, so a threshold left at zero
+# makes it fire on every pass - writing `VOLUME AND 70h`, which is
+# always amplitude zero, roughly every 50 ms.  That silences a phoneme
+# mid-word.  The threshold's initialiser is not reached on our boot, so
+# take the value it would have stored.
+_TIMSTAT_SIGNATURE = (
+    _LD_A_MEMORY, _LD_HL_IMMEDIATE, _Insn("cp (hl)", (0xBE,)),
+    _Insn("call nc,nn", (0xD4,), operand_bytes=2),
+)
+
+
+def find_speech_power_timeout(firmware: bytes) -> SpeechPowerTimeout | None:
+    """Locate `SPTIMVA` and the constant the firmware initialises it to."""
+    bank = firmware[:0x10000]
+    matches = _find_signature(bank, _TIMSTAT_SIGNATURE)
+    if len(matches) != 1:
+        return None
+    threshold = _operand(bank, matches[0] + len(_LD_A_MEMORY.tokens()))
+    if threshold < _LOWEST_RAM_ADDRESS:
+        return None
+
+    # `LD A,n / LD (SPTIMVA),A` is the only place the constant appears.
+    store = bytes((_LD_A_IMMEDIATE.opcode[0],))
+    tail = bytes((_LD_MEMORY_A.opcode[0],)) + _address_bytes(threshold)
+    values = {
+        bank[offset + 1]
+        for offset in range(len(bank) - 5)
+        if bank[offset] == store[0] and bank[offset + 2:offset + 5] == tail
+    }
+    if len(values) != 1:
+        return None
+    return SpeechPowerTimeout(
+        address=threshold + (_COMMON_AREA_CBR << 12),
+        value=values.pop(),
+    )
+
+
+def _retained_shadow(bank: bytes, working: int, volume: int) -> int | None:
+    """Address of the retained shadow a settings handler writes.
+
+    `BSSERIAL.ASM::EHPITC` and its rate counterpart store the new value
+    to the working cell and its shadow back to back.  Other routines
+    store the same working cell beside a different cell entirely, so a
+    settings handler is identified by the company it keeps: it writes
+    the other retained settings within the same routine.
+
+    Several handlers may qualify - the live one and BSSPEECH.ASM's dead
+    ISINIT both do - so they are required to agree rather than to be
+    unique.
+    """
+    pair = bytes((_LD_MEMORY_A.opcode[0],)) + _address_bytes(working) \
+        + bytes((_LD_MEMORY_A.opcode[0],))
+    volume_store = bytes((_LD_MEMORY_A.opcode[0],)) + _address_bytes(volume)
+
+    shadows = set()
+    offset = bank.find(pair)
+    while offset >= 0:
+        start = max(0, offset - _HANDLER_WINDOW)
+        if volume_store in bank[start:offset + _HANDLER_WINDOW]:
+            shadows.add(_operand(bank, offset + 3))
+        offset = bank.find(pair, offset + 1)
+
+    if len(shadows) != 1:
+        return None
+    return shadows.pop()
+
+
+def _address_bytes(address: int) -> bytes:
+    """Little-endian encoding of a 16-bit operand."""
+    return bytes((address & 0xFF, address >> 8))
+
+
+def _parameter_before_out(window: bytes, register: int) -> int | None:
+    """Operand of the last `LD A,(nn)` fully preceding `OUT (register),A`."""
+    out = window.find(bytes((0xD3, register)))
+    if out < 0:
+        return None
+    load = window.rfind(bytes(_LD_A_MEMORY.opcode), 0, out - 2)
+    if load < 0:
+        return None
+    return _operand(window, load)
+
+
+def _operand(data: bytes, offset: int) -> int:
+    """Little-endian 16-bit operand of the instruction at ``offset``."""
+    return data[offset + 1] | (data[offset + 2] << 8)
+
+
 def _find_signature(data: bytes, signature: tuple[_Insn, ...]) -> list[int]:
     """Return every offset where the instruction sequence matches."""
     pattern = [token for insn in signature for token in insn.tokens()]

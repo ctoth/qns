@@ -5,8 +5,56 @@ import pytest
 from qns.loader import (
     EnglishBoundary,
     InputBoundary,
+    SpeechParameters,
     find_english_boundary,
     find_input_boundary,
+    find_speech_parameters,
+)
+
+# BSPMON.ASM::ISSET exactly as linked into roms/bspeng.bns at 0x02D7.
+# Kept verbatim rather than reassembled: the shipped build differs from
+# the source listing (a CP 0Fh/DEC A rate clamp, and a pitch bias read
+# from the flag byte at 0xDA28), and discovery has to survive that.
+ISSET_AS_LINKED = bytes.fromhex(
+    "f5c5"                  # PUSH AF; PUSH BC
+    "3afdd5" "f650" "d3c3"  # LD A,(VOLUME); OR 50h; OUT (C3),A
+    "cd530a"                # CALL ssi_delay
+    "3afed5" "fe0f" "2001" "3d"          # LD A,(RATE); CP 0Fh; JR NZ; DEC A
+    "cb27cb27cb27cb27" "f608" "d3c2"     # SLA A x4; OR 08h; OUT (C2),A
+    "cd530a"
+    "3a20d6" "d3c1"         # LD A,(INFL); OUT (C1),A
+    "cd530a"
+    "3a02da" "47"           # LD A,(flags); LD B,A
+    "3affd5"                # LD A,(PITCH)
+    "e5" "2128da" "cb46" "280c" "cb56" "2008" "cb4e" "2003"
+    "80" "1801" "90" "e1"   # ADD A,B / SUB B inflection bias
+    "f6e0" "d3c4"           # OR E0h; OUT (C4),A
+    "cd530a"
+    "3ec0" "d3c0"           # LD A,C0h; OUT (C0),A
+)
+
+# BSSERIAL.ASM's Echo parameter handlers as linked in bspeng.bns.  Rate
+# and pitch each store a working cell and its retained shadow back to
+# back; EHVOL sits alongside, and that company is what distinguishes a
+# settings handler from other routines writing the same working cell.
+HANDLER_AS_LINKED = bytes.fromhex(
+    "3a9bd4" "e60f" "2002" "3e0a" "32fed5" "321dd6" "18e7"  # RATE, NRATE
+    "3a9bd4" "cb27" "cb27" "3220d6" "321ed6" "18c2"         # EHPITC: INFL, NINFL
+    "3a9bd4" "32fdd5" "18ba"                                 # EHVOL:  VOLUME
+    "3a9bd4" "e61f" "32ffd5" "18b0"                          # EHTONE: PITCH
+)
+
+DOPITCH_AS_LINKED = bytes.fromhex(
+    "fe3c2801"                # CP PITCHDN; JR Z,LOW1
+    "fe3d2802"                # CP PITCHNM; JR Z,NORMAL
+    "fe3ec0"                  # CP PITCHUP; RET NZ
+    "3a20d6" "c61b" "1801"    # LD A,(INFL); ADD A,1Bh; JR DOPIT0
+    "3a20d6" "d61b" "3001"    # LD A,(INFL); SUB 1Bh; JR NC,DOPIT0
+    "3a1ed6"                  # LD A,(NINFL)
+    "f5" "3a05da"             # PUSH AF; LD A,(_VIFLAG)
+    "cb47" "2801" "f1"        # BIT 0,A; JR Z,DOPIT1; POP AF
+    "3220d6" "321fd6"         # LD (INFL),A; LD (NXTINFL),A
+    "ed39c1"                  # OUT0 (SSI263+1),A
 )
 
 MFULL3_SHAPES = ("bsp", "nfb99-braille-lite", "2003-braille-lite")
@@ -169,3 +217,34 @@ def test_find_input_boundary_requires_all_signatures():
     assert find_input_boundary(bytes(no_wait)) is None
     assert find_input_boundary(bytes(no_reset)) is None
     assert find_input_boundary(bytes(0x10000)) is None
+
+
+def make_isset_image(size: int = 0x10000, offset: int = 0x02D7) -> bytes:
+    """Place ISSET and the settings handler into an empty image."""
+    image = bytearray(size)
+    image[0x0287:0x0287 + len(HANDLER_AS_LINKED)] = HANDLER_AS_LINKED
+    image[offset:offset + len(ISSET_AS_LINKED)] = ISSET_AS_LINKED
+    return bytes(image)
+
+
+def make_dopitch_image(size: int = 0x10000, offset: int = 0x4200) -> bytes:
+    """Place the linked English DOPITCH shape into an empty image."""
+    image = bytearray(size)
+    image[offset:offset + len(DOPITCH_AS_LINKED)] = DOPITCH_AS_LINKED
+    return bytes(image)
+
+
+def test_find_speech_parameters_recovers_linked_addresses():
+    """Round-trip the proven bspeng.bns cells, logical to physical."""
+    assert find_speech_parameters(make_isset_image()) == SpeechParameters(
+        volume=(0x415FD,),
+        rate=(0x415FE, 0x4161D),
+        inflection=(0x41620, 0x4161E),
+        filter_frequency=(0x415FF,),
+    )
+
+
+def test_find_voice_inflection_flag_recovers_linked_address():
+    from qns.loader import find_voice_inflection_flag
+
+    assert find_voice_inflection_flag(make_dopitch_image()) == 0x41A05

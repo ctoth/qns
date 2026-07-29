@@ -6,11 +6,55 @@ Emulator for the Blazie Engineering BNS (Braille 'N Speak) family of devices.
 
 **Z180 CPU boots successfully.** Firmware runs, memory works, keyboard interrupt functional.
 
-**Silent startup mystery.** All ROMs take silent path - SSI-263 only receives pause phonemes.
+**The firmware speaks, at real settings.** Its own text-to-speech emits correct
+phoneme codes ~0.23s into emulated boot ("Braille 'n Speak ready, help, one
+page"), and the SSI-263 now receives a real volume, rate, inflection and filter
+frequency. **`--audio` speaks live, in real time** - the greeting takes the
+3.6 s the hardware takes - and the device answers the keyboard.
 
 ```bash
-# Run emulator (boots but doesn't speak)
-uv run python -m qns.bns --audio roms/NFB99/BSPENG/bspeng.bns
+uv run -m qns.bns --audio roms/bspeng.bns          # speaks, then type at it
+uv run -m qns.bns --audio lpc roms/bspeng.bns      # pcm (default), lpc, or formant
+```
+
+To compare the backends by ear without a working sound device, or without
+waiting out a real-time boot each time, render a trace through the very
+backend `--audio` uses:
+
+```bash
+uv run -m qns.bns --cycles 60000000 --input none \
+    --trace-speech greeting.csv roms/bspeng.bns
+uv run tools/render_backend.py greeting.csv out/lpc.wav --backend lpc
+paplay out/lpc.wav
+```
+
+**Do not combine `--audio` with `--speech`/`--speech-stream english`.** Those
+set an english callback, and any callback needing instruction boundaries drops
+the core to the per-instruction path at ~4-5M cycles/s - below the 12.288M
+real time needs - so speech develops audible gaps. Watch the text or listen to
+the audio, not both, until observation moves onto z-core's native PC watch.
+
+Both blockers named in earlier notes are resolved, and neither was what it
+looked like. The "~1000x too slow" throughput wall was a **deadlock**: the
+firmware sleeps in a RAM-resident `SLP; RET` stub between phonemes, a sleeping
+core advances no cycles, so the scheduled wake was never reached and the loop
+span forever. Measured without contention the core runs 4-32M cycles/s against
+the 12.288M real time needs. See `docs/reports/speech-pipeline-investigation.md`.
+
+The old "amplitude 0" blocker is **resolved**, and was not a decode bug. The
+four speech settings live in RAM that no shipped code path initialises - a real
+unit retains them on battery - so a machine booting RAM at zero made the
+firmware correctly write silence, at the wrong rate and pitch too. `qns.loader`
+discovers the cells and `BNS` seeds them at load; `--force-amplitude` is no
+longer needed. Override with `--volume/--rate/--pitch/--frequency` (names follow
+`BSAPI.H`, so `--pitch` is filter frequency and `--frequency` is inflection).
+
+```bash
+# Trace the phoneme stream (streams to CSV as it runs)
+uv run -m qns.bns --cycles 6000000 --trace-speech speech.csv roms/bspeng.bns
+
+# Render it offline and listen (paplay works under WSLg)
+uv run tools/lpc_resynth.py speech.csv out.wav && paplay out.wav
 
 # SSI-263 synth works standalone
 uv run pytest tests/test_synth.py::test_synth_speaks_phoneme -v -s
@@ -24,6 +68,8 @@ qns/
 │   ├── synth/                # SSI-263 audio backends
 │   │   ├── __init__.py       # Exports SSI263Synth, SSI263PCMSynth, FormantSynth
 │   │   ├── phonemes.py       # AppleWin captures: 62 phonemes @ 22050 Hz
+│   │   ├── lpc.py            # LPC analysis + LPCStream continuous voice
+│   │   ├── ssi263_lpc.py     # LPC-resynthesis backend
 │   │   ├── ssi263_pcm.py     # PCM-capture backend (default)
 │   │   ├── ssi263_synth.py   # Formant-synthesis backend
 │   │   ├── formant.py        # SC-01 formant model (from MAME votrax)
@@ -48,21 +94,27 @@ qns/
 │   ├── extract_phonemes.py   # Extract phonemes from AppleWin
 │   ├── decode_sc01_rom.py    # Regenerates qns/synth/sc01_rom.py
 │   ├── extract_firmware.py   # Package -> .bin extraction (uses qns.loader)
+│   ├── render_backend.py     # Trace -> WAV through a live --audio backend
+│   ├── lpc_track_experiment.py # Unfinished time-varying LPC (not a backend)
 │   └── rom_analyzer.py       # ROM bank/structure analysis
 ├── tests/                    # pytest suite (uv run pytest tests/)
 ├── roms/NFB99/               # ROM images (update packages)
 └── prompts/
     ├── handoff.md                    # General handoff
     ├── z180-investigation.md         # Z180 research (RESOLVED)
-    └── silent-startup-investigation.md # Current issue
+    └── silent-startup-investigation.md # Silent startup (RESOLVED)
 ```
 
 ## Related Resources
 
 - **z-core**: `https://github.com/ctoth/z-core` - production Z180 core and Python binding
 - **z180emu**: `C:\Users\Q\src\z180emu\` - legacy CFFI benchmark core
-- **BNS source**: `C:\Users\Q\src\bns\` - Original Blazie source (ASM)
-- **Technical report**: `C:\Users\Q\src\bns\EMULATION_REPORT.md`
+- **BNS source**: `C:\Users\David\Dropbox\Daiverd and Q\bns\` - Original Blazie
+  source. `bsp/` holds the firmware: `BSSPEECH.ASM` and `BSPMON.ASM` (ISSET,
+  the SSI-263 driver), `BSSERIAL.ASM` (Echo parameter handlers), `BRL.ASM`
+  (text to phonemes), `LIB/BSPORTS.LIB` (port map), `include/BSAPI.H` and
+  `include/BNSAPI.H` (documented speech-parameter ranges).
+- **Technical report**: `C:\Users\David\Dropbox\Daiverd and Q\bns\EMULATION_REPORT.md`
 - **AppleWin SSI-263**: `C:\Users\Q\src\AppleWin\source\SSI263.cpp`
 
 ## Hardware Target
@@ -110,13 +162,20 @@ pause phonemes (0x00) during the boot sequence.
    - The image boundary is discovered from the package's own length/CRC
      metadata (0x3000 classic, 0x7000/0x8000 Millennium)
 
-3. **SSI-263 Synthesizer** - Two selectable audio backends (`--synth`)
+3. **SSI-263 Synthesizer** - Three selectable audio backends (`--audio BACKEND`)
    - `pcm` (default): AppleWin phoneme captures
+   - `lpc`: those same captures analysed into an all-pole filter plus
+     excitation (`qns/synth/lpc.py`) and resynthesized through one
+     continuous, gliding filter - the chip's timbre without the boundaries
    - `formant`: SC-01 formant synthesis ported from MAME's Votrax,
      with the SC-02 to SC-01 mapping from the datasheet
      (see `docs/sc02-phoneme-mapping.md` and `datasheet.pdf`)
    - The chip (`qns/ssi263.py`) owns register decode and pushes decoded
      `SSI263State` snapshots to a backend via `set_synth()`
+   - Every backend renders each phoneme for exactly
+     `qns.ssi263.playback_length_samples()`, the same duration model the
+     chip schedules its completion interrupt from, so audio cannot drift
+     against the emulated clock
 
 4. **Memory System** - Physical addressing works
    - z-core owns the 512 KiB RAM hot path and Z180 MMU translation
@@ -125,11 +184,33 @@ pause phonemes (0x00) during the boot sequence.
 
 ## What's Not Working
 
-1. **Speech Output** - Firmware takes "silent startup" path
-   - ONFLG flag check at BS.ASM:2169 causes skip
-   - See `prompts/silent-startup-investigation.md`
+1. **Command responses are gappier than the greeting**
+   - The greeting holds real time because the CPU sleeps between phonemes;
+     while the firmware is working we manage ~6.9M cycles/s against the
+     12.288M real time needs, so the audio queue drains between phonemes
+   - Delivering a chord still needs the per-instruction path.  Moving
+     `keyboard_wait_pc` observation onto z-core's native PC watch should
+     reach the fast path's ~32M cycles/s and close the gaps
 
-2. **Missing Peripherals**
+2. **Fluency depends on the backend, by construction**
+   - `pcm`: correct SSI-263 timbre, but 62 isolated recordings, so choppy
+   - `formant`: continuous, but SC-01 - the wrong chip's voice
+   - `lpc`: continuous, and now a live backend, but it loses stop
+     consonants - a 41 ms burst becomes stationary noise at the same
+     average level, so /p/ and /k/ measure 5-10x below `pcm`'s peak.
+     Unlike the offline `tools/lpc_resynth.py` it has no lookahead, so it
+     glides into each phoneme's head rather than straddling the boundary
+   - **By ear, `pcm` is still the most accurate.**  The underlying
+     choppiness is neither backend's fault: the captures were recorded as
+     isolated utterances and 82% of them decay to 34% of their middle
+     level in their final 10%, which modulates amplitude at the phoneme
+     rate.  Filter gliding does not touch it and makes it worse
+   - `tools/lpc_track_experiment.py` is the unfinished idea that matches
+     `pcm`'s stop bursts exactly.  See
+     `docs/reports/lpc-backend-investigation.md` for the measurements, the
+     four theories that were refuted, and what to do next
+
+3. **Missing Peripherals**
    - RTC (0x60-0x6F) - returns 0xFF
    - Status ports may need proper emulation
 

@@ -1,8 +1,10 @@
 """Main BNS emulator."""
 
+import contextlib
 import queue
 import sys
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
@@ -23,10 +25,15 @@ from .devices import (
 )
 from .input_driver import ChordInputDriver
 from .loader import (
+    RETAINED_SPEECH_DEFAULTS,
     EnglishBoundary,
     InputBoundary,
+    SpeechParameters,
     find_english_boundary,
     find_input_boundary,
+    find_speech_parameters,
+    find_speech_power_timeout,
+    find_voice_inflection_flag,
     load_firmware,
 )
 from .memory import Memory
@@ -41,11 +48,21 @@ from .stdio import (
     WatchPCInput,
     parse_input_event,
 )
-from .synth import SSI263PCMSynth, SSI263Synth
+from .synth import SSI263LPCSynth, SSI263PCMSynth, SSI263Synth
+
+# Selectable audio backends, in the order they became usable.  Each trades
+# differently: pcm has the chip's timbre but replays isolated captures, lpc
+# resynthesizes those captures through one continuous filter, and formant
+# models the SC-01 - a different chip - but is continuous by construction.
+SYNTH_BACKENDS = {
+    "pcm": SSI263PCMSynth,
+    "lpc": SSI263LPCSynth,
+    "formant": SSI263Synth,
+}
 
 
 def _read_stdin_character() -> str:
-    """Read one redirected byte or one unbuffered Windows console key."""
+    """Read one redirected byte or one unbuffered console key."""
     if sys.platform == "win32" and sys.stdin.isatty():
         import msvcrt
 
@@ -56,6 +73,46 @@ def _read_stdin_character() -> str:
                 continue
             return character
     return sys.stdin.read(1)
+
+
+@contextlib.contextmanager
+def _keystrokes_unbuffered():
+    """Deliver terminal keystrokes singly, restoring the terminal after.
+
+    A POSIX terminal is line-buffered, so a chord would not reach the
+    firmware until Enter - and Enter is itself a chord.  cbreak turns off
+    canonical mode and echo while leaving ISIG intact, so Ctrl-C still
+    interrupts rather than arriving as a phantom chord.
+
+    Windows needs no mode change: `_read_stdin_character` reads console
+    keys through msvcrt.  Redirected input needs none either.  Both, and
+    any stdin without a real file descriptor, pass straight through.
+    """
+    try:
+        interactive = sys.platform != "win32" and sys.stdin.isatty()
+        fd = sys.stdin.fileno() if interactive else None
+    except (AttributeError, ValueError, OSError):
+        fd = None
+
+    if fd is None:
+        yield
+        return
+
+    import termios
+    import tty
+
+    try:
+        saved = termios.tcgetattr(fd)
+    except termios.error:
+        yield
+        return
+
+    try:
+        tty.setcbreak(fd)
+        yield
+    finally:
+        # TCSADRAIN so queued output is not discarded on the way out.
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
 
 class BNS:
@@ -76,6 +133,7 @@ class BNS:
 
     def __init__(self, clock: int = 12_288_000, audio: bool = False,
                  synth_backend: str = "pcm",
+                 audio_log: Path | str | None = None,
                  model: str = "bsp",
                  core: str = "direct",
                  trace_io: bool = False, trace_writes: int | None = None,
@@ -90,13 +148,16 @@ class BNS:
                  pc_disk_dir: Path | str | None = None,
                  stdio_output: JSONLOutput | None = None,
                  stdio_watch_pc: int | None = None,
+                 speech_settings: dict[str, int] | None = None,
+                 realtime: bool = False,
                  english_callback: Callable[[str], None] | None = None):
         """Initialize the BNS emulator.
 
         Args:
             clock: CPU clock frequency in Hz (default 12.288 MHz for BSPLUS)
             audio: Enable audio output for SSI-263 speech
-            synth_backend: Audio backend: pcm (AppleWin captures) or formant
+            synth_backend: Audio backend: pcm, lpc, or formant
+            audio_log: Live PCM producer/callback CSV path
             model: Hardware profile: bsp, bs2, bsl, bl2, bl4, or tns
             core: z-core API path: compat or direct
             trace_io: Log all I/O port reads/writes
@@ -112,6 +173,10 @@ class BNS:
             pc_disk_dir: Host directory exposed to the firmware as PC Disk on ASCI0
             stdio_output: Structured output for all emulated device events
             stdio_watch_pc: Program counter reported through structured output
+            speech_settings: Retained speech settings seeded into battery-backed
+                RAM at load, overriding RETAINED_SPEECH_DEFAULTS per key
+            realtime: Hold emulated time to wall-clock time, so speech plays at
+                the speed the hardware would speak it
             english_callback: Observer for exact pre-translation firmware text
         """
         profile = PROFILES.get(model)
@@ -143,7 +208,25 @@ class BNS:
         self._english_callback = english_callback
         self._english_boundary: EnglishBoundary | None = None
         self._input_boundary: InputBoundary | None = None
+        self._input_driver: ChordInputDriver | None = None
+        self._speech_overrides = dict(speech_settings or {})
+        self._speech_settings = RETAINED_SPEECH_DEFAULTS | self._speech_overrides
+        self._speech_parameters: SpeechParameters | None = None
+        self.realtime = realtime
+        # Real-time pacing sleeps between chunks, so the chunk sets the
+        # granularity of that sleep.  1000 cycles is 81 us at 12.288 MHz -
+        # far below the host's sleep resolution - so pace in ~1 ms chunks
+        # instead, still two orders of magnitude finer than a phoneme.
+        # The shortest real English utterance writes SPBUF 424 cycles before
+        # its exact capture boundary.  Drain native write events within that
+        # interval so the observer can switch to exact instruction stepping.
+        self._chunk_cycles = (
+            256
+            if english_callback is not None
+            else (12_288 if realtime else 1000)
+        )
         self._english_capture_cycle: int | None = None
+        self._english_capture_armed = False
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
         self._stdio_serial_input_queues = (queue.Queue(), queue.Queue())
         self._stdio_watch_queue: queue.Queue[int] = queue.Queue()
@@ -215,12 +298,16 @@ class BNS:
         self.high_bank_latch = 0
 
         # Audio synthesis
-        if synth_backend not in ("pcm", "formant"):
+        if synth_backend not in SYNTH_BACKENDS:
             raise ValueError(f"Unsupported synth backend: {synth_backend}")
+        if audio_log is not None and synth_backend != "pcm":
+            raise ValueError("audio_log requires the pcm synth backend")
         self.synth = None
         if audio:
             self.synth = (
-                SSI263PCMSynth() if synth_backend == "pcm" else SSI263Synth()
+                SSI263PCMSynth(audio_log=audio_log)
+                if synth_backend == "pcm"
+                else SYNTH_BACKENDS[synth_backend]()
             )
             self.ssi263.set_synth(self.synth)
 
@@ -362,6 +449,7 @@ class BNS:
             and physical_pc == boundary.capture_addr
         ):
             self._capture_english_boundary(boundary)
+            self._english_capture_armed = False
 
     def _observe_input_boundary(self, physical_pc: int) -> None:
         """Update firmware input epochs at one physical instruction address."""
@@ -421,6 +509,16 @@ class BNS:
     def _observe_write(self, addr: int, value: int, *, pc: int, cycle: int) -> None:
         """Apply QNS write observers after z-core has stored internal RAM."""
         self.stats['writes'] += 1
+
+        boundary = self._english_boundary
+        if self._english_callback is not None and boundary is not None:
+            common_page = self.memory.cbar >> 4
+            if boundary.spbuf >> 12 >= common_page:
+                physical_spbuf = (
+                    boundary.spbuf + (self.memory.cbr << 12)
+                ) & 0xFFFFF
+                if addr == physical_spbuf:
+                    self._english_capture_armed = True
 
         # Count only the linked STARTA instruction that opens another command-loop
         # epoch.  The same timer is also cleared during early RAM initialization.
@@ -791,16 +889,43 @@ class BNS:
         return actual
 
     def _requires_instruction_steps(self) -> bool:
-        """Return whether callbacks or observers require instruction boundaries."""
+        """Return whether callbacks or observers require instruction boundaries.
+
+        The input boundary is only observed on behalf of ChordInputDriver,
+        which runs only when input or a reset gesture is requested.  Having
+        merely *discovered* the boundary is not a reason to step: that alone
+        held every run to the per-instruction path, which is ~6x slower than
+        letting the core run a whole budget and is the difference between
+        keeping up with real-time speech and falling behind it.
+        """
         return any((
-            self._input_boundary is not None,
-            self._english_callback is not None,
-            self.profile.flash_size > 0,
-            self.gas_gauge is not None,
+            self._english_capture_armed,
+            (
+                self.gas_gauge is not None
+                and self.gas_gauge.cycle_timing_active
+            ),
             self.trace_interrupts,
-            self.stdin_device is not None,
+            self._keyboard_needs_steps(),
+            self.stdin_device not in (None, "keyboard"),
+            self.reset_mode is not None,
             self._pc_watch_address is not None,
         ))
+
+    def _keyboard_needs_steps(self) -> bool:
+        """Whether a keystroke is in flight and needs boundary observation.
+
+        Stepping costs roughly six times the core's own speed, which is
+        the difference between keeping ahead of real-time speech and
+        falling behind it.  A keyboard that is merely *connected* does
+        not need it: the epochs the observer maintains are only consulted
+        while delivering a chord.  So pay for it during delivery, and run
+        the core at full speed the rest of the time - which is precisely
+        when speech is playing.
+        """
+        if self.stdin_device != "keyboard":
+            return False
+        driver = self._input_driver
+        return driver is None or driver.busy
 
     def _execute_budget(self, cycles: int) -> int:
         """Execute at least the requested cycle budget with correct device ordering."""
@@ -825,9 +950,19 @@ class BNS:
         self._finish_execution()
         return actual
 
+    def _realtime_sleep_duration(self, ahead: float) -> float:
+        """Keep low audio buffered by spending bounded emulator run-ahead."""
+        audio_lead = (
+            self.synth.realtime_lead_seconds()
+            if self.synth is not None
+            else 0.0
+        )
+        return max(0.0, ahead - audio_lead)
+
     def load_rom(self, path: Path | str) -> None:
         """Load a pre-extracted .bin, raw firmware image, or update package."""
         path = Path(path)
+        self._english_capture_armed = False
         image = load_firmware(path)
         if image.kind == "pre-extracted":
             print(f"Loading pre-extracted firmware: {path.name}")
@@ -850,6 +985,8 @@ class BNS:
                 f"0x{self._english_boundary.capture_addr:04X}, "
                 f"SPBUF 0x{self._english_boundary.spbuf:04X}"
             )
+        self._seed_retained_speech_settings(image.data)
+
         self._input_boundary = find_input_boundary(image.data)
         if self._input_boundary is not None:
             print(
@@ -862,9 +999,71 @@ class BNS:
                 f"reset 0x{self._input_boundary.reset_complete:05X}"
             )
 
+    def _seed_retained_speech_settings(self, firmware: bytes) -> None:
+        """Give the speech settings the values a field unit would retain.
+
+        `BSPMON.ASM::ISSET` applies volume, rate, inflection and filter
+        frequency to the SSI-263 from uninitialised scratch RAM.  No
+        shipped code path ever writes them - a real unit carries them in
+        battery-backed RAM - so a machine that starts RAM at zero makes
+        the firmware faithfully write amplitude 0 and speak silence.
+
+        Seeding here rather than in `reset` is deliberate: this is
+        retained state that survives a reset, which is exactly the
+        property that makes the real hardware work.
+        """
+        timeout = find_speech_power_timeout(firmware)
+        if timeout is not None:
+            self.memory.write(timeout.address, timeout.value)
+            print(
+                f"Speech power timeout: {timeout.value} @ "
+                f"0x{timeout.address:05X}"
+            )
+
+        voice_inflection_flag = find_voice_inflection_flag(firmware)
+        if voice_inflection_flag is not None:
+            self.memory.write(voice_inflection_flag, 1)
+            print(
+                "Voice inflection enabled @ "
+                f"0x{voice_inflection_flag:05X}"
+            )
+
+        self._speech_parameters = find_speech_parameters(
+            firmware,
+            self.profile.ssi263_port,
+        )
+        if self._speech_parameters is None:
+            print("Retained speech settings: ISSET not found, leaving RAM at 0")
+            return
+
+        self._write_retained_speech_settings(self._speech_settings)
+        print(
+            "Retained speech settings: "
+            + ", ".join(
+                f"{field} {self._speech_settings[field]} @ "
+                + "/".join(
+                    f"0x{address:05X}"
+                    for address in getattr(self._speech_parameters, field)
+                )
+                for field in RETAINED_SPEECH_DEFAULTS
+            )
+        )
+
+    def _write_retained_speech_settings(
+        self,
+        settings: dict[str, int],
+    ) -> None:
+        """Write selected retained settings to every firmware-owned cell."""
+        if self._speech_parameters is None:
+            return
+        for field, value in settings.items():
+            for address in getattr(self._speech_parameters, field):
+                self.memory.write(address, value)
+
     def reset(self) -> None:
         """Reset the emulator."""
         self.cpu.reset()
+        self._english_capture_armed = False
         if self.core == "direct":
             self._applied_irq_states = {0: None, 1: None, 2: None}
             self._callback_cycle = 0
@@ -892,6 +1091,7 @@ class BNS:
 
         input_driver: ChordInputDriver | None = None
         pc_watch_reported = False
+        terminal = contextlib.ExitStack()
         if self.stdin_device is not None or self.reset_mode is not None:
             if self.stdin_device in ("keyboard", "jsonl") or self.reset_mode is not None:
                 if self._input_boundary is None:
@@ -906,6 +1106,7 @@ class BNS:
                     )
                 else:
                     input_driver = ChordInputDriver(self)
+                    self._input_driver = input_driver
                 if input_driver is not None and self.reset_mode is not None:
                     input_driver.start_reset(self.reset_mode)
 
@@ -941,6 +1142,11 @@ class BNS:
                         self._serial_input_queue.put(data[0])
 
             if self.stdin_device is not None:
+                # Enter cbreak before the reader starts, and leave it from
+                # this thread: the reader is a daemon and would be killed
+                # without unwinding, stranding the user's terminal.
+                if self.stdin_device == "keyboard":
+                    terminal.enter_context(_keystrokes_unbuffered())
                 stdin_thread = threading.Thread(
                     target=read_stdin,
                     daemon=True,
@@ -951,6 +1157,7 @@ class BNS:
                 print(f"Input: STDIN ({self.stdin_device})")
 
         cycles_run = 0
+        start_wall = time.perf_counter()
         try:
             while max_cycles == 0 or cycles_run < max_cycles:
                 try:
@@ -978,11 +1185,46 @@ class BNS:
                             pc=watch_pc,
                         )
 
-                # Run in chunks of 1000 cycles
-                chunk = 1000 if max_cycles == 0 else min(1000, max_cycles - cycles_run)
+                chunk_size = self._chunk_cycles
+                chunk = (
+                    chunk_size
+                    if max_cycles == 0
+                    else min(chunk_size, max_cycles - cycles_run)
+                )
                 actual = self._execute_budget(chunk)
                 cycles_run += actual
+
+                if actual == 0:
+                    # The Z180 executed SLP and is waiting for an interrupt
+                    # (the firmware calls a RAM-resident `SLP; RET` stub at
+                    # the end of every phoneme).  A sleeping core advances no
+                    # cycles, so nothing would ever reach the phoneme's
+                    # scheduled completion and the loop would spin forever -
+                    # which is exactly what made a 6M-cycle greeting appear
+                    # to take 40 minutes.  Jump emulated time to the next
+                    # scheduled device event instead; sleeping then costs
+                    # one iteration rather than a million.
+                    wake = self.ssi263.pending_irq_cycle
+                    if wake is not None and wake > cycles_run:
+                        cycles_run = wake if max_cycles == 0 else min(wake, max_cycles)
+                    else:
+                        # Nothing scheduled here, but the Z180's own timers
+                        # still wake the background task, so let time pass
+                        # rather than stopping: asleep is not dead.
+                        cycles_run += chunk
+
                 self.stats['cycles'] = cycles_run
+
+                if self.realtime:
+                    # Hold emulated time to wall-clock time.  The chip already
+                    # paces phonemes correctly in emulated time, so once the
+                    # two clocks agree, a phoneme that lasts 120 ms of emulated
+                    # time also lasts 120 ms of real time - and the audio the
+                    # backend queues per phoneme plays continuously.
+                    ahead = start_wall + cycles_run / self.clock - time.perf_counter()
+                    sleep_duration = self._realtime_sleep_duration(ahead)
+                    if sleep_duration > 0:
+                        time.sleep(sleep_duration)
 
                 watch_hits = (
                     self.cpu.pc_watch_hits()
@@ -1025,6 +1267,7 @@ class BNS:
         except KeyboardInterrupt:
             print("\nEmulation stopped by user")
         finally:
+            terminal.close()
             if self.synth:
                 self.synth.stop()
 
@@ -1052,6 +1295,7 @@ class BNS:
     def load_state(self, path: Path | str) -> None:
         """Load the BNS nonvolatile RAM state."""
         self.memory.load_state(path)
+        self._write_retained_speech_settings(self._speech_overrides)
         print(f"Loaded nonvolatile RAM state: {path}")
 
     def save_state(self, path: Path | str) -> None:
@@ -1062,6 +1306,7 @@ class BNS:
     def load_state_dir(self, path: Path | str) -> None:
         """Load BNS nonvolatile state from a directory."""
         self.memory.load_state_dir(path)
+        self._write_retained_speech_settings(self._speech_overrides)
         print(f"Loaded nonvolatile state directory: {path}")
 
     def save_state_dir(self, path: Path | str) -> None:

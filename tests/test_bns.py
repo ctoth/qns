@@ -5,6 +5,8 @@ import json
 import subprocess
 import sys
 from io import BytesIO, StringIO
+from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from z180 import Machine, Reg
@@ -12,8 +14,11 @@ from z180.compat import Z180 as CompatZ180
 
 from qns.bns import (
     BNS,
+    SYNTH_BACKENDS,
+    _keystrokes_unbuffered,
     _read_stdin_character,
 )
+from qns.cli import build_parser, settle_audio_backend
 from qns.cli import main as bns_main
 from qns.input_driver import (
     ASCII_TO_BNS_KEY,
@@ -84,6 +89,18 @@ def test_load_rom_rejects_update_package_without_valid_image_crc(tmp_path):
 
     with pytest.raises(ValueError, match="found 0"):
         bns.load_rom(package_path)
+
+
+def test_fresh_ram_enables_firmware_voice_inflection(tmp_path):
+    from test_loader import make_dopitch_image
+
+    rom_path = tmp_path / "dopitch.rom"
+    rom_path.write_bytes(make_dopitch_image())
+    bns = BNS(model="bs2")
+
+    bns.load_rom(rom_path)
+
+    assert bns.memory.read(0x41A05) == 1
 
 
 def test_english_stdio_characters_use_firmware_keyboard_chords():
@@ -341,6 +358,57 @@ def test_english_speech_ignores_unrelated_instruction_fetches():
     bns._observe_instruction_boundary()
 
     assert spoken == []
+
+
+def test_english_capture_steps_only_between_spbuf_write_and_boundary(tmp_path):
+    from test_loader import make_mfull3_image
+
+    capture_site = 0xBC9A
+    spbuf = 0xD658
+    rom_path = tmp_path / "signature.rom"
+    rom_path.write_bytes(make_mfull3_image(capture_site, spbuf))
+    spoken = []
+    bns = BNS(
+        model="bs2",
+        core="direct",
+        realtime=True,
+        english_callback=spoken.append,
+    )
+    bns.load_rom(rom_path)
+
+    bns.memory.ram[:10] = bytes((
+        0x3E, 0x34,
+        0xED, 0x39, 0x38,
+        0x3E, 0xC6,
+        0xED, 0x39, 0x3A,
+    ))
+    for _ in range(4):
+        bns.step()
+
+    assert not bns._requires_instruction_steps()
+    assert bns._chunk_cycles < 424
+
+    bns._observe_write(0x00658, ord("x"), pc=0, cycle=10)
+    assert not bns._requires_instruction_steps()
+
+    message = b"enter file command"
+    physical_spbuf = (0x34 << 12) + spbuf
+    bns._observe_write(physical_spbuf + 1, ord("x"), pc=0, cycle=15)
+    assert not bns._requires_instruction_steps()
+
+    for offset, value in enumerate(message):
+        bns.memory.write(physical_spbuf + offset, value)
+    bns._observe_write(physical_spbuf, message[0], pc=0, cycle=20)
+
+    assert bns._requires_instruction_steps()
+
+    bns.cpu.set_reg(Reg.HL, spbuf)
+    bns.cpu.set_reg(Reg.BC, 4)
+    bns.cpu.set_reg(Reg.PC, capture_site)
+    bns._observe_instruction_boundary()
+
+    assert spoken == ["enter file command"]
+    assert not bns._requires_instruction_steps()
 
 
 def test_tns_owns_source_defined_hardware_ports():
@@ -939,6 +1007,50 @@ def test_direct_external_write_callback_does_not_reenter_machine():
     assert bns.stats["writes"] == 1
 
 
+def test_flash_profile_without_active_observers_uses_bulk_execution():
+    bns = BNS(model="bs2", core="direct")
+
+    assert not bns._requires_instruction_steps()
+
+    bns._callback_cycle = 100
+    bns._io_write(0xA0, 0x00)
+
+    assert bns._requires_instruction_steps()
+
+    bns._callback_cycle = 903_480
+    bns._io_write(0xA0, 0x20)
+
+    assert not bns._requires_instruction_steps()
+
+
+def test_direct_bulk_execution_preserves_flash_programming():
+    bns = BNS(model="bs2", core="direct")
+    bns.memory.set_high_bank_latch(0x08)
+    bns.memory.load_rom(bytes((
+        0x3E, 0x76,        # LD A,76h
+        0xED, 0x39, 0x38,  # OUT0 (CBR),A
+        0x3E, 0xAA,        # LD A,AAh
+        0x32, 0x55, 0xF5,  # LD (F555h),A -> physical 85555h
+        0x3E, 0x73,        # LD A,73h
+        0xED, 0x39, 0x38,  # OUT0 (CBR),A
+        0x3E, 0x55,        # LD A,55h
+        0x32, 0xAA, 0xFA,  # LD (FAAAh),A -> physical 82AAAh
+        0x3E, 0x76,        # LD A,76h
+        0xED, 0x39, 0x38,  # OUT0 (CBR),A
+        0x3E, 0xA0,        # LD A,A0h
+        0x32, 0x55, 0xF5,  # LD (F555h),A -> physical 85555h
+        0x3E, 0x72,        # LD A,72h
+        0xED, 0x39, 0x38,  # OUT0 (CBR),A
+        0x3E, 0x5A,        # LD A,5Ah
+        0x32, 0x34, 0xF2,  # LD (F234h),A -> physical 81234h
+        0x76,              # HALT
+    )))
+
+    bns.cpu.run(400)
+
+    assert bns.memory.flash[0x1234] == 0x5A
+
+
 def test_direct_event_overflow_is_a_fatal_observer_error():
     """Lost native write events must never be cleared and ignored."""
     bns = BNS(core="direct")
@@ -1410,3 +1522,159 @@ def test_cli_state_dir_creates_directory_state(tmp_path):
 
     assert reloaded.returncode == 0, reloaded.stderr.decode(errors="replace")
     assert b"Loaded nonvolatile state directory" in reloaded.stderr
+
+
+def test_keystrokes_unbuffered_passes_through_redirected_stdin(monkeypatch):
+    """Redirected stdin needs no terminal mode change and must not fail.
+
+    This also covers Windows, where `sys.stdin.isatty()` may be true but
+    `termios` does not exist: the guard has to short-circuit before the
+    import, not rely on catching an ImportError.
+    """
+    monkeypatch.setattr(sys, "stdin", StringIO("abc"))
+
+    with _keystrokes_unbuffered():
+        assert sys.stdin.read(1) == "a"
+
+
+def test_keystrokes_unbuffered_short_circuits_on_windows(monkeypatch):
+    """On win32 the console is read through msvcrt, so leave the tty alone."""
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    class Tty(StringIO):
+        def isatty(self):
+            return True
+
+        def fileno(self):
+            raise AssertionError("must not touch the descriptor on win32")
+
+    monkeypatch.setattr(sys, "stdin", Tty("x"))
+
+    with _keystrokes_unbuffered():
+        assert sys.stdin.read(1) == "x"
+
+
+# =============================================================================
+# --audio backend selection
+# =============================================================================
+
+
+def test_realtime_pacing_spends_audio_runahead_before_sleeping():
+    bns = BNS(realtime=True)
+    bns.synth = Mock()
+    bns.synth.realtime_lead_seconds.return_value = 0.15
+
+    assert bns._realtime_sleep_duration(0.20) == pytest.approx(0.05)
+    assert bns._realtime_sleep_duration(0.10) == 0.0
+
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (["--audio", "rom.bns"], "pcm"),
+        (["rom.bns", "--audio"], "pcm"),
+        (["--audio", "pcm", "rom.bns"], "pcm"),
+        (["--audio", "lpc", "rom.bns"], "lpc"),
+        (["--audio", "formant", "rom.bns"], "formant"),
+        (["--audio=lpc", "rom.bns"], "lpc"),
+    ],
+)
+def test_audio_flag_selects_a_backend(argv, expected):
+    """--audio names a backend, and stays usable as a bare flag."""
+    args = build_parser().parse_args(settle_audio_backend(argv))
+
+    assert args.audio == expected
+    assert args.rom_file == "rom.bns"
+
+
+def test_audio_flag_does_not_swallow_the_rom_file():
+    """The long-documented form puts the ROM straight after --audio.
+
+    --audio takes an optional value, so argparse would otherwise read
+    `--audio roms/bspeng.bns` as a backend named after the ROM.
+    """
+    args = build_parser().parse_args(
+        settle_audio_backend(["--audio", "roms/bspeng.bns", "--stats"])
+    )
+
+    assert args.rom_file == "roms/bspeng.bns"
+    assert args.audio == "pcm"
+    assert args.stats is True
+
+
+def test_audio_omitted_leaves_audio_disabled():
+    """No --audio at all still means no audio and no backend."""
+    args = build_parser().parse_args(settle_audio_backend(["rom.bns"]))
+
+    assert args.audio is None
+
+
+def test_pcm_audio_log_option_reaches_the_player(tmp_path):
+    log_path = tmp_path / "pcm-audio.csv"
+    args = build_parser().parse_args(
+        settle_audio_backend([
+            "rom.bns",
+            "--audio",
+            "pcm",
+            "--audio-log",
+            str(log_path),
+        ])
+    )
+
+    assert args.audio_log == Path(log_path)
+
+    bns = BNS(audio=True, synth_backend=args.audio, audio_log=args.audio_log)
+
+    assert bns.synth._player._log_path == log_path
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    (
+        ("volume", 0),
+        ("volume", 15),
+        ("rate", 1),
+        ("rate", 16),
+        ("pitch", 1),
+        ("pitch", 32),
+        ("frequency", 0),
+        ("frequency", 255),
+    ),
+)
+def test_retained_speech_options_accept_documented_endpoints(option, value):
+    args = build_parser().parse_args(
+        ["rom.bns", f"--{option}", str(value)]
+    )
+
+    assert getattr(args, option) == value
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    (
+        ("volume", -1),
+        ("volume", 16),
+        ("rate", 0),
+        ("rate", 17),
+        ("pitch", 0),
+        ("pitch", 33),
+        ("frequency", -1),
+        ("frequency", 256),
+    ),
+)
+def test_retained_speech_options_reject_values_outside_documented_range(
+    option,
+    value,
+):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["rom.bns", f"--{option}", str(value)])
+
+
+def test_every_named_backend_is_constructible():
+    """--audio's choices and the machine's backend table cannot drift."""
+    parser = build_parser()
+    for name, backend in SYNTH_BACKENDS.items():
+        args = parser.parse_args(settle_audio_backend(["--audio", name, "rom.bns"]))
+        assert args.audio == name
+        instance = backend(audio_enabled=False)
+        assert instance.realtime_lead_seconds() == 0.0

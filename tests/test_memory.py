@@ -3,6 +3,7 @@
 import pytest
 
 from qns.bns import BNS
+from qns.loader import SpeechParameters
 from qns.memory import (
     _STATE_MAGIC_V1,
     _STATE_MAGIC_V2,
@@ -262,3 +263,55 @@ def test_v3_state_round_trip_preserves_direct_ram_and_flash(
     assert restored.memory.ram[0] == 0x11
     assert restored.memory.ram[1] == 0xBB
     assert restored.memory.flash[-1] == 0x5A
+
+
+@pytest.mark.parametrize("storage", ["file", "directory"])
+def test_state_load_reapplies_only_explicit_speech_overrides(
+    monkeypatch,
+    tmp_path,
+    storage,
+):
+    parameters = SpeechParameters(
+        volume=(0x100,),
+        rate=(0x101, 0x102),
+        inflection=(0x103, 0x104),
+        filter_frequency=(0x105,),
+    )
+    monkeypatch.setattr(
+        "qns.bns.find_speech_parameters",
+        lambda _firmware, _port: parameters,
+    )
+    rom_path = tmp_path / "test.bns"
+    rom_path.write_bytes(b"\x00")
+    state_path = tmp_path / ("state.bin" if storage == "file" else "state")
+
+    saved = BNS()
+    saved.load_rom(rom_path)
+    persisted = {
+        "volume": 3,
+        "rate": 4,
+        "inflection": 5,
+        "filter_frequency": 6,
+    }
+    for field, value in persisted.items():
+        for address in getattr(parameters, field):
+            saved.memory.write(address, value)
+    if storage == "file":
+        saved.save_state(state_path)
+    else:
+        saved.save_state_dir(state_path)
+
+    restored = BNS(speech_settings={"volume": 12, "rate": 14})
+    restored.load_rom(rom_path)
+    if storage == "file":
+        restored.load_state(state_path)
+    else:
+        restored.load_state_dir(state_path)
+
+    assert restored.memory.read(parameters.volume[0]) == 12
+    assert {restored.memory.read(address) for address in parameters.rate} == {14}
+    assert {
+        restored.memory.read(address)
+        for address in parameters.inflection
+    } == {persisted["inflection"]}
+    assert restored.memory.read(parameters.filter_frequency[0]) == 6

@@ -138,6 +138,16 @@ class ChordInputDriver:
             bns.keyboard.press(self._chord)
         self._phase = "reset"
 
+    @property
+    def busy(self) -> bool:
+        """Whether a chord is in flight or waiting to start.
+
+        While this is false nothing needs instruction-boundary
+        observation: the epochs it maintains are only read to decide when
+        the firmware is ready for the *next* chord.
+        """
+        return self._phase is not None or not self.queue.empty()
+
     def tick(self) -> None:
         """Advance the in-flight chord, then start the next queued one."""
         self._advance_phase()

@@ -6,12 +6,37 @@ from collections.abc import Callable
 from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 
-from .bns import BNS
+from .bns import BNS, SYNTH_BACKENDS
 from .profiles import PROFILES
 from .ssi263 import Phoneme
 from .stdio import JSONLOutput
 
 _SPEECH_STYLES = ("codes", "names", "ipa", "examples", "english")
+DEFAULT_SYNTH_BACKEND = "pcm"
+
+
+def settle_audio_backend(argv: list[str]) -> list[str]:
+    """Let ``--audio`` stay a bare flag even though it now takes a backend.
+
+    ``--audio`` accepts an optional backend name, and argparse hands an
+    optional-valued flag whatever non-dash token follows it.  The long-
+    documented invocation puts the ROM there:
+
+        uv run -m qns.bns --audio roms/bspeng.bns
+
+    which would otherwise be read as a backend named ``roms/bspeng.bns``.
+    Supplying the default explicitly when the next token is plainly not a
+    backend keeps both that form and ``--audio lpc`` working.
+    """
+    settled = []
+    for position, token in enumerate(argv):
+        settled.append(token)
+        if token != "--audio":
+            continue
+        following = argv[position + 1] if position + 1 < len(argv) else None
+        if following not in SYNTH_BACKENDS:
+            settled.append(DEFAULT_SYNTH_BACKEND)
+    return settled
 
 
 def parse_hex_address(value: str) -> int:
@@ -20,6 +45,22 @@ def parse_hex_address(value: str) -> int:
         return int(value, 16)
     except ValueError:
         raise argparse.ArgumentTypeError(f"Invalid hex address: {value}")
+
+
+def _bounded_int(minimum: int, maximum: int) -> Callable[[str], int]:
+    """Build an argparse integer parser restricted to an inclusive range."""
+    def parse(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"invalid integer: {value}")
+        if not minimum <= parsed <= maximum:
+            raise argparse.ArgumentTypeError(
+                f"must be between {minimum} and {maximum}: {value}"
+            )
+        return parsed
+
+    return parse
 
 
 def _format_phoneme(phoneme: Phoneme, style: str) -> str:
@@ -39,13 +80,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("rom_file", help="ROM file to load (.bns or raw firmware)")
 
     # Basic options
-    parser.add_argument("--audio", action="store_true",
-                        help="Enable SSI-263 audio output")
+    parser.add_argument(
+        "--audio",
+        nargs="?",
+        choices=tuple(SYNTH_BACKENDS),
+        const=DEFAULT_SYNTH_BACKEND,
+        default=None,
+        metavar="BACKEND",
+        help=(
+            "Enable SSI-263 audio output, optionally naming the backend: "
+            "pcm (AppleWin captures, the chip's timbre but one isolated "
+            "recording per phoneme), lpc (those captures resynthesized "
+            "through one continuous filter), or formant (SC-01 model, "
+            f"continuous but a different chip).  Default: {DEFAULT_SYNTH_BACKEND}"
+        ),
+    )
+    parser.add_argument(
+        "--audio-log",
+        type=Path,
+        metavar="FILE",
+        help=(
+            "Write live PCM producer and sound-callback timing to CSV; "
+            "requires --audio pcm"
+        ),
+    )
     parser.add_argument(
         "--synth",
-        choices=("pcm", "formant"),
-        default="pcm",
-        help="Audio backend: AppleWin PCM captures or SC-01 formant synthesis",
+        choices=tuple(SYNTH_BACKENDS),
+        help=argparse.SUPPRESS,  # superseded by --audio BACKEND
     )
     parser.add_argument(
         "--model",
@@ -61,7 +123,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--trace", action="store_true",
                         help="Show boot trace instead of running")
-    parser.add_argument("--input", choices=("keyboard", "serial0", "serial1"),
+    parser.add_argument("--realtime", action="store_true",
+                        help="Hold emulation to wall-clock speed (implied by --audio)")
+    parser.add_argument("--no-realtime", dest="realtime", action="store_false",
+                        help="Run as fast as possible even with --audio")
+    parser.set_defaults(realtime=None)
+    parser.add_argument("--input", choices=("keyboard", "none", "serial0", "serial1"),
                         help="Route standard input to the BNS keyboard or an ASCI channel")
     parser.add_argument(
         "--reset",
@@ -103,6 +170,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Run for N cycles then exit (default: unlimited)")
     parser.add_argument("--trace-io", action="store_true",
                         help="Log all I/O port reads/writes")
+    parser.add_argument(
+        "--trace-speech",
+        type=str,
+        metavar="FILE",
+        help=(
+            "Write every SSI-263 phoneme event to a CSV with its cycle "
+            "count and full decoded register state"
+        ),
+    )
     parser.add_argument("--trace-interrupts", action="store_true",
                         help="Log interrupt activity (IRQ lines, ITC register)")
     parser.add_argument("--trace-writes", type=parse_hex_address, metavar="ADDR",
@@ -143,13 +219,54 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--stats", action="store_true",
                         help="Show execution statistics at end")
+    speech = parser.add_argument_group(
+        "retained speech settings",
+        "Values a field unit keeps in battery-backed RAM.  Defaults are "
+        "the midpoint of each range documented in BSAPI.H.",
+    )
+    speech.add_argument("--volume", type=_bounded_int(0, 15), metavar="0-15",
+                        help="Speech amplitude (default 8)")
+    speech.add_argument("--rate", type=_bounded_int(1, 16), metavar="1-16",
+                        help="Speaking rate (default 9)")
+    speech.add_argument("--pitch", type=_bounded_int(1, 32), metavar="1-32",
+                        help="Filter frequency; the API's \"Pitch\" (default 17)")
+    speech.add_argument("--frequency", type=_bounded_int(0, 255), metavar="0-255",
+                        help="Inflection; the API's \"Frequency\" (default 128)")
     return parser
 
 
-def main() -> None:
+# CLI names follow BSAPI.H, whose "Pitch" is the filter-frequency cell
+# and whose "Frequency" is the inflection cell.
+_SPEECH_SETTING_FIELDS = {
+    "volume": "volume",
+    "rate": "rate",
+    "pitch": "filter_frequency",
+    "frequency": "inflection",
+}
+
+
+def speech_settings(args: argparse.Namespace) -> dict[str, int]:
+    """Collect the speech settings the user overrode on the command line."""
+    return {
+        field: getattr(args, option)
+        for option, field in _SPEECH_SETTING_FIELDS.items()
+        if getattr(args, option, None) is not None
+    }
+
+
+def main(argv: list[str] | None = None) -> None:
     """CLI entry point."""
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(
+        settle_audio_backend(sys.argv[1:] if argv is None else argv)
+    )
+
+    # --synth predates --audio taking a backend.  It still selects one, but
+    # only where --audio did not say so itself.
+    if args.synth is not None and args.audio == DEFAULT_SYNTH_BACKEND:
+        args.audio = args.synth
+    if args.synth is not None and args.audio is None:
+        parser.error("--synth selects a backend for --audio; pass --audio too")
 
     if args.stdio and (
         args.input is not None
@@ -205,10 +322,26 @@ def main() -> None:
     )
     display_frame_emitted = False
 
+    # Keyboard input costs the per-instruction execution path, but that is
+    # affordable at real-time speed: the CPU sleeps between phonemes, so
+    # pacing dominates and speech keeps up either way.  --input none exists
+    # for offline captures that want the core's full speed.
+    if structured_stdio:
+        stdin_device = "jsonl"
+    elif args.input == "none":
+        stdin_device = None
+    else:
+        stdin_device = args.input or "keyboard"
+    audio_enabled = args.audio is not None
+    if args.audio_log is not None and args.audio != "pcm":
+        parser.error("--audio-log requires --audio pcm")
+    realtime = args.realtime if args.realtime is not None else audio_enabled
+
     with output_context:
         bns = BNS(
-            audio=args.audio,
-            synth_backend=args.synth,
+            audio=audio_enabled,
+            synth_backend=args.audio or DEFAULT_SYNTH_BACKEND,
+            audio_log=args.audio_log,
             model=args.model,
             core=args.core,
             trace_io=args.trace_io,
@@ -217,7 +350,9 @@ def main() -> None:
             trace_writes_range=trace_range,
             trace_first_writes=args.trace_first_writes,
             dump_writes_file=args.dump_writes,
-            stdin_device="jsonl" if structured_stdio else (args.input or "keyboard"),
+            speech_settings=speech_settings(args),
+            stdin_device=stdin_device,
+            realtime=realtime,
             reset=args.reset,
             serial_output=serial_output,
             serial_output_channel=serial_output_channel,
@@ -226,6 +361,9 @@ def main() -> None:
             stdio_watch_pc=args.watch_pc,
             english_callback=english_callback,
         )
+        speech_observers: list[Callable[[int, str], None]] = []
+        speech_trace: list[tuple[int, ...]] = []
+
         if stdio_output is not None:
             def emit_stdio_speech(_code: int, _name: str) -> None:
                 phoneme = bns.ssi263.get_phonemes(start=-1)[0]
@@ -237,7 +375,7 @@ def main() -> None:
                     example=phoneme.example,
                 )
 
-            bns.ssi263.set_phoneme_callback(emit_stdio_speech)
+            speech_observers.append(emit_stdio_speech)
             if bns.display is not None:
                 bns.display.set_frame_callback(
                     lambda frame: stdio_output.emit("display", cells=list(frame))
@@ -251,7 +389,38 @@ def main() -> None:
                 speech = _format_phoneme(phoneme, args.speech_stream)
                 print(f"Speech {args.speech_stream}: {speech}", flush=True)
 
-            bns.ssi263.set_phoneme_callback(emit_speech_phoneme)
+            speech_observers.append(emit_speech_phoneme)
+
+        if args.trace_speech:
+            # Written and flushed per event: a boot long enough to reach
+            # speech runs for minutes, and a trace only readable after the
+            # run finishes is a trace nobody can work with.
+            speech_trace_file = open(args.trace_speech, "w", encoding="ascii")
+            speech_trace_file.write(
+                "cycle,code,name,duration_mode,rate,inflection,"
+                "articulation,amplitude,filter_freq,playback_duration\n"
+            )
+            speech_trace_file.flush()
+
+            def record_speech_registers(code: int, name: str) -> None:
+                state = bns.ssi263.state()
+                speech_trace.append(())
+                speech_trace_file.write(
+                    f"{bns.ssi263.current_cycle},{code},{name},{state.duration},"
+                    f"{state.rate},{state.inflection},{state.articulation},"
+                    f"{state.amplitude},{state.filter_freq},"
+                    f"{state.playback_duration}\n"
+                )
+                speech_trace_file.flush()
+
+            speech_observers.append(record_speech_registers)
+
+        if speech_observers:
+            def dispatch_speech(code: int, name: str) -> None:
+                for observe in speech_observers:
+                    observe(code, name)
+
+            bns.ssi263.set_phoneme_callback(dispatch_speech)
 
         if args.display:
             if bns.display is None:
@@ -303,6 +472,10 @@ def main() -> None:
 
         if args.display and not display_frame_emitted:
             emit_display_frame(bytes(bns.display.buffer))
+
+        if args.trace_speech:
+            speech_trace_file.close()
+            print(f"Wrote {len(speech_trace)} speech events to {args.trace_speech}")
 
         # Post-run actions
         if args.dump_ram:
