@@ -1,6 +1,7 @@
 """Approximate SSI-263 audio using the AppleWin fixed PCM captures."""
 
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 
@@ -17,9 +18,17 @@ class SSI263PCMSynth:
     approximate audio for the events it receives.
     """
 
-    def __init__(self, audio_enabled: bool = True) -> None:
+    def __init__(
+        self,
+        audio_enabled: bool = True,
+        audio_log: Path | str | None = None,
+    ) -> None:
         self.sample_rate = SAMPLE_RATE
-        self._player = AudioPlayer(sample_rate=SAMPLE_RATE) if audio_enabled else None
+        self._player = (
+            AudioPlayer(sample_rate=SAMPLE_RATE, log_path=audio_log)
+            if audio_enabled
+            else None
+        )
         self._phoneme_callback: Callable[[int], None] | None = None
 
     def start(self) -> None:

@@ -96,6 +96,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--audio-log",
+        type=Path,
+        metavar="FILE",
+        help=(
+            "Write live PCM producer and sound-callback timing to CSV; "
+            "requires --audio pcm"
+        ),
+    )
+    parser.add_argument(
         "--synth",
         choices=tuple(SYNTH_BACKENDS),
         help=argparse.SUPPRESS,  # superseded by --audio BACKEND
@@ -324,12 +333,15 @@ def main(argv: list[str] | None = None) -> None:
     else:
         stdin_device = args.input or "keyboard"
     audio_enabled = args.audio is not None
+    if args.audio_log is not None and args.audio != "pcm":
+        parser.error("--audio-log requires --audio pcm")
     realtime = args.realtime if args.realtime is not None else audio_enabled
 
     with output_context:
         bns = BNS(
             audio=audio_enabled,
             synth_backend=args.audio or DEFAULT_SYNTH_BACKEND,
+            audio_log=args.audio_log,
             model=args.model,
             core=args.core,
             trace_io=args.trace_io,

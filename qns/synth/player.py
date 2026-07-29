@@ -3,11 +3,30 @@
 Provides real-time audio output for the SSI-263 synthesizer.
 """
 
+import csv
 import queue
 import threading
+import time
+from pathlib import Path
+from typing import TextIO
 
 import numpy as np
 import sounddevice as sd
+
+_LOG_HEADER = (
+    "wall_seconds",
+    "event",
+    "frames",
+    "audio_frames",
+    "silence_frames",
+    "queued_frames",
+    "buffered_frames",
+    "priming",
+    "portaudio_current_time",
+    "portaudio_output_dac_time",
+    "portaudio_audio_end_time",
+    "status",
+)
 
 
 class AudioPlayer:
@@ -19,6 +38,7 @@ class AudioPlayer:
         channels: int = 1,
         blocksize: int = 2048,
         prime_ms: int = 250,
+        log_path: Path | str | None = None,
     ):
         # 512 frames is 23 ms of headroom, which PulseAudio under WSL does
         # not reliably meet while the emulator thread holds the GIL between
@@ -35,6 +55,11 @@ class AudioPlayer:
         self._lock = threading.Lock()
         self._playing = False
         self._queued_frames = 0
+        self._log_path = Path(log_path) if log_path is not None else None
+        self._log_start = 0.0
+        self._log_file: TextIO | None = None
+        self._log_queue: queue.SimpleQueue[tuple[object, ...] | None] | None = None
+        self._log_thread: threading.Thread | None = None
 
         # The emulator queues each phoneme's audio just as the previous
         # one finishes: measured, a capture is the same length as the
@@ -61,6 +86,7 @@ class AudioPlayer:
         if self._stream is not None:
             return
 
+        self._start_log()
         self._stream = sd.OutputStream(
             samplerate=self.sample_rate,
             channels=self.channels,
@@ -69,6 +95,7 @@ class AudioPlayer:
             latency="high",
             callback=self._audio_callback,
         )
+        self._log_event("stream_start")
         self._stream.start()
 
     def stop(self) -> None:
@@ -79,6 +106,14 @@ class AudioPlayer:
         self._stream.stop()
         self._stream.close()
         self._stream = None
+
+        with self._lock:
+            self._log_event(
+                "stream_stop",
+                queued_frames=self._queued_frames,
+                buffered_frames=len(self._buffer),
+                priming=self._priming,
+            )
 
         # Clear queue
         while not self._queue.empty():
@@ -94,6 +129,8 @@ class AudioPlayer:
             self._priming = True
             self._primed_waits = 0
 
+        self._finish_log()
+
     def play(self, samples: np.ndarray) -> None:
         """Queue samples for playback.
 
@@ -106,6 +143,13 @@ class AudioPlayer:
         with self._lock:
             self._queue.put(samples)
             self._queued_frames += len(samples)
+            self._log_event(
+                "enqueue",
+                frames=len(samples),
+                queued_frames=self._queued_frames,
+                buffered_frames=len(self._buffer),
+                priming=self._priming,
+            )
 
     def realtime_lead_seconds(self) -> float:
         """Emulator lead needed to restore the active audio reservoir."""
@@ -150,6 +194,17 @@ class AudioPlayer:
                     # than the reservoir would never play at all.
                     self._primed_waits += 1
                     outdata[:, 0] = 0
+                    self._log_event(
+                        "callback",
+                        frames=frames,
+                        audio_frames=0,
+                        silence_frames=frames,
+                        queued_frames=self._queued_frames,
+                        buffered_frames=len(self._buffer),
+                        priming=self._priming,
+                        time_info=time_info,
+                        status=status,
+                    )
                     return
                 else:
                     self._priming = False
@@ -161,6 +216,7 @@ class AudioPlayer:
                 self._buffer = self._buffer[frames:]
                 self._playing = True
                 self._queued_frames = max(0, self._queued_frames - frames)
+                audio_frames = frames
             else:
                 # Not enough samples - output what we have, pad with silence
                 available = len(self._buffer)
@@ -175,3 +231,92 @@ class AudioPlayer:
                 # for every phoneme after it.
                 self._priming = True
                 self._primed_waits = 0
+                audio_frames = available
+
+            self._log_event(
+                "callback",
+                frames=frames,
+                audio_frames=audio_frames,
+                silence_frames=frames - audio_frames,
+                queued_frames=self._queued_frames,
+                buffered_frames=len(self._buffer),
+                priming=self._priming,
+                time_info=time_info,
+                status=status,
+            )
+
+    def _start_log(self) -> None:
+        if self._log_path is None:
+            return
+
+        self._log_file = self._log_path.open("w", newline="", encoding="utf-8")
+        writer = csv.writer(self._log_file)
+        writer.writerow(_LOG_HEADER)
+        self._log_file.flush()
+        self._log_start = time.perf_counter()
+        self._log_queue = queue.SimpleQueue()
+
+        def write_records() -> None:
+            assert self._log_queue is not None
+            assert self._log_file is not None
+            while (record := self._log_queue.get()) is not None:
+                writer.writerow(record)
+                self._log_file.flush()
+
+        self._log_thread = threading.Thread(
+            target=write_records,
+            daemon=True,
+            name="qns-audio-log",
+        )
+        self._log_thread.start()
+
+    def _finish_log(self) -> None:
+        if self._log_queue is None:
+            return
+
+        self._log_queue.put(None)
+        if self._log_thread is not None:
+            self._log_thread.join()
+        if self._log_file is not None:
+            self._log_file.close()
+        self._log_queue = None
+        self._log_thread = None
+        self._log_file = None
+
+    def _log_event(
+        self,
+        event: str,
+        *,
+        frames: int | str = "",
+        audio_frames: int | str = "",
+        silence_frames: int | str = "",
+        queued_frames: int | str = "",
+        buffered_frames: int | str = "",
+        priming: bool | str = "",
+        time_info=None,
+        status="",
+    ) -> None:
+        if self._log_queue is None:
+            return
+
+        current_time = getattr(time_info, "currentTime", None)
+        output_dac_time = getattr(time_info, "outputBufferDacTime", None)
+        audio_end_time = (
+            output_dac_time + audio_frames / self.sample_rate
+            if output_dac_time is not None and isinstance(audio_frames, int)
+            else None
+        )
+        self._log_queue.put((
+            f"{time.perf_counter() - self._log_start:.9f}",
+            event,
+            frames,
+            audio_frames,
+            silence_frames,
+            queued_frames,
+            buffered_frames,
+            priming,
+            f"{current_time:.9f}" if current_time is not None else "",
+            f"{output_dac_time:.9f}" if output_dac_time is not None else "",
+            f"{audio_end_time:.9f}" if audio_end_time is not None else "",
+            str(status) if status else "",
+        ))

@@ -104,6 +104,67 @@ def test_audio_player_requests_only_the_runahead_needed_to_refill():
     assert player.realtime_lead_seconds() == 0.0
 
 
+def test_audio_player_logs_callback_delivery_and_inserted_silence(
+    monkeypatch,
+    tmp_path,
+):
+    import csv
+    from types import SimpleNamespace
+
+    from qns.synth import player as player_module
+    from qns.synth.player import AudioPlayer
+
+    class OutputStream:
+        def __init__(self, **kwargs):
+            self.callback = kwargs["callback"]
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(player_module.sd, "OutputStream", OutputStream)
+    log_path = tmp_path / "pcm-audio.csv"
+    player = AudioPlayer(
+        sample_rate=1000,
+        blocksize=4,
+        prime_ms=0,
+        log_path=log_path,
+    )
+    player.start()
+    player.play(np.ones(3, dtype=np.float32))
+    output = np.empty((4, 1), dtype=np.float32)
+    player._audio_callback(
+        output,
+        4,
+        SimpleNamespace(currentTime=1.5, outputBufferDacTime=1.6),
+        "underflow",
+    )
+    player.stop()
+
+    with log_path.open(newline="", encoding="utf-8") as log_file:
+        rows = list(csv.DictReader(log_file))
+
+    assert [row["event"] for row in rows] == [
+        "stream_start",
+        "enqueue",
+        "callback",
+        "stream_stop",
+    ]
+    callback = rows[2]
+    assert callback["frames"] == "4"
+    assert callback["audio_frames"] == "3"
+    assert callback["silence_frames"] == "1"
+    assert callback["queued_frames"] == "0"
+    assert callback["portaudio_current_time"] == "1.500000000"
+    assert callback["portaudio_output_dac_time"] == "1.600000000"
+    assert callback["status"] == "underflow"
+
+
 @pytest.mark.manual
 def test_audio_player_produces_sound():
     """Manual test: verify audio output works.

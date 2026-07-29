@@ -132,6 +132,7 @@ class BNS:
 
     def __init__(self, clock: int = 12_288_000, audio: bool = False,
                  synth_backend: str = "pcm",
+                 audio_log: Path | str | None = None,
                  model: str = "bsp",
                  core: str = "direct",
                  trace_io: bool = False, trace_writes: int | None = None,
@@ -155,6 +156,7 @@ class BNS:
             clock: CPU clock frequency in Hz (default 12.288 MHz for BSPLUS)
             audio: Enable audio output for SSI-263 speech
             synth_backend: Audio backend: pcm, lpc, or formant
+            audio_log: Live PCM producer/callback CSV path
             model: Hardware profile: bsp, bs2, bsl, bl2, bl4, or tns
             core: z-core API path: compat or direct
             trace_io: Log all I/O port reads/writes
@@ -289,9 +291,15 @@ class BNS:
         # Audio synthesis
         if synth_backend not in SYNTH_BACKENDS:
             raise ValueError(f"Unsupported synth backend: {synth_backend}")
+        if audio_log is not None and synth_backend != "pcm":
+            raise ValueError("audio_log requires the pcm synth backend")
         self.synth = None
         if audio:
-            self.synth = SYNTH_BACKENDS[synth_backend]()
+            self.synth = (
+                SSI263PCMSynth(audio_log=audio_log)
+                if synth_backend == "pcm"
+                else SYNTH_BACKENDS[synth_backend]()
+            )
             self.ssi263.set_synth(self.synth)
 
         self._setup_io()
