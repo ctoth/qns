@@ -242,11 +242,16 @@ def test_ss3_function_keys_reach_the_controls(monkeypatch):
 
 def test_named_keys_reach_a_real_terminal_reader(monkeypatch):
     """The same keys, over a pty in cbreak, as the emulator runs it."""
-    import pty
     import sys
     import threading
     import time
-    import tty
+
+    import pytest
+
+    # Windows has neither, and reaches these keys through the console
+    # reader instead; the decoding they exercise is shared.
+    pty = pytest.importorskip("pty")
+    tty = pytest.importorskip("tty")
 
     master, slave = pty.openpty()
     tty.setcbreak(slave)
