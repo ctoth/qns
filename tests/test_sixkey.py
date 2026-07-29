@@ -263,6 +263,17 @@ def test_ctrl_c_still_asks_to_exit(monkeypatch):
     assert (chords, actions) == ([], ["exit"])
 
 
+def test_six_key_is_rejected_for_the_typewriter_model():
+    """TNS scans are not Braille bitmasks; dot 1 would be a reset code."""
+    import pytest
+
+    import qns.cli
+
+    for layout in ("6-key", "6-key-dvorak"):
+        with pytest.raises(SystemExit):
+            qns.cli.main(["--model", "tns", "--input", layout, "roms/bspeng.bns"])
+
+
 def test_terminal_probe_loads_without_posix_terminal_modules(monkeypatch):
     """The documented probe must reach its Windows path, not ImportError."""
     import builtins

@@ -306,6 +306,17 @@ def main(argv: list[str] | None = None) -> None:
             "--stdio jsonl cannot be combined with --input, --output, "
             "--speech, --speech-stream, or --display"
         )
+    if args.model == "tns" and args.input in ("6-key", "6-key-dvorak"):
+        # Six-key entry emits Braille dot bitmasks, which ChordInputDriver
+        # hands to the keyboard unchanged.  A TNS keyboard reads those as
+        # PIC scan codes - dot 1 becomes key-down 0x81, part of the reset
+        # sequence - so the combination would quietly do something else
+        # entirely.  It needs a Braille-to-TNS translation that does not
+        # exist yet.
+        parser.error(
+            f"--input {args.input} is Braille chord entry; the tns model has a "
+            "typewriter keyboard, so use --input keyboard"
+        )
     if args.watch_pc is not None and not args.stdio:
         parser.error("--watch-pc requires --stdio jsonl")
     if args.watch_pc is not None and not 0 <= args.watch_pc <= 0xFFFF:
