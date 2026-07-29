@@ -320,6 +320,34 @@ def test_restart_reexecs_the_original_command_line(monkeypatch):
     )]
 
 
+def test_windows_restart_waits_for_the_replacement(monkeypatch):
+    """Windows has no in-process exec, so the shell must keep waiting on us."""
+    import subprocess
+    import sys
+
+    import pytest
+
+    import qns.cli
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "orig_argv", ["python.exe", "-m", "qns.bns", "rom.bns"])
+    monkeypatch.setattr(qns.cli.os, "execv",
+                        lambda path, argv: pytest.fail("execv on Windows"))
+    waited = []
+
+    def run_child(argv):
+        waited.append(argv)
+        return subprocess.CompletedProcess(argv, 3)
+
+    monkeypatch.setattr(qns.cli.subprocess, "run", run_child)
+
+    with pytest.raises(SystemExit) as exit_info:
+        qns.cli._restart_with_same_settings()
+
+    assert waited == [["python.exe", "-m", "qns.bns", "rom.bns"]]
+    assert exit_info.value.code == 3
+
+
 def test_failed_restart_exits_rather_than_carrying_on(monkeypatch):
     import sys
 

@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import subprocess
 import sys
 from collections.abc import Callable
 from contextlib import nullcontext, redirect_stdout
@@ -250,6 +251,23 @@ _SPEECH_SETTING_FIELDS = {
 }
 
 
+def _restart_as_child(argv: list[str]) -> None:
+    """Hand the console to a replacement process and outlive it.
+
+    The child inherits this process's standard handles, so it owns the
+    same console; waiting here keeps the invoking shell blocked on us
+    rather than resuming against the replacement's keystrokes.  Repeated
+    restarts nest one waiting frame each, which costs a stalled process
+    per restart and nothing else.  Never returns.
+    """
+    try:
+        finished = subprocess.run(argv)
+    except OSError as error:
+        print(f"Restart failed ({error}); exiting instead.", flush=True)
+        raise SystemExit(1) from error
+    raise SystemExit(finished.returncode)
+
+
 def _restart_with_same_settings() -> None:
     """Replace this process with the command line that started it.
 
@@ -260,9 +278,18 @@ def _restart_with_same_settings() -> None:
     `sys.orig_argv` is the original command line, interpreter flags and
     `-m qns.bns` included.  The run loop has already restored the
     terminal and stopped the audio device by this point.
+
+    Windows has no real in-process exec: the CRT builds a fresh process
+    and destroys this one, so the shell sees its child exit and takes the
+    console back while the replacement is still typing into it - the very
+    race this path exists to avoid.  There the restart is a handoff
+    instead: run the replacement as a child, wait for it, and report its
+    status as ours, so the shell keeps waiting on one process throughout.
     """
     print("Restarting...", flush=True)
     argv = list(sys.orig_argv)
+    if sys.platform == "win32":
+        _restart_as_child(argv)
     try:
         os.execv(argv[0], argv)
     except OSError as error:
