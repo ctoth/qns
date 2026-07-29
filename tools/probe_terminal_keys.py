@@ -17,16 +17,27 @@ under each so the raw bytes are visible.  Run it from the terminal you
 actually type into:
 
     uv run tools/probe_terminal_keys.py
+
+A native Windows console answers neither protocol and needs neither: it
+reports key transitions directly through `ReadConsoleInput`.  There the
+probe shows those records instead, so the same command answers the same
+question on every supported platform.
 """
 
 from __future__ import annotations
 
 import os
-import select
 import sys
-import termios
 import time
-import tty
+
+POSIX = sys.platform != "win32"
+if POSIX:
+    # A pty probe needs the POSIX terminal machinery, which Windows has
+    # no equivalent of; importing it unconditionally would fail the
+    # documented command before it could reach its Windows path.
+    import select
+    import termios
+    import tty
 
 PROBE_SECONDS = 6.0
 
@@ -78,10 +89,63 @@ def interactive(fd: int, prompt: str) -> bytes:
     return data
 
 
+def probe_windows_console() -> int:
+    """Show the key transitions a native Windows console reports.
+
+    No escape-sequence negotiation is involved: `ReadConsoleInput` hands
+    over the same `KEY_EVENT_RECORD` win32-input-mode forwards over a
+    pty, so real releases are available without asking for them.
+    """
+    sys.path.insert(0, str(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    from qns.keysource import windows_console_key_events
+
+    print(f"platform=win32 WT_SESSION="
+          f"{'set' if os.environ.get('WT_SESSION') else 'unset'}")
+    print("\nPress and release some keys - 'f', then 'f'+'d' together.")
+    print(f"  (recording up to {PROBE_SECONDS:.0f}s; press Escape to stop early)")
+
+    transitions: list[str] = []
+    releases = 0
+    try:
+        with windows_console_key_events() as read_events:
+            deadline = time.monotonic() + PROBE_SECONDS
+            while time.monotonic() < deadline:
+                stop = False
+                for event in read_events():
+                    direction = "down" if event.down else "up"
+                    transitions.append(
+                        f"vk=0x{event.vk:02X} char={event.char!r} {direction} "
+                        f"cs=0x{event.control_state:02X}"
+                    )
+                    releases += not event.down
+                    if event.vk == 0x1B and event.down:  # Escape
+                        stop = True
+                if stop:
+                    break
+    except OSError as error:
+        print(f"\nConsole input unavailable: {error}")
+        print("Run this directly from a console, not through a redirect.")
+        return 1
+
+    print("\n--- summary ---")
+    for line in transitions:
+        print(f"  {line}")
+    print(f"key transitions seen:    {len(transitions)}")
+    print(f"releases among them:     {releases}")
+    if releases:
+        print("ReadConsoleInput reports releases: real chord ends are available.")
+    else:
+        print("No releases seen - press *and release* keys during the recording.")
+    return 0
+
+
 def main() -> int:
     if not sys.stdin.isatty():
         print("stdin is not a terminal; run this directly from your terminal.")
         return 1
+
+    if not POSIX:
+        return probe_windows_console()
 
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)

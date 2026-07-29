@@ -263,6 +263,32 @@ def test_ctrl_c_still_asks_to_exit(monkeypatch):
     assert (chords, actions) == ([], ["exit"])
 
 
+def test_terminal_probe_loads_without_posix_terminal_modules(monkeypatch):
+    """The documented probe must reach its Windows path, not ImportError."""
+    import builtins
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    real_import = builtins.__import__
+
+    def refuse_posix(name, *args, **kwargs):
+        if name in ("termios", "tty", "select"):
+            raise ModuleNotFoundError(f"No module named {name!r}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(builtins, "__import__", refuse_posix)
+
+    probe = Path(__file__).resolve().parents[1] / "tools" / "probe_terminal_keys.py"
+    spec = importlib.util.spec_from_file_location("probe_terminal_keys", probe)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.POSIX is False
+    assert callable(module.probe_windows_console)
+
+
 def test_restart_reexecs_the_original_command_line(monkeypatch):
     import sys
 
