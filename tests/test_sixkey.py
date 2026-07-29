@@ -190,27 +190,112 @@ def test_ctrl_c_is_recognised_in_a_key_record():
     assert release[0].interrupt is False
 
 
-def test_reader_stops_the_run_on_ctrl_c(monkeypatch):
+def test_reader_stops_reading_at_ctrl_c(monkeypatch):
+    """Keys after the interrupt are never assembled into chords."""
+    chords, actions = _control_actions(
+        b"\x1b[70;33;102;1;0;1_" + CTRL_C_RECORD + b"\x1b[83;31;115;1;0;1_",
+        monkeypatch,
+    )
+
+    assert actions == ["exit"]
+    assert chords == []
+
+
+def test_control_requests_unwind_the_run_loop(monkeypatch):
+    """Both controls leave through the run loop's KeyboardInterrupt path."""
+    import qns.bns
+
+    interrupted = []
+    monkeypatch.setattr(qns.bns, "_interrupt_emulation",
+                        lambda: interrupted.append(True))
+
+    machine = qns.bns.BNS.__new__(qns.bns.BNS)
+    machine.restart_requested = False
+
+    machine._request_control("exit")
+    assert interrupted == [True]
+    assert machine.restart_requested is False
+
+    machine._request_control("restart")
+    assert interrupted == [True, True]
+    assert machine.restart_requested is True
+
+
+def _control_actions(data: bytes, monkeypatch):
+    """Run the reader over `data`, returning (chords, control actions)."""
     import sys
 
     import qns.bns
 
     read_fd, write_fd = os.pipe()
-    os.write(write_fd, b"\x1b[70;33;102;1;0;1_" + CTRL_C_RECORD
-             + b"\x1b[83;31;115;1;0;1_")
+    os.write(write_fd, data)
     os.close(write_fd)
     monkeypatch.setattr(sys, "stdin", _PipeStdin(read_fd))
 
-    stopped = []
-    monkeypatch.setattr(qns.bns, "_interrupt_emulation",
-                        lambda: stopped.append(True))
-
-    chords = []
+    chords, actions = [], []
     try:
-        qns.bns._six_key_reader("6-key", chords.append)
+        qns.bns._six_key_reader("6-key", chords.append, actions.append)
     finally:
         os.close(read_fd)
+    return chords, actions
 
-    assert stopped == [True]
-    # Reading stops at the interrupt; the key after it is never assembled.
-    assert chords == []
+
+def test_f4_exits_and_f5_restarts(monkeypatch):
+    from qns.sixkey import VK_F4, VK_F5
+
+    def down(vk):
+        return f"\x1b[{vk};0;0;1;0;1_".encode()
+
+    chords, actions = _control_actions(down(VK_F4), monkeypatch)
+    assert (chords, actions) == ([], ["exit"])
+
+    chords, actions = _control_actions(down(VK_F5), monkeypatch)
+    assert (chords, actions) == ([], ["restart"])
+
+    # Releasing them asks for nothing, and neither is a chord.
+    chords, actions = _control_actions(f"\x1b[{VK_F4};0;0;0;0;1_".encode(),
+                                       monkeypatch)
+    assert (chords, actions) == ([], [])
+
+
+def test_ctrl_c_still_asks_to_exit(monkeypatch):
+    chords, actions = _control_actions(CTRL_C_RECORD, monkeypatch)
+    assert (chords, actions) == ([], ["exit"])
+
+
+def test_restart_reexecs_the_original_command_line(monkeypatch):
+    import sys
+
+    import qns.cli
+
+    monkeypatch.setattr(
+        sys, "orig_argv", ["/usr/bin/python3", "-m", "qns.bns", "--audio", "rom.bns"]
+    )
+    execs = []
+    monkeypatch.setattr(qns.cli.os, "execv",
+                        lambda path, argv: execs.append((path, argv)))
+
+    qns.cli._restart_with_same_settings()
+
+    assert execs == [(
+        "/usr/bin/python3",
+        ["/usr/bin/python3", "-m", "qns.bns", "--audio", "rom.bns"],
+    )]
+
+
+def test_failed_restart_exits_rather_than_carrying_on(monkeypatch):
+    import sys
+
+    import pytest
+
+    import qns.cli
+
+    monkeypatch.setattr(sys, "orig_argv", ["/nonexistent/python", "-m", "qns.bns"])
+
+    def refuse(path, argv):
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr(qns.cli.os, "execv", refuse)
+
+    with pytest.raises(SystemExit):
+        qns.cli._restart_with_same_settings()

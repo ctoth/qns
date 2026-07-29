@@ -49,6 +49,10 @@ VK_LEFT = 0x25
 VK_UP = 0x26
 VK_RIGHT = 0x27
 VK_DOWN = 0x28
+# Emulator controls rather than chords: the BNS has no function keys, so
+# these are free to mean something to the host.
+VK_F4 = 0x73
+VK_F5 = 0x74
 
 # Named keys that stand in for a whole chord.  Each is the exact byte the
 # user could also produce by chording the dots by hand, so these are

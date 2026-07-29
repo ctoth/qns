@@ -32,7 +32,7 @@ from .keysource import (
     win32_input_mode,
     windows_console_key_events,
 )
-from .sixkey import SixKeyAssembler, TimedChordAssembler
+from .sixkey import VK_F4, VK_F5, SixKeyAssembler, TimedChordAssembler
 from .loader import (
     RETAINED_SPEECH_DEFAULTS,
     EnglishBoundary,
@@ -113,7 +113,18 @@ def _terminal_fd() -> int | None:
         return None
 
 
-def _six_key_reader(layout: str, emit) -> None:
+def _six_key_control(event) -> str | None:
+    """Return the emulator control this key transition asks for, if any."""
+    if not event.down:
+        return None
+    if event.interrupt or event.vk == VK_F4:
+        return "exit"
+    if event.vk == VK_F5:
+        return "restart"
+    return None
+
+
+def _six_key_reader(layout: str, emit, control=lambda action: None) -> None:
     """Assemble six-key chords from host key transitions until stdin ends.
 
     Prefers real key transitions - `ReadConsoleInput` on a Windows
@@ -137,8 +148,9 @@ def _six_key_reader(layout: str, emit) -> None:
                     except OSError:
                         return
                     for event in events:
-                        if event.interrupt:
-                            _interrupt_emulation()
+                        action = _six_key_control(event)
+                        if action is not None:
+                            control(action)
                             return
                         for chord in assembler.feed(event):
                             emit(chord)
@@ -175,8 +187,9 @@ def _six_key_reader(layout: str, emit) -> None:
             return
         events, text = decoder.feed(data)
         for event in events:
-            if event.interrupt:
-                _interrupt_emulation()
+            action = _six_key_control(event)
+            if action is not None:
+                control(action)
                 return
             for chord in transitions.feed(event):
                 emit(chord)
@@ -185,7 +198,7 @@ def _six_key_reader(layout: str, emit) -> None:
                 # A terminal that ignored the mode leaves cbreak's ISIG to
                 # raise the signal, but a redirected stdin has no line
                 # discipline at all, so honour the byte here too.
-                _interrupt_emulation()
+                control("exit")
                 return
             for chord in timed.feed_char(character):
                 emit(chord)
@@ -370,6 +383,9 @@ class BNS:
         self.write_counts = {}  # Address -> occurrence count
         self.traced_writes: list[tuple[int, int, int, int]] = []
         self._command_loop_write_count = 0
+        # Set when F5 asks for a restart, and read by the CLI once the run
+        # loop has unwound and released the terminal.
+        self.restart_requested = False
         self._keyboard_ready_epoch = 0
         self._keyboard_accept_epoch = 0
         self._keyboard_queue_epoch = 0
@@ -1027,6 +1043,18 @@ class BNS:
             self._pc_watch_address is not None,
         ))
 
+    def _request_control(self, action: str) -> None:
+        """Act on an emulator control pressed at the host keyboard.
+
+        Both controls leave through the run loop's existing
+        KeyboardInterrupt handler, so the terminal is restored and the
+        audio device stopped exactly as Ctrl-C would leave them.  Restart
+        differs only in the flag it sets on the way out.
+        """
+        if action == "restart":
+            self.restart_requested = True
+        _interrupt_emulation()
+
     def _keyboard_needs_steps(self) -> bool:
         """Whether a keystroke is in flight and needs boundary observation.
 
@@ -1239,7 +1267,11 @@ class BNS:
                 elif self.stdin_device in ("6-key", "6-key-dvorak"):
                     # Chords arrive already assembled, as dot bitmasks;
                     # ChordInputDriver's queue takes those directly.
-                    _six_key_reader(self.stdin_device, input_driver.queue.put)
+                    _six_key_reader(
+                        self.stdin_device,
+                        input_driver.queue.put,
+                        self._request_control,
+                    )
                 elif self.stdin_device == "jsonl":
                     for line in sys.stdin:
                         try:

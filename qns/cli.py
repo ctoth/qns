@@ -1,6 +1,7 @@
 """Command-line interface for the BNS emulator."""
 
 import argparse
+import os
 import sys
 from collections.abc import Callable
 from contextlib import nullcontext, redirect_stdout
@@ -249,6 +250,28 @@ _SPEECH_SETTING_FIELDS = {
 }
 
 
+def _restart_with_same_settings() -> None:
+    """Replace this process with the command line that started it.
+
+    Rebuilding the machine in place would leave the previous run's stdin
+    reader - a daemon thread blocked in a read on the same descriptor -
+    racing the new one for keystrokes.  Re-executing sidesteps that
+    entirely and is what "same settings" means most literally:
+    `sys.orig_argv` is the original command line, interpreter flags and
+    `-m qns.bns` included.  The run loop has already restored the
+    terminal and stopped the audio device by this point.
+    """
+    print("Restarting...", flush=True)
+    argv = list(sys.orig_argv)
+    try:
+        os.execv(argv[0], argv)
+    except OSError as error:
+        # An exec that fails leaves the process running, so say so rather
+        # than carrying on as though the restart had happened.
+        print(f"Restart failed ({error}); exiting instead.", flush=True)
+        raise SystemExit(1) from error
+
+
 def speech_settings(args: argparse.Namespace) -> dict[str, int]:
     """Collect the speech settings the user overrode on the command line."""
     return {
@@ -463,6 +486,9 @@ def main(argv: list[str] | None = None) -> None:
             bns.trace_boot()
         else:
             bns.run(max_cycles=args.cycles)
+
+        if bns.restart_requested:
+            _restart_with_same_settings()
 
         if args.speech:
             if args.speech == "english":
