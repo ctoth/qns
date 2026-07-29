@@ -178,6 +178,9 @@ class SSI263State:
     # forces it to 3 regardless of the bits written, and a mode-0 write keeps
     # whatever the last CTL H->L latched, so this is not always `duration`.
     playback_duration: int = 0
+    # Whether the last CTL H->L transition selected phoneme-timed,
+    # transitioned inflection rather than either immediate-inflection mode.
+    transitioned_inflection: bool = False
 
 
 class SpeechBackend(Protocol):
@@ -455,6 +458,7 @@ class SSI263:
             amplitude=self.amplitude,
             filter_freq=self.filter_freq,
             playback_duration=self.playback_duration,
+            transitioned_inflection=self._mode_function == 3,
         )
 
     def _speak_phoneme(self) -> None:

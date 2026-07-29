@@ -59,6 +59,28 @@ def test_chip_snapshot_reaches_backend_play() -> None:
     assert states[-1].amplitude == 15
 
 
+def test_chip_snapshot_reports_latched_transitioned_inflection_mode() -> None:
+    chip = SSI263()
+    states = []
+
+    class Backend:
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+        def play(self, state) -> None:
+            states.append(state)
+
+    chip.set_synth(Backend())
+    chip.write(chip.base_port + chip.REG_DURPHON, 0xC2)
+    chip.write(chip.base_port + chip.REG_CTRLAMP, 0x0F)
+    chip.write(chip.base_port + chip.REG_DURPHON, 0x82)
+
+    assert states[-1].transitioned_inflection is True
+
+
 def test_chip_rate_changes_phoneme_completion_pacing() -> None:
     def completion_cycles(rate: int) -> int:
         chip = SSI263()
