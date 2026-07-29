@@ -47,22 +47,25 @@
 | Combined red regressions | Coupled native-execution and player-state failure | Idle BS2 required stepping; post-start underrun re-entered priming and requested no run-ahead; native flash programming already passed | Either prior fix being sufficient by itself | Both production changes are required together |
 | Real Windows combined run | Surviving combined theory | 100,000,002 cycles and 84 phonemes completed in 8.85 seconds; all events queued within 0.75 seconds; 2.983 seconds of PCM occupied a continuous 2.970-second callback span with zero internal silent callbacks | Remaining phoneme-scale silence in the callback output | Combined fix removes measured producer starvation and inserted gaps |
 | Exact-command audit | English streaming is still on the fast path | `_requires_instruction_steps()` returns true whenever `english_callback` is installed | The previous live run as proof for the user's command | The user's exact command still takes the slow producer path |
+| Exact ROM SPBUF lead measurement | SPBUF writes can arm exact stepping | The valid startup message had 57 SPBUF writes; the first preceded capture by 1,469,173 cycles, while the last preceded it by only 374 cycles | Delayed capture after a native chunk | Arm on the first SPBUF write, then step through the exact boundary |
 
 ## Current Best Theory
 
-Incomplete for the user's exact command. The combined fix works when no
-instruction-boundary observer is active, but `--speech-stream english` keeps
-the producer on the slow path. QNS must preserve exact pre-translation English
-capture while limiting stepping to the smallest causally required window.
+The exact command can remain on native execution until the first write that
+builds SPBUF. That write is observed more than 1.4 million cycles before the
+capture boundary on the supplied ROM. QNS can then use the existing exact
+instruction-entry capture and return to native execution immediately after it.
+Capturing from a delayed event is still invalid because the last SPBUF write is
+only 374 cycles before the boundary.
 
 ## Open Questions
 
-- How many cycles separate the first SPBUF write from the English capture
-  boundary on the supplied BS2 ROM and state?
-- Does every observed capture have a preceding SPBUF-write arm?
+- Does the exact command retain the same English line when dynamic arming is
+  enabled?
+- Does its real PCM callback log contain zero internal silent callbacks?
 
 ## Next Action
 
-Measure SPBUF-write-to-capture ordering on the supplied BS2 ROM and `flash.bin`
-without saving either state surface. Use the result to choose between dynamic
-stepping and an explicitly authorized z-core API change.
+Write a regression proving that an English callback alone uses native
+execution, a physical SPBUF write arms stepping, and the exact capture disarms
+it. Then validate the user's exact command with live PCM logging.
