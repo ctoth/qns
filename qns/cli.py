@@ -7,6 +7,7 @@ from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 
 from .bns import BNS, SYNTH_BACKENDS
+from .paths import resolve_state_path
 from .profiles import PROFILES
 from .ssi263 import Phoneme
 from .stdio import JSONLOutput
@@ -203,13 +204,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--state",
         type=str,
         metavar="FILE",
-        help="Load binary nonvolatile state before execution and save it afterward",
+        help="Load binary nonvolatile state before execution and save it "
+             "afterward; a bare name goes in session_state/",
     )
     state_group.add_argument(
         "--state-dir",
         type=str,
         metavar="DIR",
-        help="Load directory-backed nonvolatile state before execution and save it afterward",
+        help="Load directory-backed nonvolatile state before execution and "
+             "save it afterward; a bare name goes in session_state/",
     )
     parser.add_argument(
         "--pc-disk-dir",
@@ -440,14 +443,16 @@ def main(argv: list[str] | None = None) -> None:
             bns.display.set_frame_callback(emit_display_frame)
 
         bns.load_rom(args.rom_file)
+        # Resolved once and reused for the save, so a run cannot read one
+        # location and write another.
+        state_path = resolve_state_path(args.state) if args.state else None
+        state_dir = resolve_state_path(args.state_dir) if args.state_dir else None
         if args.state:
-            state_path = Path(args.state)
             if state_path.exists():
                 bns.load_state(state_path)
             else:
                 print(f"Initializing nonvolatile RAM state: {state_path}")
         elif args.state_dir:
-            state_dir = Path(args.state_dir)
             if state_dir.exists() and not state_dir.is_dir():
                 parser.error(f"--state-dir is not a directory: {state_dir}")
             if state_dir.exists() and any(state_dir.iterdir()):
@@ -482,9 +487,9 @@ def main(argv: list[str] | None = None) -> None:
             bns.dump_ram(args.dump_ram)
 
         if args.state:
-            bns.save_state(args.state)
+            bns.save_state(state_path)
         elif args.state_dir:
-            bns.save_state_dir(args.state_dir)
+            bns.save_state_dir(state_dir)
 
         # Dump trace data if any tracing was enabled
         bns.dump_trace_data()
