@@ -49,6 +49,21 @@ class KeyEvent:
     repeat: int = 1
 
     @property
+    def interrupt(self) -> bool:
+        """Whether this is Ctrl-C, however the terminal spelled it.
+
+        Asking for key transitions costs the usual route out.  In
+        win32-input-mode the terminal reports Ctrl-C as a record rather
+        than sending 0x03, so the pty's line discipline never sees it and
+        raises no signal; on a Windows console, reporting it as a record
+        at all means turning off the processing that would have raised
+        one.  Either way the interrupt has to be recognised here.
+        """
+        return self.down and (
+            self.char == "\x03" or (self.ctrl and self.vk == 0x43)  # 'C'
+        )
+
+    @property
     def ctrl(self) -> bool:
         return bool(self.control_state & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED))
 
@@ -187,8 +202,11 @@ def windows_console_key_events():
     `ReadConsoleInput` reports the same `KEY_EVENT_RECORD` fields
     win32-input-mode forwards over a pty, so a native Windows run gets
     true releases too rather than having to infer chord ends from timing.
-    Line and echo input are turned off for the duration; processed input
-    stays on so Ctrl-C still interrupts instead of arriving as a chord.
+    Line, echo and processed input are all turned off for the duration.
+    Turning processing off is what lets Ctrl-C be seen here at all - the
+    console would otherwise swallow it to raise a signal - so the caller
+    must act on `KeyEvent.interrupt` itself.  Ctrl-Break is not enough on
+    its own: not every keyboard has the key.
 
     Raises OSError when standard input is not a console - a redirected
     stdin, for instance - so the caller can fall back.
@@ -205,8 +223,9 @@ def windows_console_key_events():
     if not kernel32.GetConsoleMode(handle, ctypes.byref(saved)):
         raise OSError(ctypes.get_last_error(), "standard input is not a console")
 
-    mode = saved.value & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT)
-    mode |= ENABLE_PROCESSED_INPUT
+    mode = saved.value & ~(
+        ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT
+    )
     if not kernel32.SetConsoleMode(handle, mode):
         raise OSError(ctypes.get_last_error(), "could not set console mode")
 

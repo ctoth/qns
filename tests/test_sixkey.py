@@ -160,3 +160,57 @@ def test_reader_delimits_redirected_input_by_line(monkeypatch):
 
     # f=dot1, d=dot2, j=dot4, l=dot6
     assert chords == [0x03, 0x08, 0x29]
+
+
+def test_ctrl_arrows_take_precedence_over_the_plain_arrows():
+    from qns.keysource import LEFT_CTRL_PRESSED
+    from qns.sixkey import VK_LEFT, VK_RIGHT
+
+    assembler = SixKeyAssembler(layout="6-key")
+    ctrl = LEFT_CTRL_PRESSED
+
+    assert list(assembler.feed(press(vk=VK_RIGHT))) == [0x60]  # space+6
+    assert list(assembler.feed(press(vk=VK_LEFT))) == [0x44]   # space+3
+    # Held with Ctrl the same keys are the dot-5 and dot-2 chords.
+    assert list(assembler.feed(press(vk=VK_RIGHT, control_state=ctrl))) == [0x50]
+    assert list(assembler.feed(press(vk=VK_LEFT, control_state=ctrl))) == [0x42]
+
+
+CTRL_C_RECORD = b"\x1b[67;46;3;1;8;1_"
+
+
+def test_ctrl_c_is_recognised_in_a_key_record():
+    """win32-input-mode reports Ctrl-C instead of sending 0x03."""
+    events, text = Win32InputDecoder().feed(CTRL_C_RECORD)
+
+    assert text == ""
+    assert events[0].interrupt is True
+    # The release must not count, or the run would stop twice.
+    release, _ = Win32InputDecoder().feed(b"\x1b[67;46;3;0;8;1_")
+    assert release[0].interrupt is False
+
+
+def test_reader_stops_the_run_on_ctrl_c(monkeypatch):
+    import sys
+
+    import qns.bns
+
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"\x1b[70;33;102;1;0;1_" + CTRL_C_RECORD
+             + b"\x1b[83;31;115;1;0;1_")
+    os.close(write_fd)
+    monkeypatch.setattr(sys, "stdin", _PipeStdin(read_fd))
+
+    stopped = []
+    monkeypatch.setattr(qns.bns, "_interrupt_emulation",
+                        lambda: stopped.append(True))
+
+    chords = []
+    try:
+        qns.bns._six_key_reader("6-key", chords.append)
+    finally:
+        os.close(read_fd)
+
+    assert stopped == [True]
+    # Reading stops at the interrupt; the key after it is never assembled.
+    assert chords == []

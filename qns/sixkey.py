@@ -65,10 +65,14 @@ NAMED_CHORDS: dict[int, int] = {
     VK_NEXT: SPACE_BIT | 0x10 | 0x20,                  # space+5+6
 }
 
-# Named keys that only mean a chord while Ctrl is held.
+# Named keys that mean a different chord while Ctrl is held.  These take
+# precedence over NAMED_CHORDS, so Ctrl+Left is the dot-2 chord rather
+# than the plain Left arrow's space+3.
 CTRL_NAMED_CHORDS: dict[int, int] = {
-    VK_HOME: SPACE_BIT | 0x01 | 0x02 | 0x04,  # ctrl+home -> space+1+2+3
-    VK_END: SPACE_BIT | 0x08 | 0x10 | 0x20,   # ctrl+end  -> space+4+5+6
+    VK_HOME: SPACE_BIT | 0x01 | 0x02 | 0x04,  # ctrl+home  -> space+1+2+3
+    VK_END: SPACE_BIT | 0x08 | 0x10 | 0x20,   # ctrl+end   -> space+4+5+6
+    VK_RIGHT: SPACE_BIT | 0x10,               # ctrl+right -> dot-5 chord
+    VK_LEFT: SPACE_BIT | 0x02,                # ctrl+left  -> dot-2 chord
 }
 
 
@@ -116,9 +120,9 @@ class SixKeyAssembler:
 
         if not event.down:
             return
-        named = NAMED_CHORDS.get(event.vk)
-        if named is None and event.ctrl:
-            named = CTRL_NAMED_CHORDS.get(event.vk)
+        named = CTRL_NAMED_CHORDS.get(event.vk) if event.ctrl else None
+        if named is None:
+            named = NAMED_CHORDS.get(event.vk)
         if named is not None:
             # A named key stands alone; abandon any half-built cell so a
             # stray dot cannot leak into the next chord.

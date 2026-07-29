@@ -1,5 +1,6 @@
 """Main BNS emulator."""
 
+import _thread
 import contextlib
 import os
 import queue
@@ -94,6 +95,16 @@ def _read_stdin_character() -> str:
     return sys.stdin.read(1)
 
 
+def _interrupt_emulation() -> None:
+    """Stop the run from the stdin thread, as Ctrl-C normally would.
+
+    The reader is a daemon thread, so raising here would go unnoticed;
+    `interrupt_main` raises KeyboardInterrupt in the run loop instead,
+    which already unwinds cleanly and restores the terminal.
+    """
+    _thread.interrupt_main()
+
+
 def _terminal_fd() -> int | None:
     """The interactive terminal's descriptor, or None if there is none."""
     try:
@@ -126,6 +137,9 @@ def _six_key_reader(layout: str, emit) -> None:
                     except OSError:
                         return
                     for event in events:
+                        if event.interrupt:
+                            _interrupt_emulation()
+                            return
                         for chord in assembler.feed(event):
                             emit(chord)
 
@@ -161,9 +175,18 @@ def _six_key_reader(layout: str, emit) -> None:
             return
         events, text = decoder.feed(data)
         for event in events:
+            if event.interrupt:
+                _interrupt_emulation()
+                return
             for chord in transitions.feed(event):
                 emit(chord)
         for character in text:
+            if character == "\x03":
+                # A terminal that ignored the mode leaves cbreak's ISIG to
+                # raise the signal, but a redirected stdin has no line
+                # discipline at all, so honour the byte here too.
+                _interrupt_emulation()
+                return
             for chord in timed.feed_char(character):
                 emit(chord)
 
