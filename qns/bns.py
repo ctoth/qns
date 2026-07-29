@@ -872,10 +872,8 @@ class BNS:
         """
         return any((
             self._english_callback is not None,
-            (
-                self.gas_gauge is not None
-                and self.gas_gauge.cycle_timing_active
-            ),
+            self.profile.flash_size > 0,
+            self.gas_gauge is not None,
             self.trace_interrupts,
             self._keyboard_needs_steps(),
             self.stdin_device not in (None, "keyboard"),
