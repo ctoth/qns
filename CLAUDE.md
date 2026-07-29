@@ -15,6 +15,7 @@ frequency. **`--audio` speaks live, in real time** - the greeting takes the
 ```bash
 uv run -m qns.bns --audio roms/bspeng.bns          # speaks, then type at it
 uv run -m qns.bns --audio lpc roms/bspeng.bns      # pcm (default), lpc, or formant
+uv run -m qns.bns --audio --input 6-key roms/bspeng.bns   # fdsjkl = dots 1-6
 ```
 
 To compare the backends by ear without a working sound device, or without
@@ -86,6 +87,9 @@ qns/
 │   ├── profiles.py           # Per-model hardware profiles (all 6 models)
 │   ├── loader.py             # Firmware extraction (boundary discovery)
 │   ├── input_driver.py       # Stdin chord tables + press/release driver
+│   ├── keysource.py          # Key transitions: win32-input-mode decode,
+│   │                         # ReadConsoleInput, Ctrl-C recognition
+│   ├── sixkey.py             # Six-key layouts + chord assembly
 │   ├── stdio.py              # JSONL structured I/O events
 │   ├── cli.py                # argparse CLI (python -m qns.bns)
 │   └── bns.py                # Main emulator machine
@@ -94,6 +98,7 @@ qns/
 │   ├── extract_phonemes.py   # Extract phonemes from AppleWin
 │   ├── decode_sc01_rom.py    # Regenerates qns/synth/sc01_rom.py
 │   ├── extract_firmware.py   # Package -> .bin extraction (uses qns.loader)
+│   ├── probe_terminal_keys.py # What key info a terminal can deliver
 │   ├── render_backend.py     # Trace -> WAV through a live --audio backend
 │   ├── lpc_track_experiment.py # Unfinished time-varying LPC (not a backend)
 │   └── rom_analyzer.py       # ROM bank/structure analysis
@@ -177,7 +182,34 @@ pause phonemes (0x00) during the boot sequence.
      chip schedules its completion interrupt from, so audio cannot drift
      against the emulated clock
 
-4. **Memory System** - Physical addressing works
+4. **Six-key Braille entry** (`--input 6-key`, `--input 6-key-dvorak`)
+   - `fdsjkl` are dots 1-6, `ueohtn` on Dvorak; space and Alt both give
+     the space bit, so `space`+`f` is the dot-1 chord
+   - Backspace, Escape, Enter, the arrows, PgUp/PgDn and
+     Ctrl+Home/End/Left/Right stand in for their chords
+   - F4 exits, F5 restarts with the same command line, Ctrl-C exits
+   - A chord must be assembled host-side: `BrailleKeyboard.press` latches
+     a whole dot bitmask and the firmware ISR reads that port once, so the
+     firmware never sees an individual key transition.  The assembled byte
+     goes onto `ChordInputDriver`'s queue, which already took chord ints
+   - That needs key *releases*, which a plain pty does not carry.  Windows
+     Terminal's win32-input-mode does - after `CSI ? 9001 h` it forwards
+     the whole Win32 `KEY_EVENT_RECORD` - and `ReadConsoleInput` gives the
+     same fields natively, so one assembler serves WSL and Windows.  Run
+     `uv run tools/probe_terminal_keys.py` to see what a terminal supports;
+     ones that report no releases fall back to ending a chord on a gap in
+     arrival times, and redirected input ends it at a line break
+   - On those terminals the named keys arrive as escape sequences, which
+     `VTKeyDecoder` reads before any character reaches the chord tables -
+     `ESC [ D` ends in the dot-3 key, so an undecoded Left would spell a
+     cell.  Escape shares its first byte with every sequence, so it is
+     settled by the same quiet interval that ends a chord
+   - The six-key devices are in `CHORD_STDIN_DEVICES` so
+     `_requires_instruction_steps` still pays for boundary observation only
+     while a chord is in flight.  Pinning the core to the per-instruction
+     path costs the ~6x that real-time speech cannot afford
+
+5. **Memory System** - Physical addressing works
    - z-core owns the 512 KiB RAM hot path and Z180 MMU translation
    - qns callbacks own only the optional high flash aperture and external I/O
    - native write-watch events preserve QNS observers without RAM callbacks
@@ -210,7 +242,22 @@ pause phonemes (0x00) during the boot sequence.
      `docs/reports/lpc-backend-investigation.md` for the measurements, the
      four theories that were refuted, and what to do next
 
-3. **Missing Peripherals**
+3. **A chord delivered during the greeting is silently lost**
+   - `ChordInputDriver`'s ready gate opens around 37M cycles, part way
+     through the boot greeting.  A chord delivered while the firmware is
+     still speaking is accepted into its input buffer - `input_buffer`
+     reads the chord back - and then cleared without
+     `keyboard_queue_count` ever going non-zero.  The driver waits in its
+     `queued` phase forever and the command is gone
+   - This predates six-key input and affects every mode: `printf 'O' |
+     ... --input keyboard` loses its chord the same way.  Interactive use
+     is unaffected because a person waits for the greeting; scripted use
+     is not, which makes the input layer look broken when it is not
+   - Deliver after ~80M cycles.  `investigations/chord_delivery_trace.py`
+     prints every driver phase change with the epochs and buffer bytes it
+     consults, which is how this was located
+
+4. **Missing Peripherals**
    - RTC (0x60-0x6F) - returns 0xFF
    - Status ports may need proper emulation
 

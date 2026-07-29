@@ -1,6 +1,8 @@
 """Command-line interface for the BNS emulator."""
 
 import argparse
+import os
+import subprocess
 import sys
 from collections.abc import Callable
 from contextlib import nullcontext, redirect_stdout
@@ -128,8 +130,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-realtime", dest="realtime", action="store_false",
                         help="Run as fast as possible even with --audio")
     parser.set_defaults(realtime=None)
-    parser.add_argument("--input", choices=("keyboard", "none", "serial0", "serial1"),
-                        help="Route standard input to the BNS keyboard or an ASCI channel")
+    parser.add_argument(
+        "--input",
+        choices=("keyboard", "6-key", "6-key-dvorak", "none", "serial0", "serial1"),
+        help="Route standard input to the BNS keyboard, six-key Braille entry "
+             "(fdsjkl, or ueohtn for Dvorak), or an ASCI channel",
+    )
     parser.add_argument(
         "--reset",
         choices=("warm", "cold"),
@@ -245,6 +251,61 @@ _SPEECH_SETTING_FIELDS = {
 }
 
 
+def _restart_as_child(argv: list[str]) -> None:
+    """Hand the console to a replacement process and outlive it.
+
+    The child inherits this process's standard handles, so it owns the
+    same console; waiting here keeps the invoking shell blocked on us
+    rather than resuming against the replacement's keystrokes.  Repeated
+    restarts nest one waiting frame each, which costs a stalled process
+    per restart and nothing else.  Never returns.
+    """
+    try:
+        finished = subprocess.run(argv)
+    except OSError as error:
+        print(f"Restart failed ({error}); exiting instead.", flush=True)
+        raise SystemExit(1) from error
+    raise SystemExit(finished.returncode)
+
+
+def _restart_with_same_settings() -> None:
+    """Replace this process with the command line that started it.
+
+    Rebuilding the machine in place would leave the previous run's stdin
+    reader - a daemon thread blocked in a read on the same descriptor -
+    racing the new one for keystrokes.  Re-executing sidesteps that
+    entirely and is what "same settings" means most literally:
+    `sys.orig_argv` is the original command line, interpreter flags and
+    `-m qns.bns` included.  The run loop has already restored the
+    terminal and stopped the audio device by this point.
+
+    `sys.orig_argv[0]` is discarded in favour of `sys.executable`: under
+    `uv run` on Windows the two differ - orig_argv[0] names uv's managed
+    base interpreter, which has no access to this project's venv and so
+    no `z180` to import, while `sys.executable` is always the interpreter
+    actually running right now, guaranteed importable.  The interpreter
+    flags and script arguments after argv[0] are passed through unchanged.
+
+    Windows has no real in-process exec: the CRT builds a fresh process
+    and destroys this one, so the shell sees its child exit and takes the
+    console back while the replacement is still typing into it - the very
+    race this path exists to avoid.  There the restart is a handoff
+    instead: run the replacement as a child, wait for it, and report its
+    status as ours, so the shell keeps waiting on one process throughout.
+    """
+    print("Restarting...", flush=True)
+    argv = [sys.executable] + list(sys.orig_argv[1:])
+    if sys.platform == "win32":
+        _restart_as_child(argv)
+    try:
+        os.execv(argv[0], argv)
+    except OSError as error:
+        # An exec that fails leaves the process running, so say so rather
+        # than carrying on as though the restart had happened.
+        print(f"Restart failed ({error}); exiting instead.", flush=True)
+        raise SystemExit(1) from error
+
+
 def speech_settings(args: argparse.Namespace) -> dict[str, int]:
     """Collect the speech settings the user overrode on the command line."""
     return {
@@ -278,6 +339,17 @@ def main(argv: list[str] | None = None) -> None:
         parser.error(
             "--stdio jsonl cannot be combined with --input, --output, "
             "--speech, --speech-stream, or --display"
+        )
+    if args.model == "tns" and args.input in ("6-key", "6-key-dvorak"):
+        # Six-key entry emits Braille dot bitmasks, which ChordInputDriver
+        # hands to the keyboard unchanged.  A TNS keyboard reads those as
+        # PIC scan codes - dot 1 becomes key-down 0x81, part of the reset
+        # sequence - so the combination would quietly do something else
+        # entirely.  It needs a Braille-to-TNS translation that does not
+        # exist yet.
+        parser.error(
+            f"--input {args.input} is Braille chord entry; the tns model has a "
+            "typewriter keyboard, so use --input keyboard"
         )
     if args.watch_pc is not None and not args.stdio:
         parser.error("--watch-pc requires --stdio jsonl")
@@ -494,6 +566,13 @@ def main(argv: list[str] | None = None) -> None:
 
         if stdio_output is not None:
             stdio_output.emit("system", state="exited")
+
+        # Last, so that a restart saves and closes everything a normal exit
+        # would.  Restarting before the nonvolatile state was written would
+        # discard the session's RAM - the emulated battery-backed memory -
+        # which is the opposite of resuming with the same settings.
+        if bns.restart_requested:
+            _restart_with_same_settings()
 
 
 if __name__ == "__main__":

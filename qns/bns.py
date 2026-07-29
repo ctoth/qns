@@ -1,7 +1,10 @@
 """Main BNS emulator."""
 
+import _thread
 import contextlib
+import os
 import queue
+import select
 import sys
 import threading
 import time
@@ -24,6 +27,14 @@ from .devices import (
     Watchdog,
 )
 from .input_driver import ChordInputDriver
+from .keysource import (
+    KeyEvent,
+    VTKeyDecoder,
+    Win32InputDecoder,
+    win32_input_mode,
+    windows_console_key_events,
+)
+from .sixkey import VK_F4, VK_F5, SixKeyAssembler, TimedChordAssembler
 from .loader import (
     RETAINED_SPEECH_DEFAULTS,
     EnglishBoundary,
@@ -61,6 +72,17 @@ SYNTH_BACKENDS = {
 }
 
 
+# Standard-input devices that deliver Braille chords through
+# ChordInputDriver.  They share the driver's cost model: boundary
+# observation is paid for only while a chord is actually in flight.
+CHORD_STDIN_DEVICES = ("keyboard", "6-key", "6-key-dvorak")
+
+# Quiet interval that ends a chord when the terminal reports no key
+# releases.  Dots pressed together arrive within a few milliseconds;
+# successive cells are far further apart even at speed.
+SIX_KEY_CHORD_TIMEOUT = 0.04
+
+
 def _read_stdin_character() -> str:
     """Read one redirected byte or one unbuffered console key."""
     if sys.platform == "win32" and sys.stdin.isatty():
@@ -73,6 +95,168 @@ def _read_stdin_character() -> str:
                 continue
             return character
     return sys.stdin.read(1)
+
+
+def _interrupt_emulation() -> None:
+    """Stop the run from the stdin thread, as Ctrl-C normally would.
+
+    The reader is a daemon thread, so raising here would go unnoticed;
+    `interrupt_main` raises KeyboardInterrupt in the run loop instead,
+    which already unwinds cleanly and restores the terminal.
+    """
+    _thread.interrupt_main()
+
+
+def _terminal_fd() -> int | None:
+    """The interactive terminal's descriptor, or None if there is none."""
+    try:
+        return sys.stdin.fileno() if sys.stdin.isatty() else None
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def _earliest(*timeouts: float | None) -> float | None:
+    """The soonest of several pending deadlines, or None if none pends."""
+    waiting = [timeout for timeout in timeouts if timeout is not None]
+    return min(waiting) if waiting else None
+
+
+def _six_key_control(event) -> str | None:
+    """Return the emulator control this key transition asks for, if any."""
+    if not event.down:
+        return None
+    if event.interrupt or event.vk == VK_F4:
+        return "exit"
+    if event.vk == VK_F5:
+        return "restart"
+    return None
+
+
+def _six_key_reader(layout: str, emit, control=lambda action: None,
+                    read_events=None) -> None:
+    """Assemble six-key chords from host key transitions until stdin ends.
+
+    Prefers real key transitions - `ReadConsoleInput` on a Windows
+    console, win32-input-mode records over a pty - because a chord then
+    ends exactly where the hardware would end it: when the last key comes
+    back up.  A terminal that reports no releases leaves only arrival
+    times, so those characters go to the timing fallback instead.
+
+    `read_events` is the native console reader when the run loop opened
+    one.  It is opened there rather than here because this runs on a
+    daemon thread, which never unwinds: the console mode has to be owned
+    by whoever cleans up after the run.
+    """
+    if read_events is not None:
+        assembler = SixKeyAssembler(layout=layout)
+        while True:
+            try:
+                events = read_events()
+            except OSError:
+                return  # the run loop cancelled us, or the console ended
+            for event in events:
+                action = _six_key_control(event)
+                if action is not None:
+                    control(action)
+                    return
+                for chord in assembler.feed(event):
+                    emit(chord)
+
+    try:
+        fd = sys.stdin.fileno()
+        interactive = sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        return
+
+    decoder = Win32InputDecoder()
+    transitions = SixKeyAssembler(layout=layout)
+    # The escape sequences a terminal names its special keys with have to
+    # be read before the characters do, or their final bytes spell dots:
+    # Left is `ESC [ D`, and D is dot 3 on the default layout.  Piped
+    # input's line ending is a cell delimiter rather than the Enter key,
+    # which is the same reason its chords end at a line and not a clock.
+    named = SixKeyAssembler(layout=layout)
+    vt = VTKeyDecoder(
+        timeout=SIX_KEY_CHORD_TIMEOUT if interactive else None,
+        newline_is_return=interactive,
+    )
+    # Redirected input carries no timing worth reading, so let a line
+    # ending delimit the cell rather than a stopwatch.
+    timed = TimedChordAssembler(
+        layout=layout, timeout=SIX_KEY_CHORD_TIMEOUT if interactive else None
+    )
+
+    def handle_key(event) -> bool:
+        """Act on one named key; False once the reader should stop."""
+        action = _six_key_control(event)
+        if action is not None:
+            control(action)
+            return False
+        # A named key stands alone, so whatever the dots were spelling
+        # goes first rather than being swallowed by it.
+        for chord in timed.flush():
+            emit(chord)
+        for chord in named.feed(event):
+            emit(chord)
+        return True
+
+    while True:
+        # An unfinished sequence needs a deadline of its own, wherever it
+        # is being held: the Escape key looks exactly like one until the
+        # quiet interval says otherwise, and without a deadline the read
+        # below would wait for a rest that is never coming.
+        held = SIX_KEY_CHORD_TIMEOUT if interactive and decoder.pending else None
+        timeout = _earliest(timed.wait_timeout, vt.wait_timeout, held)
+        if timeout is not None:
+            ready, _, _ = select.select([fd], [], [], timeout)
+            if not ready:
+                # A record split across reads is worth waiting for, but a
+                # bare ESC that stays bare is the Escape key; the quiet
+                # interval is what tells the two apart.
+                for item in vt.feed(decoder.flush()):
+                    if isinstance(item, KeyEvent) and not handle_key(item):
+                        return
+                for item in vt.poll():
+                    if isinstance(item, KeyEvent) and not handle_key(item):
+                        return
+                for chord in timed.poll():
+                    emit(chord)
+                continue
+        try:
+            data = os.read(fd, 1024)
+        except OSError:
+            return
+        if not data:
+            for item in vt.feed(decoder.flush()):
+                if isinstance(item, KeyEvent) and not handle_key(item):
+                    return
+            for item in vt.flush():
+                if isinstance(item, KeyEvent) and not handle_key(item):
+                    return
+            for chord in timed.flush():
+                emit(chord)
+            return
+        events, text = decoder.feed(data)
+        for event in events:
+            action = _six_key_control(event)
+            if action is not None:
+                control(action)
+                return
+            for chord in transitions.feed(event):
+                emit(chord)
+        for item in vt.feed(text):
+            if isinstance(item, KeyEvent):
+                if not handle_key(item):
+                    return
+                continue
+            if item == "\x03":
+                # A terminal that ignored the mode leaves cbreak's ISIG to
+                # raise the signal, but a redirected stdin has no line
+                # discipline at all, so honour the byte here too.
+                control("exit")
+                return
+            for chord in timed.feed_char(item):
+                emit(chord)
 
 
 @contextlib.contextmanager
@@ -254,6 +438,14 @@ class BNS:
         self.write_counts = {}  # Address -> occurrence count
         self.traced_writes: list[tuple[int, int, int, int]] = []
         self._command_loop_write_count = 0
+        # Set when F5 asks for a restart, and read by the CLI once the run
+        # loop has unwound and released the terminal.
+        self.restart_requested = False
+        # A control pressed before the run loop can clean up after itself
+        # waits here until it can (see _request_control).
+        self._control_lock = threading.Lock()
+        self._controls_armed = False
+        self._pending_control: str | None = None
         self._keyboard_ready_epoch = 0
         self._keyboard_accept_epoch = 0
         self._keyboard_queue_epoch = 0
@@ -906,10 +1098,52 @@ class BNS:
             ),
             self.trace_interrupts,
             self._keyboard_needs_steps(),
-            self.stdin_device not in (None, "keyboard"),
+            self.stdin_device not in (None, *CHORD_STDIN_DEVICES),
             self.reset_mode is not None,
             self._pc_watch_address is not None,
         ))
+
+    def _request_control(self, action: str) -> None:
+        """Act on an emulator control pressed at the host keyboard.
+
+        Both controls leave through the run loop's existing
+        KeyboardInterrupt handler, so the terminal is restored and the
+        audio device stopped exactly as Ctrl-C would leave them.  Restart
+        differs only in the flag it sets on the way out.
+
+        The reader starts before the run loop is inside that handler,
+        though, and a key pressed in the meantime is already waiting when
+        it does.  Interrupting then would land in the setup instead, past
+        no cleanup at all - the terminal left raw, the audio device left
+        running, and a restart never asked for.  So a control that
+        arrives early is held until the loop can honour it.
+        """
+        with self._control_lock:
+            if action == "restart":
+                self.restart_requested = True
+            if not self._controls_armed:
+                self._pending_control = action
+                return
+        _interrupt_emulation()
+
+    def _arm_controls(self) -> None:
+        """Accept host controls, now that leaving the run loop cleans up.
+
+        Anything pressed while the run was still starting is honoured
+        here, at the first moment an interrupt unwinds properly.
+        """
+        with self._control_lock:
+            self._controls_armed = True
+            pending = self._pending_control
+            self._pending_control = None
+        if pending is not None:
+            raise KeyboardInterrupt
+
+    def _disarm_controls(self) -> None:
+        """Stop accepting host controls once the run loop has finished."""
+        with self._control_lock:
+            self._controls_armed = False
+            self._pending_control = None
 
     def _keyboard_needs_steps(self) -> bool:
         """Whether a keystroke is in flight and needs boundary observation.
@@ -922,7 +1156,7 @@ class BNS:
         the core at full speed the rest of the time - which is precisely
         when speech is playing.
         """
-        if self.stdin_device != "keyboard":
+        if self.stdin_device not in CHORD_STDIN_DEVICES:
             return False
         driver = self._input_driver
         return driver is None or driver.busy
@@ -1073,6 +1307,112 @@ class BNS:
         self.memory.set_mmu(cbr=0, bbr=0, cbar=0xF0)
         print("BNS reset complete")
 
+    def _start_input(
+        self, terminal: contextlib.ExitStack
+    ) -> ChordInputDriver | None:
+        """Connect standard input to the machine, and return its driver.
+
+        `terminal` is the run loop's cleanup stack, so every terminal
+        mode turned on here is turned off however the run ends - which
+        is why this is called from inside that handler rather than
+        before it.
+        """
+        input_driver: ChordInputDriver | None = None
+        console_reader = None
+        if self.stdin_device is None and self.reset_mode is None:
+            return None
+
+        if (
+            self.stdin_device in (*CHORD_STDIN_DEVICES, "jsonl")
+            or self.reset_mode is not None
+        ):
+            if self._input_boundary is None:
+                if self.reset_mode is not None:
+                    raise RuntimeError(
+                        "chord-acceptance addresses were not discovered "
+                        "in this firmware; reset is unavailable"
+                    )
+                print(
+                    "[Input] chord-acceptance addresses not discovered "
+                    "in this firmware; keyboard input disabled"
+                )
+            else:
+                input_driver = ChordInputDriver(self)
+                self._input_driver = input_driver
+            if input_driver is not None and self.reset_mode is not None:
+                input_driver.start_reset(self.reset_mode)
+
+        stdin_started = threading.Event()
+
+        def read_stdin() -> None:
+            stdin_started.set()
+            if self.stdin_device == "keyboard":
+                while character := _read_stdin_character():
+                    input_driver.queue.put(character)
+            elif self.stdin_device in ("6-key", "6-key-dvorak"):
+                # Chords arrive already assembled, as dot bitmasks;
+                # ChordInputDriver's queue takes those directly.
+                _six_key_reader(
+                    self.stdin_device,
+                    input_driver.queue.put,
+                    self._request_control,
+                    console_reader,
+                )
+            elif self.stdin_device == "jsonl":
+                for line in sys.stdin:
+                    try:
+                        event = parse_input_event(line)
+                    except ValueError as error:
+                        self._stdin_error_queue.put(error)
+                        return
+                    if isinstance(event, KeyboardInput):
+                        if isinstance(event.value, str):
+                            for character in event.value:
+                                input_driver.queue.put(character)
+                        else:
+                            input_driver.queue.put(event.value)
+                    elif isinstance(event, SerialInput):
+                        for byte in event.data:
+                            self._stdio_serial_input_queues[event.channel].put(byte)
+                    elif isinstance(event, WatchPCInput):
+                        self._stdio_watch_queue.put(event.address)
+                    elif isinstance(event, StopInput):
+                        self._stdio_stop_requested.set()
+            else:
+                while data := sys.stdin.buffer.read(1):
+                    self._serial_input_queue.put(data[0])
+
+        if self.stdin_device is not None:
+            # Enter cbreak before the reader starts, and leave it from
+            # this thread: the reader is a daemon and would be killed
+            # without unwinding, stranding the user's terminal.
+            if self.stdin_device in CHORD_STDIN_DEVICES:
+                terminal.enter_context(_keystrokes_unbuffered())
+            if self.stdin_device in ("6-key", "6-key-dvorak"):
+                # Ask for key releases, and hold whatever was asked
+                # for on this thread: the exit stack undoes it however
+                # the run ends, where the reader - a daemon blocked in
+                # a read - would never undo anything.  A native
+                # console reports transitions directly; a pty has to
+                # be asked, and leaving that mode enabled would hand
+                # the user's shell records instead of characters.
+                if sys.platform == "win32":
+                    with contextlib.suppress(OSError):
+                        console_reader = terminal.enter_context(
+                            windows_console_key_events()
+                        )
+                if console_reader is None:
+                    terminal.enter_context(win32_input_mode(_terminal_fd()))
+            stdin_thread = threading.Thread(
+                target=read_stdin,
+                daemon=True,
+                name="bns-stdin",
+            )
+            stdin_thread.start()
+            stdin_started.wait()
+            print(f"Input: STDIN ({self.stdin_device})")
+        return input_driver
+
     def run(self, max_cycles: int = 0) -> None:
         """Run emulation.
 
@@ -1092,73 +1432,15 @@ class BNS:
         input_driver: ChordInputDriver | None = None
         pc_watch_reported = False
         terminal = contextlib.ExitStack()
-        if self.stdin_device is not None or self.reset_mode is not None:
-            if self.stdin_device in ("keyboard", "jsonl") or self.reset_mode is not None:
-                if self._input_boundary is None:
-                    if self.reset_mode is not None:
-                        raise RuntimeError(
-                            "chord-acceptance addresses were not discovered "
-                            "in this firmware; reset is unavailable"
-                        )
-                    print(
-                        "[Input] chord-acceptance addresses not discovered "
-                        "in this firmware; keyboard input disabled"
-                    )
-                else:
-                    input_driver = ChordInputDriver(self)
-                    self._input_driver = input_driver
-                if input_driver is not None and self.reset_mode is not None:
-                    input_driver.start_reset(self.reset_mode)
-
-            stdin_started = threading.Event()
-
-            def read_stdin() -> None:
-                stdin_started.set()
-                if self.stdin_device == "keyboard":
-                    while character := _read_stdin_character():
-                        input_driver.queue.put(character)
-                elif self.stdin_device == "jsonl":
-                    for line in sys.stdin:
-                        try:
-                            event = parse_input_event(line)
-                        except ValueError as error:
-                            self._stdin_error_queue.put(error)
-                            return
-                        if isinstance(event, KeyboardInput):
-                            if isinstance(event.value, str):
-                                for character in event.value:
-                                    input_driver.queue.put(character)
-                            else:
-                                input_driver.queue.put(event.value)
-                        elif isinstance(event, SerialInput):
-                            for byte in event.data:
-                                self._stdio_serial_input_queues[event.channel].put(byte)
-                        elif isinstance(event, WatchPCInput):
-                            self._stdio_watch_queue.put(event.address)
-                        elif isinstance(event, StopInput):
-                            self._stdio_stop_requested.set()
-                else:
-                    while data := sys.stdin.buffer.read(1):
-                        self._serial_input_queue.put(data[0])
-
-            if self.stdin_device is not None:
-                # Enter cbreak before the reader starts, and leave it from
-                # this thread: the reader is a daemon and would be killed
-                # without unwinding, stranding the user's terminal.
-                if self.stdin_device == "keyboard":
-                    terminal.enter_context(_keystrokes_unbuffered())
-                stdin_thread = threading.Thread(
-                    target=read_stdin,
-                    daemon=True,
-                    name="bns-stdin",
-                )
-                stdin_thread.start()
-                stdin_started.wait()
-                print(f"Input: STDIN ({self.stdin_device})")
-
         cycles_run = 0
         start_wall = time.perf_counter()
         try:
+            # Under the cleanup handler, not before it: a control key
+            # pressed while this is still connecting has to unwind
+            # through the same finally as one pressed a minute later.
+            input_driver = self._start_input(terminal)
+            self._arm_controls()
+            start_wall = time.perf_counter()
             while max_cycles == 0 or cycles_run < max_cycles:
                 try:
                     stdin_error = self._stdin_error_queue.get_nowait()
@@ -1267,6 +1549,7 @@ class BNS:
         except KeyboardInterrupt:
             print("\nEmulation stopped by user")
         finally:
+            self._disarm_controls()
             terminal.close()
             if self.synth:
                 self.synth.stop()
