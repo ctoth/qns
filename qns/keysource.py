@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 from dataclasses import dataclass
 
 ENABLE_WIN32_INPUT_MODE = "\x1b[?9001h"
@@ -162,11 +163,36 @@ def _parse_record(payload: bytes) -> KeyEvent | None:
     )
 
 
-STD_INPUT_HANDLE = -10
 KEY_EVENT = 0x0001
 ENABLE_PROCESSED_INPUT = 0x0001
 ENABLE_LINE_INPUT = 0x0002
 ENABLE_ECHO_INPUT = 0x0004
+
+
+def stdin_console_handle() -> int:
+    """The OS handle behind the *current* `sys.stdin`.
+
+    Deliberately not `GetStdHandle`: a caller may hold a console and
+    still have replaced `sys.stdin` with a pipe - a test harness driving
+    the emulator does exactly that - and opening the process console then
+    would read the user's keyboard instead of the stream it was handed.
+    Whether the handle is a console at all is left to `GetConsoleMode`.
+
+    Raises OSError when stdin has no OS handle to speak of.
+    """
+    import msvcrt
+
+    try:
+        fileno = sys.stdin.fileno()
+    except (AttributeError, ValueError, OSError) as error:
+        raise OSError("standard input has no descriptor") from error
+    try:
+        handle = msvcrt.get_osfhandle(fileno)
+    except OSError as error:
+        raise OSError("standard input has no OS handle") from error
+    if handle in (0, -1):
+        raise OSError("no standard input handle")
+    return handle
 
 
 def _console_input_structures():
@@ -208,16 +234,15 @@ def windows_console_key_events():
     must act on `KeyEvent.interrupt` itself.  Ctrl-Break is not enough on
     its own: not every keyboard has the key.
 
-    Raises OSError when standard input is not a console - a redirected
-    stdin, for instance - so the caller can fall back.
+    Raises OSError when the current standard input is not a console - a
+    redirected stdin, or one a caller substituted - so the caller can
+    fall back to reading that stream instead.
     """
+    handle = stdin_console_handle()
     ctypes, InputRecord = _console_input_structures()
     from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
-    if handle == wintypes.HANDLE(-1).value or not handle:
-        raise OSError("no standard input handle")
 
     saved = wintypes.DWORD()
     if not kernel32.GetConsoleMode(handle, ctypes.byref(saved)):

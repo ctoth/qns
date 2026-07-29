@@ -1,5 +1,6 @@
 """Six-key Braille entry: decoding key transitions and assembling chords."""
 
+import io
 import os
 
 from qns.bns import _six_key_reader
@@ -261,6 +262,30 @@ def test_f4_exits_and_f5_restarts(monkeypatch):
 def test_ctrl_c_still_asks_to_exit(monkeypatch):
     chords, actions = _control_actions(CTRL_C_RECORD, monkeypatch)
     assert (chords, actions) == ([], ["exit"])
+
+
+def test_console_handle_follows_the_current_stdin(monkeypatch):
+    """A substituted stdin must not be bypassed for the process console."""
+    import sys
+    import types
+
+    import pytest
+
+    from qns.keysource import stdin_console_handle
+
+    asked = []
+    fake_msvcrt = types.ModuleType("msvcrt")
+    fake_msvcrt.get_osfhandle = lambda fd: asked.append(fd) or 0x1234
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+
+    monkeypatch.setattr(sys, "stdin", _PipeStdin(7))
+    assert stdin_console_handle() == 0x1234
+    assert asked == [7]
+
+    # A stream with no descriptor at all has no handle to offer.
+    monkeypatch.setattr(sys, "stdin", io.StringIO("fd\n"))
+    with pytest.raises(OSError):
+        stdin_console_handle()
 
 
 def test_six_key_is_rejected_for_the_typewriter_model():
