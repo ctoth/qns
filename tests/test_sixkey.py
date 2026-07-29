@@ -208,6 +208,56 @@ def test_reader_stops_reading_at_ctrl_c(monkeypatch):
     assert chords == []
 
 
+def _bare_machine(*, armed: bool):
+    """A machine with only the control-request state its methods touch."""
+    import threading
+
+    import qns.bns
+
+    machine = qns.bns.BNS.__new__(qns.bns.BNS)
+    machine.restart_requested = False
+    machine._control_lock = threading.Lock()
+    machine._controls_armed = armed
+    machine._pending_control = None
+    return machine
+
+
+def test_a_control_pressed_before_the_run_loop_waits_for_it(monkeypatch):
+    """An early F5 must not interrupt setup, where nothing cleans up.
+
+    The reader is running before the run loop reaches its try/finally,
+    so a key already queued would otherwise raise KeyboardInterrupt into
+    the terminal setup: raw terminal left raw, audio left running, and
+    the restart the key asked for never performed.
+    """
+    import pytest
+
+    import qns.bns
+
+    interrupted = []
+    monkeypatch.setattr(qns.bns, "_interrupt_emulation",
+                        lambda: interrupted.append(True))
+
+    machine = _bare_machine(armed=False)
+    machine._request_control("restart")
+
+    # Recorded, but the main thread is left alone until it can unwind.
+    assert machine.restart_requested is True
+    assert interrupted == []
+
+    # Arming is the run loop saying its cleanup handler is in place; the
+    # held control is honoured there, through the same exit as any other.
+    with pytest.raises(KeyboardInterrupt):
+        machine._arm_controls()
+
+    # And it is honoured once only.
+    machine._arm_controls()
+
+    machine._disarm_controls()
+    machine._request_control("exit")
+    assert interrupted == []
+
+
 def test_control_requests_unwind_the_run_loop(monkeypatch):
     """Both controls leave through the run loop's KeyboardInterrupt path."""
     import qns.bns
@@ -216,8 +266,7 @@ def test_control_requests_unwind_the_run_loop(monkeypatch):
     monkeypatch.setattr(qns.bns, "_interrupt_emulation",
                         lambda: interrupted.append(True))
 
-    machine = qns.bns.BNS.__new__(qns.bns.BNS)
-    machine.restart_requested = False
+    machine = _bare_machine(armed=True)
 
     machine._request_control("exit")
     assert interrupted == [True]
