@@ -6,9 +6,10 @@ from pathlib import Path
 from types import MethodType
 
 from qns.bns import BNS
+from qns.paths import resolve_state_path
 
 ROM = Path("roms/bns2000/BS2ENG.BNS")
-STATE = Path("flash.bin")
+STATE = resolve_state_path("flash.bin")
 MAX_CYCLES = 100_000_000
 BufferWrite = tuple[int, int, int, int]
 

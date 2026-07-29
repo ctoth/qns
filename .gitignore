@@ -31,3 +31,6 @@ roms/
 # Rendered audio and traces from manual listening tests.  Nothing in the
 # tree reads these; regenerate with tools/render_speech.py.
 out/
+
+# Emulator session output (nonvolatile RAM/flash state)
+/session_state/
