@@ -216,8 +216,16 @@ class BNS:
         # granularity of that sleep.  1000 cycles is 81 us at 12.288 MHz -
         # far below the host's sleep resolution - so pace in ~1 ms chunks
         # instead, still two orders of magnitude finer than a phoneme.
-        self._chunk_cycles = 12_288 if realtime else 1000
+        # The shortest real English utterance writes SPBUF 424 cycles before
+        # its exact capture boundary.  Drain native write events within that
+        # interval so the observer can switch to exact instruction stepping.
+        self._chunk_cycles = (
+            256
+            if english_callback is not None
+            else (12_288 if realtime else 1000)
+        )
         self._english_capture_cycle: int | None = None
+        self._english_capture_armed = False
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
         self._stdio_serial_input_queues = (queue.Queue(), queue.Queue())
         self._stdio_watch_queue: queue.Queue[int] = queue.Queue()
@@ -440,6 +448,7 @@ class BNS:
             and physical_pc == boundary.capture_addr
         ):
             self._capture_english_boundary(boundary)
+            self._english_capture_armed = False
 
     def _observe_input_boundary(self, physical_pc: int) -> None:
         """Update firmware input epochs at one physical instruction address."""
@@ -499,6 +508,16 @@ class BNS:
     def _observe_write(self, addr: int, value: int, *, pc: int, cycle: int) -> None:
         """Apply QNS write observers after z-core has stored internal RAM."""
         self.stats['writes'] += 1
+
+        boundary = self._english_boundary
+        if self._english_callback is not None and boundary is not None:
+            common_page = self.memory.cbar >> 4
+            if boundary.spbuf >> 12 >= common_page:
+                physical_spbuf = (
+                    boundary.spbuf + (self.memory.cbr << 12)
+                ) & 0xFFFFF
+                if addr == physical_spbuf:
+                    self._english_capture_armed = True
 
         # Count only the linked STARTA instruction that opens another command-loop
         # epoch.  The same timer is also cleared during early RAM initialization.
@@ -879,7 +898,7 @@ class BNS:
         keeping up with real-time speech and falling behind it.
         """
         return any((
-            self._english_callback is not None,
+            self._english_capture_armed,
             (
                 self.gas_gauge is not None
                 and self.gas_gauge.cycle_timing_active
@@ -942,6 +961,7 @@ class BNS:
     def load_rom(self, path: Path | str) -> None:
         """Load a pre-extracted .bin, raw firmware image, or update package."""
         path = Path(path)
+        self._english_capture_armed = False
         image = load_firmware(path)
         if image.kind == "pre-extracted":
             print(f"Loading pre-extracted firmware: {path.name}")
@@ -1034,6 +1054,7 @@ class BNS:
     def reset(self) -> None:
         """Reset the emulator."""
         self.cpu.reset()
+        self._english_capture_armed = False
         if self.core == "direct":
             self._applied_irq_states = {0: None, 1: None, 2: None}
             self._callback_cycle = 0

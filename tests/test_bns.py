@@ -348,6 +348,57 @@ def test_english_speech_ignores_unrelated_instruction_fetches():
     assert spoken == []
 
 
+def test_english_capture_steps_only_between_spbuf_write_and_boundary(tmp_path):
+    from test_loader import make_mfull3_image
+
+    capture_site = 0xBC9A
+    spbuf = 0xD658
+    rom_path = tmp_path / "signature.rom"
+    rom_path.write_bytes(make_mfull3_image(capture_site, spbuf))
+    spoken = []
+    bns = BNS(
+        model="bs2",
+        core="direct",
+        realtime=True,
+        english_callback=spoken.append,
+    )
+    bns.load_rom(rom_path)
+
+    bns.memory.ram[:10] = bytes((
+        0x3E, 0x34,
+        0xED, 0x39, 0x38,
+        0x3E, 0xC6,
+        0xED, 0x39, 0x3A,
+    ))
+    for _ in range(4):
+        bns.step()
+
+    assert not bns._requires_instruction_steps()
+    assert bns._chunk_cycles < 424
+
+    bns._observe_write(0x00658, ord("x"), pc=0, cycle=10)
+    assert not bns._requires_instruction_steps()
+
+    message = b"enter file command"
+    physical_spbuf = (0x34 << 12) + spbuf
+    bns._observe_write(physical_spbuf + 1, ord("x"), pc=0, cycle=15)
+    assert not bns._requires_instruction_steps()
+
+    for offset, value in enumerate(message):
+        bns.memory.write(physical_spbuf + offset, value)
+    bns._observe_write(physical_spbuf, message[0], pc=0, cycle=20)
+
+    assert bns._requires_instruction_steps()
+
+    bns.cpu.set_reg(Reg.HL, spbuf)
+    bns.cpu.set_reg(Reg.BC, 4)
+    bns.cpu.set_reg(Reg.PC, capture_site)
+    bns._observe_instruction_boundary()
+
+    assert spoken == ["enter file command"]
+    assert not bns._requires_instruction_steps()
+
+
 def test_tns_owns_source_defined_hardware_ports():
     """TNS must not inherit the incompatible BSPLUS or BL4 port map."""
     bns = BNS(model="tns")

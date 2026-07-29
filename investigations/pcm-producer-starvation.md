@@ -48,24 +48,29 @@
 | Real Windows combined run | Surviving combined theory | 100,000,002 cycles and 84 phonemes completed in 8.85 seconds; all events queued within 0.75 seconds; 2.983 seconds of PCM occupied a continuous 2.970-second callback span with zero internal silent callbacks | Remaining phoneme-scale silence in the callback output | Combined fix removes measured producer starvation and inserted gaps |
 | Exact-command audit | English streaming is still on the fast path | `_requires_instruction_steps()` returns true whenever `english_callback` is installed | The previous live run as proof for the user's command | The user's exact command still takes the slow producer path |
 | Exact ROM SPBUF lead measurement | SPBUF writes can arm exact stepping | The valid startup message had 57 SPBUF writes; the first preceded capture by 1,469,173 cycles, while the last preceded it by only 374 cycles | Delayed capture after a native chunk | Arm on the first SPBUF write, then step through the exact boundary |
+| First dynamic-arm implementation | Every SPBUF write can arm capture | The exact callback log still had a 25.83-second audio span and 216 internal silent callbacks; 75 post-capture SPBUF writes began 2,630 cycles after capture and left the arm true | Simple arm-on-any-SPBUF-write state | Pre-capture text construction must be distinguished from post-capture translation |
+| SPBUF writer-PC split | Pre- and post-capture phases have distinct writers | Pre-capture writes came from `78C4`, `78C7`, `78E0`, `78E4`, `78EB`, `78FA`, `790B`, `7A6C`, `BC5F`, `BF2B`, `BFB1`, and `BFBC`; post-capture writes came from `3CFC`, `9869`, `9D97`, `A184`, `A189`, and `A2D6`, with no overlap | Writer identity as a possible exact phase discriminator | Summarize each writer's offsets, values, and temporal position before choosing an arming predicate |
+| Per-utterance precursor test | The write at `capture_addr - 0x11` is a repeatable early precursor | Rejected: `BC5F` occurred only before startup and did not precede the next four captures | ROM-relative precursor | Use the exact SPBUF-start write instead |
+| Exact SPBUF-start lead | A bounded native chunk can expose the exact buffer-start write before capture | Five real captures (`initialize...`, `Braille...ready`, `help`, `1`, `page`) had first-SPBUF-write leads of 5,783, 5,505, 571, 424, and 755 cycles; the post-capture translation writes started above SPBUF, never at its exact address | Unbounded 12,288-cycle observation and broad 256-byte arming range | Observe in 256-cycle native chunks and arm only on the exact physical SPBUF address |
+| Exact-command callback log after narrow arming | The bounded exact-address observer removes producer starvation | Enqueue span fell from 26.12 to 3.37 seconds, callback span fell from 25.83 to 3.14 seconds, and internal silent callbacks fell from 216 to 1 | English-observer producer starvation | Keep the bounded observer slice; isolate the one remaining callback |
+| Remaining callback location | One phoneme gap remains | The sole internal silent callback was at 0.592 seconds, after a callback played only the ten accumulated one-frame control samples and before the first 2,301-frame speech enqueue at 0.629 seconds | Phoneme starvation | No phoneme PCM is separated by silence; the remaining raw gap is initial priming releasing on control samples |
 
 ## Current Best Theory
 
-The exact command can remain on native execution until the first write that
-builds SPBUF. That write is observed more than 1.4 million cycles before the
-capture boundary on the supplied ROM. QNS can then use the existing exact
-instruction-entry capture and return to native execution immediately after it.
-Capturing from a delayed event is still invalid because the last SPBUF write is
-only 374 cycles before the boundary.
+The exact-address observer fixes the English-path producer starvation: all
+spoken PCM is delivered without an internal silent callback. One raw callback
+gap remains before spoken PCM because the player's short-utterance fallback
+releases priming after accumulating only ten one-frame control samples. The
+observer slice is independently measured and should be committed before a
+separate player-priming slice.
 
 ## Open Questions
 
-- Does the exact command retain the same English line when dynamic arming is
-  enabled?
-- Does its real PCM callback log contain zero internal silent callbacks?
+- Can initial priming ignore one-frame control samples while preserving the
+  short-utterance fallback once real speech has arrived?
 
 ## Next Action
 
-Write a regression proving that an English callback alone uses native
-execution, a physical SPBUF write arms stepping, and the exact capture disarms
-it. Then validate the user's exact command with live PCM logging.
+Commit the bounded exact-address observer after its 349-passed, 8-skipped full
+suite, passing Ruff gate, and clean diff audit. Afterward, start a separate
+test-first slice for the player's pre-speech control-sample priming behavior.
