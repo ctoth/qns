@@ -944,6 +944,50 @@ def test_direct_external_write_callback_does_not_reenter_machine():
     assert bns.stats["writes"] == 1
 
 
+def test_flash_profile_without_active_observers_uses_bulk_execution():
+    bns = BNS(model="bs2", core="direct")
+
+    assert not bns._requires_instruction_steps()
+
+    bns._callback_cycle = 100
+    bns._io_write(0xA0, 0x00)
+
+    assert bns._requires_instruction_steps()
+
+    bns._callback_cycle = 903_480
+    bns._io_write(0xA0, 0x20)
+
+    assert not bns._requires_instruction_steps()
+
+
+def test_direct_bulk_execution_preserves_flash_programming():
+    bns = BNS(model="bs2", core="direct")
+    bns.memory.set_high_bank_latch(0x08)
+    bns.memory.load_rom(bytes((
+        0x3E, 0x76,        # LD A,76h
+        0xED, 0x39, 0x38,  # OUT0 (CBR),A
+        0x3E, 0xAA,        # LD A,AAh
+        0x32, 0x55, 0xF5,  # LD (F555h),A -> physical 85555h
+        0x3E, 0x73,        # LD A,73h
+        0xED, 0x39, 0x38,  # OUT0 (CBR),A
+        0x3E, 0x55,        # LD A,55h
+        0x32, 0xAA, 0xFA,  # LD (FAAAh),A -> physical 82AAAh
+        0x3E, 0x76,        # LD A,76h
+        0xED, 0x39, 0x38,  # OUT0 (CBR),A
+        0x3E, 0xA0,        # LD A,A0h
+        0x32, 0x55, 0xF5,  # LD (F555h),A -> physical 85555h
+        0x3E, 0x72,        # LD A,72h
+        0xED, 0x39, 0x38,  # OUT0 (CBR),A
+        0x3E, 0x5A,        # LD A,5Ah
+        0x32, 0x34, 0xF2,  # LD (F234h),A -> physical 81234h
+        0x76,              # HALT
+    )))
+
+    bns.cpu.run(400)
+
+    assert bns.memory.flash[0x1234] == 0x5A
+
+
 def test_direct_event_overflow_is_a_fatal_observer_error():
     """Lost native write events must never be cleared and ignored."""
     bns = BNS(core="direct")

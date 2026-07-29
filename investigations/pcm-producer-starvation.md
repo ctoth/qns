@@ -34,26 +34,24 @@
 |------|------------|--------|-----------|----------|
 | Live `--audio-log` BS2 capture | Callback/device failure | Regular callback cadence, no status errors, 46.06 seconds of player-inserted silence | Irregular PortAudio callback cadence and PCM stretching | Producer-side starvation |
 | `analyze_pcm_log.py` reduction | Emulator gaps vs re-priming vs bad chunks | 30 speech chunks were normal 35-108 ms PCM; enqueue gaps left 17.83 seconds uncovered, typically about 0.54 seconds per spoken phoneme | Pathological one-frame speech generation; re-priming as the sole cause | Emulator execution is much slower than the SSI-263 audio timeline |
+| Combined red regressions | Coupled native-execution and player-state failure | Idle BS2 required stepping; post-start underrun re-entered priming and requested no run-ahead; native flash programming already passed | Either prior fix being sufficient by itself | Both production changes are required together |
+| Real Windows combined run | Surviving combined theory | 100,000,002 cycles and 84 phonemes completed in 8.85 seconds; all events queued within 0.75 seconds; 2.983 seconds of PCM occupied a continuous 2.970-second callback span with zero internal silent callbacks | Remaining phoneme-scale silence in the callback output | Combined fix removes measured producer starvation and inserted gaps |
 
 ## Current Best Theory
 
-The Windows direct core is forced through Python instruction stepping for this
-BS2 profile, making ordinary SSI-263 events arrive about six times slower than
-their PCM duration. AudioPlayer re-primes after every resulting underrun, so a
-native-execution fix alone can still suffer a new 400 ms hold whenever a small
-timing miss drains the queue. The two previously rejected changes addressed
-these coupled causes separately; the evidence predicts that both are required
-together.
+Confirmed. The Windows direct core was forced through Python instruction
+stepping for this BS2 profile, making ordinary SSI-263 events arrive about six
+times slower than their PCM duration. AudioPlayer then re-primed after every
+resulting underrun. Safe native execution and continuous post-start playback
+must be retained together.
 
 ## Open Questions
 
-- Does the emulator spend the gaps executing, sleeping, or waiting for the
-  player reservoir?
-- Does combining safe native execution with continuous post-start playback keep
-  the producer ahead of callbacks on the real Windows run?
+- Does physical listening on the user's Windows output agree with the callback
+  continuity proof?
 
 ## Next Action
 
-Inspect the two reverted slices and current instruction-step authorities, then
-write a regression for their combined requirement before changing production
-code.
+Commit the combined fix and diagnostic record, then hand the exact command to
+the user for physical listening. Automated gate: 348 passed, 8 skipped; Ruff
+passed.

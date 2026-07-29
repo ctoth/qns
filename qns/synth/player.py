@@ -155,7 +155,7 @@ class AudioPlayer:
         """Emulator lead needed to restore the active audio reservoir."""
         with self._lock:
             if self._queued_frames <= 0:
-                return 0.0
+                return 0.0 if self._priming else self._prime_frames / self.sample_rate
             missing = max(0, self._prime_frames - self._queued_frames)
             return missing / self.sample_rate
 
@@ -226,11 +226,6 @@ class AudioPlayer:
                 outdata[available:, 0] = 0
                 self._playing = False
                 self._queued_frames = max(0, self._queued_frames - available)
-                # Ran dry.  Rebuild the reservoir before resuming, so one
-                # late phoneme does not leave us on the same knife-edge
-                # for every phoneme after it.
-                self._priming = True
-                self._primed_waits = 0
                 audio_frames = available
 
             self._log_event(
