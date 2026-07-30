@@ -31,3 +31,25 @@ roms/
 # Rendered audio and traces from manual listening tests.  Nothing in the
 # tree reads these; regenerate with tools/render_speech.py.
 out/
+
+# Local binary and generated artifact types
+*.bat
+*.bin
+*.bns
+*.dvc
+*.exe
+*.gpr
+*.ima
+*.jpg
+*.lock
+!uv.lock
+*.lock~
+*.mp3
+*.pdf
+*.png
+*.rep/
+*.sqlite3
+*.txt
+*.wav
+*.zip
+0x[0-9A-Fa-f][0-9A-Fa-f]_
