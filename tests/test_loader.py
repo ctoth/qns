@@ -1,5 +1,7 @@
 """Firmware loader and boundary-discovery tests."""
 
+from pathlib import Path
+
 import pytest
 
 from qns.loader import (
@@ -81,26 +83,48 @@ HANDLER_AS_LINKED = bytes.fromhex(
     "18b0"  # EHTONE: PITCH
 )
 
-DOPITCH_AS_LINKED = bytes.fromhex(
-    "fe3c2801"  # CP PITCHDN; JR Z,LOW1
-    "fe3d2802"  # CP PITCHNM; JR Z,NORMAL
-    "fe3ec0"  # CP PITCHUP; RET NZ
-    "3a20d6"
-    "c61b"
-    "1801"  # LD A,(INFL); ADD A,1Bh; JR DOPIT0
-    "3a20d6"
-    "d61b"
-    "3001"  # LD A,(INFL); SUB 1Bh; JR NC,DOPIT0
-    "3a1ed6"  # LD A,(NINFL)
-    "f5"
-    "3a05da"  # PUSH AF; LD A,(_VIFLAG)
-    "cb47"
-    "2801"
-    "f1"  # BIT 0,A; JR Z,DOPIT1; POP AF
-    "3220d6"
-    "321fd6"  # LD (INFL),A; LD (NXTINFL),A
-    "ed39c1"  # OUT0 (SSI263+1),A
-)
+DOPITCH_AS_LINKED = {
+    "nfb99": bytes.fromhex(
+        "fe3c280e"  # CP PITCHDN; JR Z,LOW1
+        "fe3d2811"  # CP PITCHNM; JR Z,NORMAL
+        "fe3ec0"  # CP PITCHUP; RET NZ
+        "3a20d6"
+        "c61b"
+        "180a"  # LD A,(INFL); ADD A,1Bh; JR DOPIT0
+        "3a20d6"
+        "d61b"
+        "3003"  # LD A,(INFL); SUB 1Bh; JR NC,DOPIT0
+        "3a1ed6"  # LD A,(NINFL)
+        "f5"
+        "3a00da"  # PUSH AF; LD A,(_VIFLAG)
+        "cb47"
+        "280f"
+        "f1"  # BIT 0,A; JR Z,DOPIT1; POP AF
+        "3220d6"
+        "321fd6"  # LD (INFL),A; LD (NXTINFL),A
+        "ed39c1"  # OUT0 (SSI263+1),A
+    ),
+    "2003": bytes.fromhex(
+        "fe3c280e"  # CP PITCHDN; JR Z,LOW1
+        "fe3d2811"  # CP PITCHNM; JR Z,NORMAL
+        "fe3ec0"  # CP PITCHUP; RET NZ
+        "3a20d6"
+        "c61b"
+        "180a"  # LD A,(INFL); ADD A,1Bh; JR DOPIT0
+        "3a20d6"
+        "d61b"
+        "3003"  # LD A,(INFL); SUB 1Bh; JR NC,DOPIT0
+        "3a1ed6"  # LD A,(NINFL)
+        "f5"
+        "3a04da"  # PUSH AF; LD A,(_VIFLAG)
+        "cb47"
+        "280f"
+        "f1"  # BIT 0,A; JR Z,DOPIT1; POP AF
+        "3220d6"
+        "321fd6"  # LD (INFL),A; LD (NXTINFL),A
+        "ed39c1"  # OUT0 (SSI263+1),A
+    ),
+}
 
 MFULL3_SHAPES = ("bsp", "nfb99-braille-lite", "2003-braille-lite")
 
@@ -325,10 +349,15 @@ def make_isset_image(size: int = 0x10000, offset: int = 0x02D7) -> bytes:
     return bytes(image)
 
 
-def make_dopitch_image(size: int = 0x10000, offset: int = 0x4200) -> bytes:
-    """Place the linked English DOPITCH shape into an empty image."""
+def make_dopitch_image(
+    revision: str = "nfb99",
+    size: int = 0x10000,
+    offset: int = 0x4200,
+) -> bytes:
+    """Place one supported linked English DOPITCH shape into an empty image."""
     image = bytearray(size)
-    image[offset : offset + len(DOPITCH_AS_LINKED)] = DOPITCH_AS_LINKED
+    dopitch = DOPITCH_AS_LINKED[revision]
+    image[offset : offset + len(dopitch)] = dopitch
     return bytes(image)
 
 
@@ -342,7 +371,37 @@ def test_find_speech_parameters_recovers_linked_addresses():
     )
 
 
-def test_find_voice_inflection_flag_recovers_linked_address():
+@pytest.mark.parametrize(
+    ("revision", "expected_flag"),
+    (
+        ("nfb99", 0x41A00),
+        ("2003", 0x41A04),
+    ),
+)
+def test_find_voice_inflection_flag_recovers_each_linked_revision(
+    revision,
+    expected_flag,
+):
     from qns.loader import find_voice_inflection_flag
 
-    assert find_voice_inflection_flag(make_dopitch_image()) == 0x41A05
+    assert find_voice_inflection_flag(make_dopitch_image(revision)) == expected_flag
+
+
+@pytest.mark.parametrize("revision", DOPITCH_AS_LINKED)
+def test_find_fifth_retained_speech_cell_is_relative_to_voice_flag(revision):
+    from qns.loader import (
+        find_fifth_retained_speech_cell,
+        find_voice_inflection_flag,
+    )
+
+    image = make_dopitch_image(revision)
+    voice_flag = find_voice_inflection_flag(image)
+
+    assert voice_flag is not None
+    assert find_fifth_retained_speech_cell(image) == voice_flag + 2
+
+
+def test_claude_documents_that_warm_reset_legitimately_reverts_speech_settings():
+    documentation = (Path(__file__).resolve().parents[1] / "CLAUDE.md").read_text(encoding="utf-8")
+
+    assert "warm reset legitimately reverts retained speech settings" in documentation.lower()

@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 import subprocess
 import sys
 from io import BytesIO, StringIO
@@ -27,8 +28,13 @@ from qns.input_driver import (
     keyboard_input_chord,
     tns_input_scan,
 )
-from qns.loader import InputBoundary
+from qns.loader import (
+    InputBoundary,
+    find_voice_inflection_flag,
+    load_firmware,
+)
 from qns.profiles import PROFILES
+from qns.ssi263 import SSI263State
 from qns.stdio import JSONLOutput
 
 # Chord-acceptance addresses of the linked NFB99 English ROMs, as
@@ -43,6 +49,14 @@ INPUT_BOUNDARIES: dict[str, InputBoundary] = {
     "bl4": InputBoundary(0x433F0, 0x41A3B, 0x1FC0, 0x4165A, 0x0B36, 0x414B6),
     "tns": InputBoundary(0x4329D, 0x41A38, 0x1E16, 0x41659, 0x0AF9, 0x414B5),
 }
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ROM_ROOT = Path(os.environ.get("QNS_ROM_ROOT", REPO_ROOT / "roms"))
+REAL_BSP_REVISIONS = (
+    ("nfb99", Path("bspeng.bns"), 0x41A00),
+    ("2003", Path("bns640/BSPENG.BNS"), 0x41A04),
+)
+DEFAULT_FILTER_FREQUENCY_TRACE = (0xFF,) * 3 + (0xF1,) * 113
 
 
 @pytest.mark.parametrize("image_offset", [0x3000, 0x7000, 0x8000])
@@ -74,16 +88,69 @@ def test_load_rom_rejects_update_package_without_valid_image_crc(tmp_path):
         bns.load_rom(package_path)
 
 
-def test_fresh_ram_enables_firmware_voice_inflection(tmp_path):
+@pytest.mark.parametrize(
+    ("revision", "expected_voice_flag"),
+    (
+        ("nfb99", 0x41A00),
+        ("2003", 0x41A04),
+    ),
+)
+def test_fresh_ram_seeds_all_discovered_retained_speech_flags(
+    tmp_path,
+    revision,
+    expected_voice_flag,
+):
     from test_loader import make_dopitch_image
 
     rom_path = tmp_path / "dopitch.rom"
-    rom_path.write_bytes(make_dopitch_image())
+    rom_path.write_bytes(make_dopitch_image(revision))
     bns = BNS(model="bs2")
 
     bns.load_rom(rom_path)
 
-    assert bns.memory.read(0x41A05) == 1
+    assert bns.memory.read(expected_voice_flag) == 1
+    assert bns.memory.read(expected_voice_flag + 2) == 2
+
+
+@pytest.mark.parametrize(
+    ("revision", "relative_rom", "expected_voice_flag"),
+    REAL_BSP_REVISIONS,
+)
+def test_real_bsp_revision_seeds_fifth_cell_without_changing_default_filter_trace(
+    revision,
+    relative_rom,
+    expected_voice_flag,
+):
+    """Local ROM authority; proprietary packages are deliberately absent in CI."""
+    from qns.loader import find_fifth_retained_speech_cell
+
+    rom = ROM_ROOT / relative_rom
+    if not rom.is_file():
+        pytest.skip(f"local proprietary {revision} BSP ROM is unavailable: {rom}")
+
+    firmware = load_firmware(rom).data
+    voice_flag = find_voice_inflection_flag(firmware)
+    fifth_cell = find_fifth_retained_speech_cell(firmware)
+    assert voice_flag == expected_voice_flag
+    assert fifth_cell == expected_voice_flag + 2
+
+    states: list[SSI263State] = []
+
+    class CaptureBackend:
+        def play(self, state: SSI263State) -> None:
+            states.append(state)
+
+        def realtime_lead_seconds(self) -> float:
+            return 0.0
+
+    bns = BNS(model="bsp", core="direct")
+    bns.load_rom(rom)
+    assert bns.memory.read(fifth_cell) == 2
+    bns.ssi263.set_synth(CaptureBackend())
+
+    bns.run(max_cycles=80_000_000)
+
+    assert tuple(state.filter_freq for state in states) == DEFAULT_FILTER_FREQUENCY_TRACE
 
 
 def test_english_stdio_characters_use_firmware_keyboard_chords():
