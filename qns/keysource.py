@@ -147,14 +147,14 @@ class Win32InputDecoder:
             if final is None:
                 break  # incomplete CSI; wait for more bytes
             if buffer[final] == 0x5F:  # '_'
-                event = _parse_record(bytes(buffer[escape + 2:final]))
+                event = _parse_record(bytes(buffer[escape + 2 : final]))
                 if event is not None:
                     events.append(event)
             else:
                 # Some other CSI sequence - a status reply, or an ordinary
                 # key from a terminal that ignored the mode.  Hand it back
                 # as text so the caller's fallback can make sense of it.
-                text.append(buffer[escape:final + 1].decode("latin-1"))
+                text.append(buffer[escape : final + 1].decode("latin-1"))
             index = final + 1
 
         del buffer[:index]
@@ -180,16 +180,33 @@ class Win32InputDecoder:
 # Final bytes that name a key: CSI arrows and Home/End, and the SS3
 # finals xterm sends for F1-F4.
 _VT_FINAL_KEYS = {
-    "A": VK_UP, "B": VK_DOWN, "C": VK_RIGHT, "D": VK_LEFT,
-    "H": VK_HOME, "F": VK_END,
-    "P": VK_F1, "Q": VK_F2, "R": VK_F3, "S": VK_F4,
+    "A": VK_UP,
+    "B": VK_DOWN,
+    "C": VK_RIGHT,
+    "D": VK_LEFT,
+    "H": VK_HOME,
+    "F": VK_END,
+    "P": VK_F1,
+    "Q": VK_F2,
+    "R": VK_F3,
+    "S": VK_F4,
 }
 
 # The numbers a `CSI n ~` sequence names a key with.
 _VT_TILDE_KEYS = {
-    1: VK_HOME, 2: VK_INSERT, 3: VK_DELETE, 4: VK_END,
-    5: VK_PRIOR, 6: VK_NEXT, 7: VK_HOME, 8: VK_END,
-    11: VK_F1, 12: VK_F2, 13: VK_F3, 14: VK_F4, 15: VK_F5,
+    1: VK_HOME,
+    2: VK_INSERT,
+    3: VK_DELETE,
+    4: VK_END,
+    5: VK_PRIOR,
+    6: VK_NEXT,
+    7: VK_HOME,
+    8: VK_END,
+    11: VK_F1,
+    12: VK_F2,
+    13: VK_F3,
+    14: VK_F4,
+    15: VK_F5,
 }
 
 # Control characters that are a key in their own right.  Return is not
@@ -217,18 +234,13 @@ def _parse_vt_sequence(text: str) -> tuple[int, KeyEvent | None]:
         return 1, KeyEvent(vk=VK_ESCAPE, scan=0, char="", down=True)
 
     index = 2
-    while index < len(text) and not (
-        _CSI_FINAL_LOW <= ord(text[index]) <= _CSI_FINAL_HIGH
-    ):
+    while index < len(text) and not (_CSI_FINAL_LOW <= ord(text[index]) <= _CSI_FINAL_HIGH):
         index += 1
     if index >= len(text):
         return 0, None
 
     final = text[index]
-    numbers = [
-        int(part) if part.isdigit() else 0
-        for part in text[2:index].split(";")
-    ]
+    numbers = [int(part) if part.isdigit() else 0 for part in text[2:index].split(";")]
     if final == "~":
         vk = _VT_TILDE_KEYS.get(numbers[0] if numbers else 0)
     else:
@@ -245,9 +257,7 @@ def _parse_vt_sequence(text: str) -> tuple[int, KeyEvent | None]:
         | (LEFT_ALT_PRESSED if bits & 2 else 0)
         | (LEFT_CTRL_PRESSED if bits & 4 else 0)
     )
-    return index + 1, KeyEvent(
-        vk=vk, scan=0, char="", down=True, control_state=control_state
-    )
+    return index + 1, KeyEvent(vk=vk, scan=0, char="", down=True, control_state=control_state)
 
 
 @dataclass
@@ -319,7 +329,8 @@ class VTKeyDecoder:
                 # that proves the Escape was a key by itself.
                 if self._deadline is None:
                     self._deadline = (
-                        None if self.timeout is None
+                        None
+                        if self.timeout is None
                         else (time.monotonic() if now is None else now) + self.timeout
                     )
                 return
@@ -342,12 +353,12 @@ def _parse_record(payload: bytes) -> KeyEvent | None:
     """Build a KeyEvent from a win32-input-mode parameter list."""
     fields = payload.split(b";")
     values: list[int] = []
-    for field in fields:
-        if not field:
+    for raw_field in fields:
+        if not raw_field:
             values.append(0)  # omitted parameters default to zero
             continue
         try:
-            values.append(int(field))
+            values.append(int(raw_field))
         except ValueError:
             return None
     values.extend([0] * (6 - len(values)))
@@ -401,16 +412,17 @@ def _console_input_structures():
     from ctypes import wintypes
 
     class _CharUnion(ctypes.Union):
-        _fields_ = [("UnicodeChar", wintypes.WCHAR),
-                    ("AsciiChar", ctypes.c_char)]
+        _fields_ = [("UnicodeChar", wintypes.WCHAR), ("AsciiChar", ctypes.c_char)]
 
     class KeyEventRecord(ctypes.Structure):
-        _fields_ = [("bKeyDown", wintypes.BOOL),
-                    ("wRepeatCount", wintypes.WORD),
-                    ("wVirtualKeyCode", wintypes.WORD),
-                    ("wVirtualScanCode", wintypes.WORD),
-                    ("uChar", _CharUnion),
-                    ("dwControlKeyState", wintypes.DWORD)]
+        _fields_ = [
+            ("bKeyDown", wintypes.BOOL),
+            ("wRepeatCount", wintypes.WORD),
+            ("wVirtualKeyCode", wintypes.WORD),
+            ("wVirtualScanCode", wintypes.WORD),
+            ("uChar", _CharUnion),
+            ("dwControlKeyState", wintypes.DWORD),
+        ]
 
     class _EventUnion(ctypes.Union):
         _fields_ = [("KeyEvent", KeyEventRecord)]
@@ -457,9 +469,7 @@ def windows_console_key_events():
     if not kernel32.GetConsoleMode(handle, ctypes.byref(saved)):
         raise OSError(ctypes.get_last_error(), "standard input is not a console")
 
-    mode = saved.value & ~(
-        ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT
-    )
+    mode = saved.value & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT)
     if not kernel32.SetConsoleMode(handle, mode):
         raise OSError(ctypes.get_last_error(), "could not set console mode")
 
@@ -476,27 +486,27 @@ def windows_console_key_events():
             raise OSError("console reader cancelled")
         buffer = (InputRecord * 32)()
         count = wintypes.DWORD()
-        read = kernel32.ReadConsoleInputW(
-            handle, ctypes.byref(buffer), 32, ctypes.byref(count)
-        )
+        read = kernel32.ReadConsoleInputW(handle, ctypes.byref(buffer), 32, ctypes.byref(count))
         if cancelled.is_set():
             raise OSError("console reader cancelled")
         if not read:
             raise OSError(ctypes.get_last_error(), "ReadConsoleInput failed")
         events = []
-        for record in buffer[:count.value]:
+        for record in buffer[: count.value]:
             if record.EventType != KEY_EVENT:
                 continue
             key = record.Event.KeyEvent
             character = key.uChar.UnicodeChar
-            events.append(KeyEvent(
-                vk=key.wVirtualKeyCode,
-                scan=key.wVirtualScanCode,
-                char="" if character in ("", "\x00") else character,
-                down=bool(key.bKeyDown),
-                control_state=key.dwControlKeyState,
-                repeat=max(1, key.wRepeatCount),
-            ))
+            events.append(
+                KeyEvent(
+                    vk=key.wVirtualKeyCode,
+                    scan=key.wVirtualScanCode,
+                    char="" if character in ("", "\x00") else character,
+                    down=bool(key.bKeyDown),
+                    control_state=key.dwControlKeyState,
+                    repeat=max(1, key.wRepeatCount),
+                )
+            )
         return events
 
     def wake_reader() -> None:
@@ -508,9 +518,7 @@ def windows_console_key_events():
         record = InputRecord()
         record.EventType = FOCUS_EVENT
         written = wintypes.DWORD()
-        kernel32.WriteConsoleInputW(
-            handle, ctypes.byref(record), 1, ctypes.byref(written)
-        )
+        kernel32.WriteConsoleInputW(handle, ctypes.byref(record), 1, ctypes.byref(written))
 
     try:
         yield read_events

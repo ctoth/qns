@@ -46,7 +46,7 @@ INPUT_BOUNDARIES: dict[str, InputBoundary] = {
 def _build_update_package(image_offset, firmware):
     package = bytearray(image_offset)
     package[2:5] = b"BNS"
-    package[image_offset - 6:image_offset - 2] = len(firmware).to_bytes(
+    package[image_offset - 6 : image_offset - 2] = len(firmware).to_bytes(
         4,
         "little",
     )
@@ -58,7 +58,7 @@ def _build_update_package(image_offset, firmware):
         crc = (crc & 0xFF00) | ((crc + byte) & 0xFF)
         if high_bit:
             crc ^= 0xA097
-    package[image_offset - 2:image_offset] = crc.to_bytes(2, "little")
+    package[image_offset - 2 : image_offset] = crc.to_bytes(2, "little")
     return bytes(package) + firmware
 
 
@@ -74,8 +74,8 @@ def test_load_rom_discovers_aligned_update_image_from_length_and_crc(
 
     bns.load_rom(package_path)
 
-    assert bytes(bns.memory.rom[:len(firmware)]) == firmware
-    assert bytes(bns.memory.ram[:len(firmware)]) == firmware
+    assert bytes(bns.memory.rom[: len(firmware)]) == firmware
+    assert bytes(bns.memory.ram[: len(firmware)]) == firmware
     assert len(bns.memory.rom) == 256 * 1024
 
 
@@ -332,12 +332,20 @@ def test_english_speech_observes_each_linked_pretranslation_buffer(
     physical_spbuf = (0x34 << 12) + spbuf
     for offset, value in enumerate(message):
         bns.memory.write(physical_spbuf + offset, value)
-    bns.memory.ram[:10] = bytes((
-        0x3E, 0x34,
-        0xED, 0x39, 0x38,
-        0x3E, 0xC6,
-        0xED, 0x39, 0x3A,
-    ))
+    bns.memory.ram[:10] = bytes(
+        (
+            0x3E,
+            0x34,
+            0xED,
+            0x39,
+            0x38,
+            0x3E,
+            0xC6,
+            0xED,
+            0x39,
+            0x3A,
+        )
+    )
     for _ in range(4):
         bns.step()
     bns.cpu.set_reg(Reg.HL, spbuf)
@@ -376,12 +384,20 @@ def test_english_capture_steps_only_between_spbuf_write_and_boundary(tmp_path):
     )
     bns.load_rom(rom_path)
 
-    bns.memory.ram[:10] = bytes((
-        0x3E, 0x34,
-        0xED, 0x39, 0x38,
-        0x3E, 0xC6,
-        0xED, 0x39, 0x3A,
-    ))
+    bns.memory.ram[:10] = bytes(
+        (
+            0x3E,
+            0x34,
+            0xED,
+            0x39,
+            0x38,
+            0x3E,
+            0xC6,
+            0xED,
+            0x39,
+            0x3A,
+        )
+    )
     for _ in range(4):
         bns.step()
 
@@ -736,11 +752,19 @@ def test_address_trace_retains_causal_write_event_once():
         trace_writes=0xF000,
         trace_writes_range=(0xF000, 0xF000),
     )
-    bns.memory.load_rom(bytes((
-        0x3E, 0x5A,        # LD A,5Ah (6 cycles)
-        0x32, 0x00, 0xF0,  # LD (F000h),A
-        0x18, 0xFE,        # JR $
-    )))
+    bns.memory.load_rom(
+        bytes(
+            (
+                0x3E,
+                0x5A,  # LD A,5Ah (6 cycles)
+                0x32,
+                0x00,
+                0xF0,  # LD (F000h),A
+                0x18,
+                0xFE,  # JR $
+            )
+        )
+    )
 
     bns._execute_budget(100)
 
@@ -975,11 +999,20 @@ def test_direct_machine_uses_each_profile_region_contract(model, flash_size):
     assert len(bns.memory.rom) == PROFILES[model].rom_size
     assert len(bns.memory.flash) == flash_size
 
-    bns.memory.load_rom(bytes((
-        0x3E, 0x80,        # LD A,80h
-        0xED, 0x39, 0x38,  # OUT0 (CBR),A
-        0x3A, 0x00, 0xF0,  # LD A,(F000h)
-    )))
+    bns.memory.load_rom(
+        bytes(
+            (
+                0x3E,
+                0x80,  # LD A,80h
+                0xED,
+                0x39,
+                0x38,  # OUT0 (CBR),A
+                0x3A,
+                0x00,
+                0xF0,  # LD A,(F000h)
+            )
+        )
+    )
     if flash_size:
         bns.memory.set_high_bank_latch(0x08)
         bns.memory.flash[0xF000] = 0x5A
@@ -994,12 +1027,22 @@ def test_direct_machine_uses_each_profile_region_contract(model, flash_size):
 def test_direct_external_write_callback_does_not_reenter_machine():
     """A flash bus callback uses captured BNS state, not borrowed Machine APIs."""
     bns = BNS(model="bs2", core="direct")
-    bns.memory.load_rom(bytes((
-        0x3E, 0x80,        # LD A,80h
-        0xED, 0x39, 0x38,  # OUT0 (CBR),A
-        0x3E, 0x5A,        # LD A,5Ah
-        0x32, 0x00, 0xF0,  # LD (F000h),A through the External region
-    )))
+    bns.memory.load_rom(
+        bytes(
+            (
+                0x3E,
+                0x80,  # LD A,80h
+                0xED,
+                0x39,
+                0x38,  # OUT0 (CBR),A
+                0x3E,
+                0x5A,  # LD A,5Ah
+                0x32,
+                0x00,
+                0xF0,  # LD (F000h),A through the External region
+            )
+        )
+    )
 
     for _ in range(4):
         bns.step()
@@ -1026,25 +1069,53 @@ def test_flash_profile_without_active_observers_uses_bulk_execution():
 def test_direct_bulk_execution_preserves_flash_programming():
     bns = BNS(model="bs2", core="direct")
     bns.memory.set_high_bank_latch(0x08)
-    bns.memory.load_rom(bytes((
-        0x3E, 0x76,        # LD A,76h
-        0xED, 0x39, 0x38,  # OUT0 (CBR),A
-        0x3E, 0xAA,        # LD A,AAh
-        0x32, 0x55, 0xF5,  # LD (F555h),A -> physical 85555h
-        0x3E, 0x73,        # LD A,73h
-        0xED, 0x39, 0x38,  # OUT0 (CBR),A
-        0x3E, 0x55,        # LD A,55h
-        0x32, 0xAA, 0xFA,  # LD (FAAAh),A -> physical 82AAAh
-        0x3E, 0x76,        # LD A,76h
-        0xED, 0x39, 0x38,  # OUT0 (CBR),A
-        0x3E, 0xA0,        # LD A,A0h
-        0x32, 0x55, 0xF5,  # LD (F555h),A -> physical 85555h
-        0x3E, 0x72,        # LD A,72h
-        0xED, 0x39, 0x38,  # OUT0 (CBR),A
-        0x3E, 0x5A,        # LD A,5Ah
-        0x32, 0x34, 0xF2,  # LD (F234h),A -> physical 81234h
-        0x76,              # HALT
-    )))
+    bns.memory.load_rom(
+        bytes(
+            (
+                0x3E,
+                0x76,  # LD A,76h
+                0xED,
+                0x39,
+                0x38,  # OUT0 (CBR),A
+                0x3E,
+                0xAA,  # LD A,AAh
+                0x32,
+                0x55,
+                0xF5,  # LD (F555h),A -> physical 85555h
+                0x3E,
+                0x73,  # LD A,73h
+                0xED,
+                0x39,
+                0x38,  # OUT0 (CBR),A
+                0x3E,
+                0x55,  # LD A,55h
+                0x32,
+                0xAA,
+                0xFA,  # LD (FAAAh),A -> physical 82AAAh
+                0x3E,
+                0x76,  # LD A,76h
+                0xED,
+                0x39,
+                0x38,  # OUT0 (CBR),A
+                0x3E,
+                0xA0,  # LD A,A0h
+                0x32,
+                0x55,
+                0xF5,  # LD (F555h),A -> physical 85555h
+                0x3E,
+                0x72,  # LD A,72h
+                0xED,
+                0x39,
+                0x38,  # OUT0 (CBR),A
+                0x3E,
+                0x5A,  # LD A,5Ah
+                0x32,
+                0x34,
+                0xF2,  # LD (F234h),A -> physical 81234h
+                0x76,  # HALT
+            )
+        )
+    )
 
     bns.cpu.run(400)
 
@@ -1054,11 +1125,19 @@ def test_direct_bulk_execution_preserves_flash_programming():
 def test_direct_event_overflow_is_a_fatal_observer_error():
     """Lost native write events must never be cleared and ignored."""
     bns = BNS(core="direct")
-    bns.memory.load_rom(bytes((
-        0x3E, 0x5A,        # LD A,5Ah
-        0x32, 0x00, 0xF0,  # LD (F000h),A
-        0x18, 0xFB,        # JR back to the write
-    )))
+    bns.memory.load_rom(
+        bytes(
+            (
+                0x3E,
+                0x5A,  # LD A,5Ah
+                0x32,
+                0x00,
+                0xF0,  # LD (F000h),A
+                0x18,
+                0xFB,  # JR back to the write
+            )
+        )
+    )
 
     bns.cpu.run(300_000)
 
@@ -1104,18 +1183,37 @@ def test_native_asci_queue_round_trip_uses_bns_execution_owner():
         serial_output=output,
         serial_output_channel=0,
     )
-    bns.memory.load_rom(bytes((
-        0x3E, 0x64,
-        0xED, 0x39, 0x00,
-        0x3E, 0x02,
-        0xED, 0x39, 0x02,
-        0xED, 0x38, 0x04,
-        0xE6, 0x80,
-        0x28, 0xF9,
-        0xED, 0x38, 0x08,
-        0xED, 0x39, 0x06,
-        0x18, 0xF1,
-    )))
+    bns.memory.load_rom(
+        bytes(
+            (
+                0x3E,
+                0x64,
+                0xED,
+                0x39,
+                0x00,
+                0x3E,
+                0x02,
+                0xED,
+                0x39,
+                0x02,
+                0xED,
+                0x38,
+                0x04,
+                0xE6,
+                0x80,
+                0x28,
+                0xF9,
+                0xED,
+                0x38,
+                0x08,
+                0xED,
+                0x39,
+                0x06,
+                0x18,
+                0xF1,
+            )
+        )
+    )
     bns._serial_input_queue.put(0x5A)
 
     rdrf_seen = False
@@ -1151,18 +1249,37 @@ def test_unselected_serial_output_is_silent(capsys):
 def test_cli_serial_standard_io_round_trip(tmp_path):
     """A firmware byte must travel from stdin through ASCI and back to stdout."""
     echo_rom = tmp_path / "serial-echo.bin"
-    echo_rom.write_bytes(bytes((
-        0x3E, 0x64,        # LD A,64h: 8-N-1, transmit and receive enabled
-        0xED, 0x39, 0x00,  # OUT0 (CNTLA0),A
-        0x3E, 0x02,        # LD A,2: BSP's initial 9600-baud divisor
-        0xED, 0x39, 0x02,  # OUT0 (CNTLB0),A
-        0xED, 0x38, 0x04,  # IN0 A,(STAT0)
-        0xE6, 0x80,        # AND RDRF
-        0x28, 0xF9,        # JR Z back to the status read
-        0xED, 0x38, 0x08,  # IN0 A,(RDR0)
-        0xED, 0x39, 0x06,  # OUT0 (TDR0),A
-        0x18, 0xF1,        # JR back to the status read
-    )))
+    echo_rom.write_bytes(
+        bytes(
+            (
+                0x3E,
+                0x64,  # LD A,64h: 8-N-1, transmit and receive enabled
+                0xED,
+                0x39,
+                0x00,  # OUT0 (CNTLA0),A
+                0x3E,
+                0x02,  # LD A,2: BSP's initial 9600-baud divisor
+                0xED,
+                0x39,
+                0x02,  # OUT0 (CNTLB0),A
+                0xED,
+                0x38,
+                0x04,  # IN0 A,(STAT0)
+                0xE6,
+                0x80,  # AND RDRF
+                0x28,
+                0xF9,  # JR Z back to the status read
+                0xED,
+                0x38,
+                0x08,  # IN0 A,(RDR0)
+                0xED,
+                0x39,
+                0x06,  # OUT0 (TDR0),A
+                0x18,
+                0xF1,  # JR back to the status read
+            )
+        )
+    )
 
     result = subprocess.run(
         (
@@ -1190,18 +1307,37 @@ def test_cli_serial_standard_io_round_trip(tmp_path):
 
 def test_cli_jsonl_round_trip_keeps_binary_serial_separate_from_diagnostics(tmp_path):
     echo_rom = tmp_path / "serial-echo.bin"
-    echo_rom.write_bytes(bytes((
-        0x3E, 0x64,
-        0xED, 0x39, 0x00,
-        0x3E, 0x02,
-        0xED, 0x39, 0x02,
-        0xED, 0x38, 0x04,
-        0xE6, 0x80,
-        0x28, 0xF9,
-        0xED, 0x38, 0x08,
-        0xED, 0x39, 0x06,
-        0x18, 0xF1,
-    )))
+    echo_rom.write_bytes(
+        bytes(
+            (
+                0x3E,
+                0x64,
+                0xED,
+                0x39,
+                0x00,
+                0x3E,
+                0x02,
+                0xED,
+                0x39,
+                0x02,
+                0xED,
+                0x38,
+                0x04,
+                0xE6,
+                0x80,
+                0x28,
+                0xF9,
+                0xED,
+                0x38,
+                0x08,
+                0xED,
+                0x39,
+                0x06,
+                0x18,
+                0xF1,
+            )
+        )
+    )
     input_event = json.dumps(
         {
             "device": "serial0",
@@ -1236,11 +1372,7 @@ def test_cli_jsonl_round_trip_keeps_binary_serial_separate_from_diagnostics(tmp_
 
 def test_cli_jsonl_reports_existing_native_pc_watch(tmp_path):
     watch_rom = tmp_path / "watch.bin"
-    watch_rom.write_bytes(
-        bytes((0xC3, 0x10, 0x00))
-        + bytes(13)
-        + bytes((0x18, 0xFE))
-    )
+    watch_rom.write_bytes(bytes((0xC3, 0x10, 0x00)) + bytes(13) + bytes((0x18, 0xFE)))
 
     result = subprocess.run(
         (
@@ -1275,11 +1407,7 @@ def test_cli_jsonl_reports_existing_native_pc_watch(tmp_path):
 
 def test_cli_jsonl_arms_native_pc_watch_during_execution(tmp_path):
     watch_rom = tmp_path / "dynamic-watch.bin"
-    watch_rom.write_bytes(
-        bytes((0xC3, 0x10, 0x00))
-        + bytes(13)
-        + bytes((0x18, 0xFE))
-    )
+    watch_rom.write_bytes(bytes((0xC3, 0x10, 0x00)) + bytes(13) + bytes((0x18, 0xFE)))
     watch_event = json.dumps({"device": "cpu", "watch_pc": 0x10}).encode()
 
     result = subprocess.run(
@@ -1382,21 +1510,42 @@ def test_cli_state_round_trip_preserves_v3_effective_ram(tmp_path):
     """A later process running the same ROM must see the saved effective RAM."""
     state_path = tmp_path / "bsp.state"
     state_rom = tmp_path / "state-round-trip.bin"
-    state_rom.write_bytes(bytes((
-        0x3E, 0x64,
-        0xED, 0x39, 0x00,
-        0x3E, 0x02,
-        0xED, 0x39, 0x02,
-        0x3A, 0x00, 0xF0,
-        0xB7,
-        0x20, 0x07,
-        0x3E, 0x41,
-        0x32, 0x00, 0xF0,
-        0x18, 0x02,
-        0x3E, 0x5A,
-        0xED, 0x39, 0x06,
-        0x18, 0xFE,
-    )))
+    state_rom.write_bytes(
+        bytes(
+            (
+                0x3E,
+                0x64,
+                0xED,
+                0x39,
+                0x00,
+                0x3E,
+                0x02,
+                0xED,
+                0x39,
+                0x02,
+                0x3A,
+                0x00,
+                0xF0,
+                0xB7,
+                0x20,
+                0x07,
+                0x3E,
+                0x41,
+                0x32,
+                0x00,
+                0xF0,
+                0x18,
+                0x02,
+                0x3E,
+                0x5A,
+                0xED,
+                0x39,
+                0x06,
+                0x18,
+                0xFE,
+            )
+        )
+    )
 
     writer = subprocess.run(
         (
@@ -1451,7 +1600,7 @@ def test_cli_state_round_trip_preserves_v3_effective_ram(tmp_path):
     )
 
     assert reader.returncode == 0, reader.stderr.decode(errors="replace")
-    assert reader.stdout == b"\x5A"
+    assert reader.stdout == b"\x5a"
     assert b"Loaded nonvolatile RAM state" in reader.stderr
 
 
@@ -1612,13 +1761,15 @@ def test_audio_omitted_leaves_audio_disabled():
 def test_pcm_audio_log_option_reaches_the_player(tmp_path):
     log_path = tmp_path / "pcm-audio.csv"
     args = build_parser().parse_args(
-        settle_audio_backend([
-            "rom.bns",
-            "--audio",
-            "pcm",
-            "--audio-log",
-            str(log_path),
-        ])
+        settle_audio_backend(
+            [
+                "rom.bns",
+                "--audio",
+                "pcm",
+                "--audio-log",
+                str(log_path),
+            ]
+        )
     )
 
     assert args.audio_log == Path(log_path)
@@ -1642,9 +1793,7 @@ def test_pcm_audio_log_option_reaches_the_player(tmp_path):
     ),
 )
 def test_retained_speech_options_accept_documented_endpoints(option, value):
-    args = build_parser().parse_args(
-        ["rom.bns", f"--{option}", str(value)]
-    )
+    args = build_parser().parse_args(["rom.bns", f"--{option}", str(value)])
 
     assert getattr(args, option) == value
 

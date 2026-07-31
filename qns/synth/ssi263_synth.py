@@ -130,6 +130,4 @@ class SSI263Synth:
         if self._phoneme_callback is not None:
             self._phoneme_callback(phoneme)
         if self._player is not None:
-            self._player.play(
-                self.get_phoneme_audio(phoneme, amplitude, inflection)
-            )
+            self._player.play(self.get_phoneme_audio(phoneme, amplitude, inflection))

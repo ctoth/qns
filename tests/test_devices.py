@@ -97,7 +97,7 @@ def test_braille_lite_display_captures_command_prefixed_cells(cells: bytes):
         display.transmit(0x83)
         display.transmit(cell)
 
-    assert display.buffer[:len(cells)] == cells
+    assert display.buffer[: len(cells)] == cells
     assert display.cursor == len(cells) % display.cells
 
 
@@ -139,7 +139,7 @@ def test_parallel_18_cell_display_removes_source_spacers(cells: bytes):
     physical_frame: list[int] = []
     reversed_cells = bytes(reversed(cells))
     for offset in range(0, 18, 6):
-        physical_frame.extend(reversed_cells[offset:offset + 6])
+        physical_frame.extend(reversed_cells[offset : offset + 6])
         physical_frame.extend((0, 0))
 
     for cell in physical_frame:
@@ -226,7 +226,19 @@ def test_msm6242_exposes_bsp_bcd_clock_registers():
     rtc = MSM6242RTC(now=lambda: current)
 
     assert [rtc.read(0x60 + register) for register in range(13)] == [
-        6, 5, 5, 4, 3, 2, 8, 1, 7, 0, 6, 2, 6,
+        6,
+        5,
+        5,
+        4,
+        3,
+        2,
+        8,
+        1,
+        7,
+        0,
+        6,
+        2,
+        6,
     ]
     assert rtc.read(0x6D) == 0
     assert rtc.read(0x6E) == 0

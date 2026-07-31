@@ -28,8 +28,35 @@ C_CHORD = 0x49
 Z_CHORD = 0x75
 HELP_OPEN_MARKER = ("HF", "EH", "L", "P", "I", "Z", "O", "OU", "P", "EH1", "N")
 HELP_TITLE_END = (
-    "HF", "EH", "L", "P", "F", "AH", "E", "L", "J", "U", "U1", "L", "AH", "E1",
-    "W", "UH1", "N", "N", "AH", "E", "N", "N", "AH", "E", "N", "N", "AH", "E", "N",
+    "HF",
+    "EH",
+    "L",
+    "P",
+    "F",
+    "AH",
+    "E",
+    "L",
+    "J",
+    "U",
+    "U1",
+    "L",
+    "AH",
+    "E1",
+    "W",
+    "UH1",
+    "N",
+    "N",
+    "AH",
+    "E",
+    "N",
+    "N",
+    "AH",
+    "E",
+    "N",
+    "N",
+    "AH",
+    "E",
+    "N",
 )
 
 

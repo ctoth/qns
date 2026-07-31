@@ -91,19 +91,19 @@ def analyse_phoneme(code: int) -> dict:
     """Analyse one capture into filter, gain, voicing and pitch."""
     index = (2 if code == 1 else code) - 2
     samples = get_phoneme_samples(index).astype(np.float64)
-    steady = samples[len(samples) // 4:3 * len(samples) // 4]
+    steady = samples[len(samples) // 4 : 3 * len(samples) // 4]
     steady = steady - steady.mean()
     if len(steady) < ORDER * 2:
         steady = samples.astype(np.float64)
 
     windowed = steady * np.hanning(len(steady))
     full = np.correlate(windowed, windowed, "full")
-    autocorr = full[len(windowed) - 1:len(windowed) + ORDER]
+    autocorr = full[len(windowed) - 1 : len(windowed) + ORDER]
     reflection, residual = levinson(autocorr, ORDER)
 
     # Voicing and pitch from the same autocorrelation the periodicity test uses.
     centered = steady
-    correlation = np.correlate(centered, centered, "full")[len(centered) - 1:]
+    correlation = np.correlate(centered, centered, "full")[len(centered) - 1 :]
     low = int(SAMPLE_RATE / 400)
     high = min(int(SAMPLE_RATE / 60), len(correlation) - 1)
     if high > low and correlation[0] > 0:
@@ -124,16 +124,16 @@ def analyse_phoneme(code: int) -> dict:
     resid = np.convolve(steady, coeffs, mode="same")
 
     if voiced:
-        search = resid[:len(resid) - period] if len(resid) > period else resid
+        search = resid[: len(resid) - period] if len(resid) > period else resid
         anchor = int(np.argmax(np.abs(search))) if len(search) else 0
         anchor = max(0, min(anchor, max(0, len(resid) - period)))
-        template = resid[anchor:anchor + period].copy()
+        template = resid[anchor : anchor + period].copy()
         if len(template) < period:
             template = np.pad(template, (0, period - len(template)))
     else:
         template = resid.copy()
 
-    rms = float(np.sqrt((template ** 2).mean())) if len(template) else 0.0
+    rms = float(np.sqrt((template**2).mean())) if len(template) else 0.0
     if rms > 0:
         template = template / rms
 
@@ -142,7 +142,7 @@ def analyse_phoneme(code: int) -> dict:
         "gain": float(np.sqrt(residual / max(1, len(windowed)))),
         "voiced": voiced,
         "period": period,
-        "rms": float(np.sqrt((steady ** 2).mean())),
+        "rms": float(np.sqrt((steady**2).mean())),
         "template": template,
     }
 
@@ -284,10 +284,12 @@ class LPCStream:
         for start, length, blend in self._blend_track(samples):
             gain = ((1 - blend) * source["gain"] + blend * target["gain"]) * gain_scale
             voiced = source["voiced"] if blend < 0.5 else target["voiced"]
-            period = int(round(
-                ((1 - blend) * source["period"] + blend * target["period"])
-                / max(0.05, self.pitch_scale)
-            ))
+            period = int(
+                round(
+                    ((1 - blend) * source["period"] + blend * target["period"])
+                    / max(0.05, self.pitch_scale)
+                )
+            )
             period = max(2, period)
 
             if voiced:
@@ -303,7 +305,7 @@ class LPCStream:
                 while next_pulse < start + length:
                     if next_pulse >= 0:
                         end = min(next_pulse + len(pulse), len(excitation))
-                        excitation[next_pulse:end] += pulse[:end - next_pulse]
+                        excitation[next_pulse:end] += pulse[: end - next_pulse]
                     next_pulse += period
             else:
                 # Fricative residual is noise; draw randomly from the captured
@@ -311,10 +313,10 @@ class LPCStream:
                 template = source["template"] if blend < 0.5 else target["template"]
                 if len(template) > length:
                     offset = int(self._rng.integers(0, len(template) - length))
-                    noise = template[offset:offset + length]
+                    noise = template[offset : offset + length]
                 else:
                     noise = self._rng.normal(0.0, 1.0, length)
-                excitation[start:start + length] += noise * gain
+                excitation[start : start + length] += noise * gain
                 next_pulse = start + length
 
         self._next_pulse = max(0, next_pulse - samples)
@@ -332,9 +334,7 @@ class LPCStream:
         output = np.zeros(samples, dtype=np.float64)
         history = self._history
         for start, length, blend in self._blend_track(samples):
-            reflection = (
-                (1 - blend) * source["reflection"] + blend * target["reflection"]
-            )
+            reflection = (1 - blend) * source["reflection"] + blend * target["reflection"]
             taps = reflection_to_lpc(np.clip(reflection, -0.999, 0.999))[1:]
             for offset in range(start, start + length):
                 value = excitation[offset] - float(taps @ history)
@@ -348,9 +348,7 @@ class LPCStream:
         history = self._history
         taps = np.zeros(ORDER, dtype=np.float64)
         if self._previous is not None:
-            taps = reflection_to_lpc(
-                np.clip(self._previous["reflection"], -0.999, 0.999)
-            )[1:]
+            taps = reflection_to_lpc(np.clip(self._previous["reflection"], -0.999, 0.999))[1:]
         output = np.zeros(samples, dtype=np.float64)
         for offset in range(samples):
             value = -float(taps @ history)

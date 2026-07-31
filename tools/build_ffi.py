@@ -157,7 +157,7 @@ UINT8 qns_z180_get_pc_watch_cbar(qns_z180_t* cpu);
 
 # C source that wraps z180emu
 # Formatting converts doubled C braces without interpolating Python values.
-SOURCE = '''
+SOURCE = """
 #include <stdlib.h>
 #include <string.h>
 
@@ -666,7 +666,7 @@ unsigned long long qns_z180_get_pc_watch_cycle(qns_z180_t* cpu) {{
 UINT8 qns_z180_get_pc_watch_cbar(qns_z180_t* cpu) {{
     return cpu ? cpu->pc_watch_cbar : 0;
 }}
-'''.format()
+""".format()
 
 # Set up the FFI
 ffi.cdef(CDEF)

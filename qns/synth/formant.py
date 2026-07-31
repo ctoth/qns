@@ -86,9 +86,9 @@ class FormantSynth:
 
         # Timing counters
         self._phonetick = 0  # 9-bit, counts within duration unit
-        self._ticks = 0      # 5-bit, counts 16 ticks per phoneme
-        self._pitch = 0      # 8-bit, pitch counter
-        self._closure = 0    # 5-bit, glottal closure counter
+        self._ticks = 0  # 5-bit, counts 16 ticks per phoneme
+        self._pitch = 0  # 8-bit, pitch counter
+        self._closure = 0  # 5-bit, glottal closure counter
         self._update_counter = 0  # 6-bit, controls interpolation timing
 
         # State
@@ -193,17 +193,17 @@ class FormantSynth:
         # Get parameters from ROM
         params = PHONEME_PARAMS.get(phoneme, PHONEME_PARAMS[0x03])  # Default to pause
 
-        self._rom_f1 = params['f1']
-        self._rom_f2 = params['f2']
-        self._rom_f2q = params['f2q']
-        self._rom_f3 = params['f3']
-        self._rom_fa = params['fa']
-        self._rom_fc = params['fc']
-        self._rom_va = params['va']
-        self._rom_vd = params['vd']
-        self._rom_cld = params['cld']
-        self._rom_closure = params['closure']
-        self._rom_duration = params['duration']
+        self._rom_f1 = params["f1"]
+        self._rom_f2 = params["f2"]
+        self._rom_f2q = params["f2q"]
+        self._rom_f3 = params["f3"]
+        self._rom_fa = params["fa"]
+        self._rom_fc = params["fc"]
+        self._rom_va = params["va"]
+        self._rom_vd = params["vd"]
+        self._rom_cld = params["cld"]
+        self._rom_closure = params["closure"]
+        self._rom_duration = params["duration"]
         self._rom_pause = phoneme in PAUSE_PHONES
 
         # Initialize interpolated values to target (scaled for 8-bit internal)
@@ -391,9 +391,7 @@ class FormantSynth:
             hist[i] = hist[i - 1]
         hist[0] = val
 
-    def _apply_filter(
-        self, x: list[float], y: list[float], f: FilterCoeffs
-    ) -> float:
+    def _apply_filter(self, x: list[float], y: list[float], f: FilterCoeffs) -> float:
         """Apply 4th-order IIR filter."""
         total = 0.0
         for i in range(min(len(f.a), len(x))):
@@ -403,9 +401,7 @@ class FormantSynth:
                 total -= y[i - 1] * f.b[i]
         return total / f.b[0] if f.b[0] != 0 else 0.0
 
-    def _apply_filter_2(
-        self, x: list[float], y: list[float], f: FilterCoeffs
-    ) -> float:
+    def _apply_filter_2(self, x: list[float], y: list[float], f: FilterCoeffs) -> float:
         """Apply 2nd-order IIR filter."""
         return self._apply_filter(x, y, f)
 

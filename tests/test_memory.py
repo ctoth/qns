@@ -310,8 +310,7 @@ def test_state_load_reapplies_only_explicit_speech_overrides(
 
     assert restored.memory.read(parameters.volume[0]) == 12
     assert {restored.memory.read(address) for address in parameters.rate} == {14}
-    assert {
-        restored.memory.read(address)
-        for address in parameters.inflection
-    } == {persisted["inflection"]}
+    assert {restored.memory.read(address) for address in parameters.inflection} == {
+        persisted["inflection"]
+    }
     assert restored.memory.read(parameters.filter_frequency[0]) == 6

@@ -44,7 +44,7 @@ class IOBus:
         handler = self._read_handlers.get(port)
         value = handler(port) if handler else 0xFF
         if self.logging:
-            self._log.append(('R', port, value))
+            self._log.append(("R", port, value))
         return value
 
     def write(self, port: int, value: int) -> None:
@@ -52,7 +52,7 @@ class IOBus:
         port &= 0xFF
         value &= 0xFF
         if self.logging:
-            self._log.append(('W', port, value))
+            self._log.append(("W", port, value))
         handler = self._write_handlers.get(port)
         if handler:
             handler(port, value)

@@ -189,9 +189,7 @@ def test_receive_stdio_file_uses_real_file_menu_and_ymodem_sequence(
     )
     monkeypatch.setattr(
         "tools.bs2_stdio_harness.transfer_stdio_ymodem",
-        lambda active_process, cursor, path: transfers.append(
-            (active_process, cursor, path)
-        ),
+        lambda active_process, cursor, path: transfers.append((active_process, cursor, path)),
     )
     process = Process()
 

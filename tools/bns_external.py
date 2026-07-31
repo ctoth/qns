@@ -78,9 +78,7 @@ def inspect_external_program(data: bytes) -> ExternalProgramInfo:
     code = data[HEADER_SIZE : HEADER_SIZE + code_size]
     actual_crc = program_crc(code)
     if actual_crc != expected_crc:
-        raise ValueError(
-            f"code CRC is 0x{actual_crc:04x}, header requires 0x{expected_crc:04x}"
-        )
+        raise ValueError(f"code CRC is 0x{actual_crc:04x}, header requires 0x{expected_crc:04x}")
 
     return ExternalProgramInfo(
         file_size=len(data),

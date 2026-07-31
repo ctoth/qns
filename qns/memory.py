@@ -36,8 +36,8 @@ class Memory:
         self._flash_command = "ready"
 
         # MMU registers
-        self.cbr = 0x00   # Common Base Register
-        self.bbr = 0x00   # Bank Base Register
+        self.cbr = 0x00  # Common Base Register
+        self.bbr = 0x00  # Bank Base Register
         self.cbar = 0xF0  # Common/Bank Area Register (default: all common area 0)
 
     def load_rom(self, data: bytes, offset: int = 0) -> None:
@@ -48,8 +48,8 @@ class Memory:
             raise ValueError("ROM image exceeds configured ROM size")
         self.ram[:] = b"\x00" * len(self.ram)
         self.rom[:] = b"\x00" * len(self.rom)
-        self.ram[offset:offset + len(data)] = data
-        self.rom[offset:offset + len(data)] = data
+        self.ram[offset : offset + len(data)] = data
+        self.rom[offset : offset + len(data)] = data
 
     def load_state(self, path: Path | str) -> None:
         """Load effective RAM, converting legacy shadow-RAM state when needed."""
@@ -66,16 +66,16 @@ class Memory:
             header_size = magic_size + 8
             if len(data) < header_size:
                 raise ValueError("not a QNS nonvolatile RAM state file")
-            flash_size = int.from_bytes(data[magic_size + 4:header_size], "little")
+            flash_size = int.from_bytes(data[magic_size + 4 : header_size], "little")
         elif magic == _STATE_MAGIC_V3:
             header_size = magic_size + 8
             if len(data) < header_size:
                 raise ValueError("not a QNS nonvolatile RAM state file")
-            flash_size = int.from_bytes(data[magic_size + 4:header_size], "little")
+            flash_size = int.from_bytes(data[magic_size + 4 : header_size], "little")
         else:
             raise ValueError("not a QNS nonvolatile RAM state file")
 
-        ram_size = int.from_bytes(data[magic_size:magic_size + 4], "little")
+        ram_size = int.from_bytes(data[magic_size : magic_size + 4], "little")
         if ram_size != len(self.ram):
             raise ValueError(
                 f"state RAM size is {ram_size} bytes; emulator requires {len(self.ram)}"
@@ -89,13 +89,11 @@ class Memory:
         bitmap_size = (ram_size + 7) // 8 if legacy else 0
         expected_size = header_size + bitmap_size + ram_size + flash_size
         if len(data) != expected_size:
-            raise ValueError(
-                f"state file is {len(data)} bytes; expected {expected_size}"
-            )
+            raise ValueError(f"state file is {len(data)} bytes; expected {expected_size}")
 
-        bitmap = data[header_size:header_size + bitmap_size]
+        bitmap = data[header_size : header_size + bitmap_size]
         ram_end = header_size + bitmap_size + ram_size
-        stored_ram = data[header_size + bitmap_size:ram_end]
+        stored_ram = data[header_size + bitmap_size : ram_end]
         if legacy:
             effective_ram = bytearray(self.ram)
             for address, value in enumerate(stored_ram):
@@ -111,11 +109,13 @@ class Memory:
     def save_state(self, path: Path | str) -> None:
         """Atomically save V3 effective RAM and flash."""
         path = Path(path)
-        header = b"".join((
-            _STATE_MAGIC_V3,
-            len(self.ram).to_bytes(4, "little"),
-            len(self.flash).to_bytes(4, "little"),
-        ))
+        header = b"".join(
+            (
+                _STATE_MAGIC_V3,
+                len(self.ram).to_bytes(4, "little"),
+                len(self.flash).to_bytes(4, "little"),
+            )
+        )
         data = b"".join((header, bytes(self.ram), bytes(self.flash)))
         temporary = path.with_name(f".{path.name}.tmp")
         temporary.write_bytes(data)
@@ -136,8 +136,7 @@ class Memory:
             )
         if len(flash) != len(self.flash):
             raise ValueError(
-                f"state flash size is {len(flash)} bytes; "
-                f"emulator requires {len(self.flash)}"
+                f"state flash size is {len(flash)} bytes; emulator requires {len(self.flash)}"
             )
 
         shadow_path = path / "shadow.bin"
@@ -146,8 +145,7 @@ class Memory:
             expected_shadow_size = (len(self.ram) + 7) // 8
             if len(shadow) != expected_shadow_size:
                 raise ValueError(
-                    f"state shadow bitmap is {len(shadow)} bytes; "
-                    f"expected {expected_shadow_size}"
+                    f"state shadow bitmap is {len(shadow)} bytes; expected {expected_shadow_size}"
                 )
             effective_ram = bytearray(self.ram)
             for address, value in enumerate(ram):
@@ -249,11 +247,11 @@ class Memory:
 
         if self._flash_command == "erase_unlock_2":
             if command_offset == _FLASH_UNLOCK_1 and value == 0x10:
-                self.flash[:] = b"\xFF" * len(self.flash)
+                self.flash[:] = b"\xff" * len(self.flash)
             elif value == 0x30:
                 sector_start = offset - offset % _FLASH_SECTOR_SIZE
                 sector_end = min(sector_start + _FLASH_SECTOR_SIZE, len(self.flash))
-                self.flash[sector_start:sector_end] = b"\xFF" * (sector_end - sector_start)
+                self.flash[sector_start:sector_end] = b"\xff" * (sector_end - sector_start)
             self._flash_command = "ready"
 
     def set_mmu(self, cbr: int | None = None, bbr: int | None = None, cbar: int | None = None):

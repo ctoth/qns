@@ -43,6 +43,7 @@ out/
 *.jpg
 *.lock
 !uv.lock
+!toolchain/*.lock
 *.lock~
 *.mp3
 *.pdf

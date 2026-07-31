@@ -18,15 +18,12 @@ def print_writes(label: str, writes: tuple[BufferWrite, ...]) -> None:
     print(f"{label}_writer_pcs={sorted({pc for _, pc, _, _ in writes})}")
     for writer_pc in sorted({pc for _, pc, _, _ in writes}):
         writer_events = [
-            (cycle, addr & 0xFFF, value)
-            for cycle, pc, addr, value in writes
-            if pc == writer_pc
+            (cycle, addr & 0xFFF, value) for cycle, pc, addr, value in writes if pc == writer_pc
         ]
         print(f"{label}_writer_{writer_pc:04X}={writer_events}")
     for cycle, pc, addr, value in writes[:12]:
         print(
-            f"{label}_event="
-            f"cycle:{cycle},pc:{pc:04X},offset:{addr & 0xFFF:03X},value:{value:02X}"
+            f"{label}_event=cycle:{cycle},pc:{pc:04X},offset:{addr & 0xFFF:03X},value:{value:02X}"
         )
 
 
@@ -96,14 +93,8 @@ def main() -> None:
         print_writes("pre_capture", writes)
         print(f"first_write_cycle={first_write}")
         print(f"last_write_cycle={last_write}")
-        print(
-            "first_write_lead="
-            f"{cycle - first_write if first_write is not None else None}"
-        )
-        print(
-            "last_write_lead="
-            f"{cycle - last_write if last_write is not None else None}"
-        )
+        print(f"first_write_lead={cycle - first_write if first_write is not None else None}")
+        print(f"last_write_lead={cycle - last_write if last_write is not None else None}")
     print_writes("post_capture", tuple(buffer_writes))
     post_capture_cycles = [write[0] for write in buffer_writes]
     print(

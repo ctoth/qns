@@ -1,0 +1,19 @@
+* text=auto eol=lf
+
+*.bat text eol=crlf
+
+*.bin -text
+*.bns -text
+*.exe -text
+*.ima -text
+*.jpg -text
+*.mp3 -text
+*.npz -text
+*.pdf -text
+*.png -text
+*.pyd -text
+*.so -text
+*.sqlite3 -text
+*.tns -text
+*.wav -text
+*.zip -text

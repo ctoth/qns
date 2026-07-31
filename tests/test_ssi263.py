@@ -179,9 +179,7 @@ def test_cli_can_print_retained_english_firmware_speech(
 
     bns_main()
 
-    assert capsys.readouterr().out.endswith(
-        "Speech english: help is open enter file command\n"
-    )
+    assert capsys.readouterr().out.endswith("Speech english: help is open enter file command\n")
 
 
 @pytest.mark.parametrize(
@@ -224,9 +222,7 @@ def test_cli_streams_each_non_pause_phoneme_before_run_returns(
 
     bns_main()
 
-    assert capsys.readouterr().out.endswith(
-        f"Speech {speech_format}: {expected}\nRun returned\n"
-    )
+    assert capsys.readouterr().out.endswith(f"Speech {speech_format}: {expected}\nRun returned\n")
 
 
 def test_cli_streams_english_firmware_speech_before_run_returns(
@@ -257,6 +253,4 @@ def test_cli_streams_english_firmware_speech_before_run_returns(
 
     bns_main()
 
-    assert capsys.readouterr().out.endswith(
-        "Speech english: enter file command\nRun returned\n"
-    )
+    assert capsys.readouterr().out.endswith("Speech english: enter file command\nRun returned\n")

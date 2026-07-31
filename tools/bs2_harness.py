@@ -88,24 +88,16 @@ class BS2Harness:
         self.bns.keyboard.press(chord)
         self.run_until(
             lambda: (
-                not self.bns.keyboard.latched
-                and self.bns.memory.read(BS2_IIB_PHYSICAL) == chord
+                not self.bns.keyboard.latched and self.bns.memory.read(BS2_IIB_PHYSICAL) == chord
             ),
             f"key-down firmware acceptance for {chord:02X}",
-            context=lambda: (
-                f"iib={self.bns.memory.read(BS2_IIB_PHYSICAL):02X}"
-            ),
+            context=lambda: (f"iib={self.bns.memory.read(BS2_IIB_PHYSICAL):02X}"),
         )
         self.bns.keyboard.release()
         self.run_until(
-            lambda: (
-                not self.bns.keyboard.latched
-                and self.bns.memory.read(BS2_IIB_PHYSICAL) == 0
-            ),
+            lambda: (not self.bns.keyboard.latched and self.bns.memory.read(BS2_IIB_PHYSICAL) == 0),
             f"key-up firmware acceptance for {chord:02X}",
-            context=lambda: (
-                f"iib={self.bns.memory.read(BS2_IIB_PHYSICAL):02X}"
-            ),
+            context=lambda: (f"iib={self.bns.memory.read(BS2_IIB_PHYSICAL):02X}"),
         )
 
     def wait_for_key(self) -> None:
@@ -171,9 +163,7 @@ class BS2Harness:
         status = self.bns.cpu.io_reg_peek(0x04 + channel)
         cntla = self.bns.cpu.io_reg_peek(channel)
         tdr = self.bns.cpu.io_reg_peek(0x06 + channel)
-        return (
-            f"asci{channel}=stat:{status:02X},cntla:{cntla:02X},tdr:{tdr:02X}"
-        )
+        return f"asci{channel}=stat:{status:02X},cntla:{cntla:02X},tdr:{tdr:02X}"
 
     def wait_for_receive(
         self,
@@ -226,11 +216,7 @@ class BS2Harness:
                 return offset + len(expected)
             cntla = self.bns.cpu.io_reg_peek(channel)
             tdr = self.bns.cpu.io_reg_peek(0x06 + channel)
-            if (
-                len(expected) == 1
-                and tdr == expected[0]
-                and not (cntla & 0x20)
-            ):
+            if len(expected) == 1 and tdr == expected[0] and not (cntla & 0x20):
                 raise RuntimeError(
                     f"{description} is stuck in ASCI{channel} TDR with TE disabled; "
                     f"cycle={self.bns.cpu.cycle_count()} "

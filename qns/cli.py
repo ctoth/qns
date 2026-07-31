@@ -51,15 +51,14 @@ def parse_hex_address(value: str) -> int:
 
 def _bounded_int(minimum: int, maximum: int) -> Callable[[str], int]:
     """Build an argparse integer parser restricted to an inclusive range."""
+
     def parse(value: str) -> int:
         try:
             parsed = int(value)
         except ValueError:
             raise argparse.ArgumentTypeError(f"invalid integer: {value}")
         if not minimum <= parsed <= maximum:
-            raise argparse.ArgumentTypeError(
-                f"must be between {minimum} and {maximum}: {value}"
-            )
+            raise argparse.ArgumentTypeError(f"must be between {minimum} and {maximum}: {value}")
         return parsed
 
     return parse
@@ -75,10 +74,7 @@ def _format_phoneme(phoneme: Phoneme, style: str) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the qns.bns argument parser."""
-    parser = argparse.ArgumentParser(
-        prog="qns.bns",
-        description="BNS (Braille 'N Speak) emulator"
-    )
+    parser = argparse.ArgumentParser(prog="qns.bns", description="BNS (Braille 'N Speak) emulator")
     parser.add_argument("rom_file", help="ROM file to load (.bns or raw firmware)")
 
     # Basic options
@@ -101,10 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--audio-log",
         type=Path,
         metavar="FILE",
-        help=(
-            "Write live PCM producer and sound-callback timing to CSV; "
-            "requires --audio pcm"
-        ),
+        help=("Write live PCM producer and sound-callback timing to CSV; requires --audio pcm"),
     )
     parser.add_argument(
         "--synth",
@@ -123,27 +116,36 @@ def build_parser() -> argparse.ArgumentParser:
         default="direct",
         help="Select the z-core API path (default: direct)",
     )
-    parser.add_argument("--trace", action="store_true",
-                        help="Show boot trace instead of running")
-    parser.add_argument("--realtime", action="store_true",
-                        help="Hold emulation to wall-clock speed (implied by --audio)")
-    parser.add_argument("--no-realtime", dest="realtime", action="store_false",
-                        help="Run as fast as possible even with --audio")
+    parser.add_argument("--trace", action="store_true", help="Show boot trace instead of running")
+    parser.add_argument(
+        "--realtime",
+        action="store_true",
+        help="Hold emulation to wall-clock speed (implied by --audio)",
+    )
+    parser.add_argument(
+        "--no-realtime",
+        dest="realtime",
+        action="store_false",
+        help="Run as fast as possible even with --audio",
+    )
     parser.set_defaults(realtime=None)
     parser.add_argument(
         "--input",
         choices=("keyboard", "6-key", "6-key-dvorak", "none", "serial0", "serial1"),
         help="Route standard input to the BNS keyboard, six-key Braille entry "
-             "(fdsjkl, or ueohtn for Dvorak), or an ASCI channel",
+        "(fdsjkl, or ueohtn for Dvorak), or an ASCI channel",
     )
     parser.add_argument(
         "--reset",
         choices=("warm", "cold"),
         help="Apply the model's physical warm- or cold-reset startup gesture",
     )
-    parser.add_argument("--output", choices=("console", "serial0", "serial1"),
-                        default="console",
-                        help="Show console logs or route one raw ASCI channel to standard output")
+    parser.add_argument(
+        "--output",
+        choices=("console", "serial0", "serial1"),
+        default="console",
+        help="Show console logs or route one raw ASCI channel to standard output",
+    )
     parser.add_argument(
         "--stdio",
         choices=("jsonl",),
@@ -172,10 +174,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # Debugging options
-    parser.add_argument("--cycles", type=int, default=0, metavar="N",
-                        help="Run for N cycles then exit (default: unlimited)")
-    parser.add_argument("--trace-io", action="store_true",
-                        help="Log all I/O port reads/writes")
+    parser.add_argument(
+        "--cycles",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Run for N cycles then exit (default: unlimited)",
+    )
+    parser.add_argument("--trace-io", action="store_true", help="Log all I/O port reads/writes")
     parser.add_argument(
         "--trace-speech",
         type=str,
@@ -185,25 +191,45 @@ def build_parser() -> argparse.ArgumentParser:
             "count and full decoded register state"
         ),
     )
-    parser.add_argument("--trace-interrupts", action="store_true",
-                        help="Log interrupt activity (IRQ lines, ITC register)")
-    parser.add_argument("--trace-writes", type=parse_hex_address, metavar="ADDR",
-                        help="Log writes to specific physical address (hex, e.g., 0xD468)")
+    parser.add_argument(
+        "--trace-interrupts",
+        action="store_true",
+        help="Log interrupt activity (IRQ lines, ITC register)",
+    )
+    parser.add_argument(
+        "--trace-writes",
+        type=parse_hex_address,
+        metavar="ADDR",
+        help="Log writes to specific physical address (hex, e.g., 0xD468)",
+    )
     parser.add_argument(
         "--watch-pc",
         type=parse_hex_address,
         metavar="ADDR",
         help="Emit one JSONL CPU event when execution reaches this logical address",
     )
-    parser.add_argument("--trace-writes-range", nargs=2, type=parse_hex_address,
-                        metavar=("START", "END"),
-                        help="Log writes to physical address range (hex, e.g., 0xD000 0xE000)")
-    parser.add_argument("--trace-first-writes", type=int, metavar="N",
-                        help="Log first N memory writes with addresses and values")
-    parser.add_argument("--dump-writes", type=str, metavar="FILE",
-                        help="Dump all unique write addresses to CSV file (address,count)")
-    parser.add_argument("--dump-ram", type=str, metavar="FILE",
-                        help="Dump RAM contents to file after execution")
+    parser.add_argument(
+        "--trace-writes-range",
+        nargs=2,
+        type=parse_hex_address,
+        metavar=("START", "END"),
+        help="Log writes to physical address range (hex, e.g., 0xD000 0xE000)",
+    )
+    parser.add_argument(
+        "--trace-first-writes",
+        type=int,
+        metavar="N",
+        help="Log first N memory writes with addresses and values",
+    )
+    parser.add_argument(
+        "--dump-writes",
+        type=str,
+        metavar="FILE",
+        help="Dump all unique write addresses to CSV file (address,count)",
+    )
+    parser.add_argument(
+        "--dump-ram", type=str, metavar="FILE", help="Dump RAM contents to file after execution"
+    )
     state_group = parser.add_mutually_exclusive_group()
     state_group.add_argument(
         "--state",
@@ -223,21 +249,30 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DIR",
         help="Expose a host directory to the firmware as PC Disk on ASCI channel 0",
     )
-    parser.add_argument("--stats", action="store_true",
-                        help="Show execution statistics at end")
+    parser.add_argument("--stats", action="store_true", help="Show execution statistics at end")
     speech = parser.add_argument_group(
         "retained speech settings",
         "Values a field unit keeps in battery-backed RAM.  Defaults are "
         "the midpoint of each range documented in BSAPI.H.",
     )
-    speech.add_argument("--volume", type=_bounded_int(0, 15), metavar="0-15",
-                        help="Speech amplitude (default 8)")
-    speech.add_argument("--rate", type=_bounded_int(1, 16), metavar="1-16",
-                        help="Speaking rate (default 9)")
-    speech.add_argument("--pitch", type=_bounded_int(1, 32), metavar="1-32",
-                        help="Filter frequency; the API's \"Pitch\" (default 17)")
-    speech.add_argument("--frequency", type=_bounded_int(0, 255), metavar="0-255",
-                        help="Inflection; the API's \"Frequency\" (default 128)")
+    speech.add_argument(
+        "--volume", type=_bounded_int(0, 15), metavar="0-15", help="Speech amplitude (default 8)"
+    )
+    speech.add_argument(
+        "--rate", type=_bounded_int(1, 16), metavar="1-16", help="Speaking rate (default 9)"
+    )
+    speech.add_argument(
+        "--pitch",
+        type=_bounded_int(1, 32),
+        metavar="1-32",
+        help='Filter frequency; the API\'s "Pitch" (default 17)',
+    )
+    speech.add_argument(
+        "--frequency",
+        type=_bounded_int(0, 255),
+        metavar="0-255",
+        help='Inflection; the API\'s "Frequency" (default 128)',
+    )
     return parser
 
 
@@ -318,9 +353,7 @@ def speech_settings(args: argparse.Namespace) -> dict[str, int]:
 def main(argv: list[str] | None = None) -> None:
     """CLI entry point."""
     parser = build_parser()
-    args = parser.parse_args(
-        settle_audio_backend(sys.argv[1:] if argv is None else argv)
-    )
+    args = parser.parse_args(settle_audio_backend(sys.argv[1:] if argv is None else argv))
 
     # --synth predates --audio taking a backend.  It still selects one, but
     # only where --audio did not say so itself.
@@ -376,11 +409,13 @@ def main(argv: list[str] | None = None) -> None:
     english_chunks: list[str] = []
     english_callback: Callable[[str], None] | None = None
     if stdio_output is not None:
+
         def emit_stdio_english(text: str) -> None:
             stdio_output.emit("speech", text=text)
 
         english_callback = emit_stdio_english
     elif args.speech_stream == "english":
+
         def stream_english(text: str) -> None:
             print(f"Speech english: {text}", flush=True)
 
@@ -388,9 +423,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.speech == "english":
         english_callback = english_chunks.append
     output_context = (
-        redirect_stdout(sys.stderr)
-        if raw_serial_output or structured_stdio
-        else nullcontext()
+        redirect_stdout(sys.stderr) if raw_serial_output or structured_stdio else nullcontext()
     )
     display_frame_emitted = False
 
@@ -437,6 +470,7 @@ def main(argv: list[str] | None = None) -> None:
         speech_trace: list[tuple[int, ...]] = []
 
         if stdio_output is not None:
+
             def emit_stdio_speech(_code: int, _name: str) -> None:
                 phoneme = bns.ssi263.get_phonemes(start=-1)[0]
                 stdio_output.emit(
@@ -454,6 +488,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
 
         elif args.speech_stream and args.speech_stream != "english":
+
             def emit_speech_phoneme(code: int, _name: str) -> None:
                 if code == 0:
                     return
@@ -488,6 +523,7 @@ def main(argv: list[str] | None = None) -> None:
             speech_observers.append(record_speech_registers)
 
         if speech_observers:
+
             def dispatch_speech(code: int, name: str) -> None:
                 for observe in speech_observers:
                     observe(code, name)
@@ -496,9 +532,7 @@ def main(argv: list[str] | None = None) -> None:
 
         if args.display:
             if bns.display is None:
-                raise RuntimeError(
-                    f"{args.model} has no built-in Braille display"
-                )
+                raise RuntimeError(f"{args.model} has no built-in Braille display")
 
             def emit_display_frame(frame: bytes) -> None:
                 nonlocal display_frame_emitted

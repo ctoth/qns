@@ -73,12 +73,14 @@ class PIC16C56Clock:
         self._responses.append(0x20 | (current["minute"] & 0x1F))
         if current["minute"] > 31:
             self._responses.append(0x05)
-        self._responses.extend((
-            0x40 | current["month"],
-            0x60 | current["day"],
-            0xA0 | current["hour"],
-            0x80 | ((current["year"] - 1989) & 0x1F),
-        ))
+        self._responses.extend(
+            (
+                0x40 | current["month"],
+                0x60 | current["day"],
+                0xA0 | current["hour"],
+                0x80 | ((current["year"] - 1989) & 0x1F),
+            )
+        )
 
     def _write_selected_field(self, value: int) -> None:
         if self._normal_selected:
@@ -134,10 +136,7 @@ class PIC16C56Clock:
             and (alarm["month"] == 0 or current["month"] == alarm["month"])
             and (alarm["day"] == 0 or current["day"] == alarm["day"])
             and (alarm["hour"] == 0x1F or current["hour"] == alarm["hour"])
-            and (
-                self._alarm_minute_wildcard
-                or current["minute"] == alarm["minute"]
-            )
+            and (self._alarm_minute_wildcard or current["minute"] == alarm["minute"])
         )
         return token if matches else None
 

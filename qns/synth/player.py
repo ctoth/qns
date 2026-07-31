@@ -3,15 +3,28 @@
 Provides real-time audio output for the SSI-263 synthesizer.
 """
 
+from __future__ import annotations
+
 import csv
 import queue
 import threading
 import time
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 import numpy as np
-import sounddevice as sd
+
+
+def _open_output_stream(**kwargs: object) -> Any:
+    """Create the optional PortAudio stream only when live audio starts."""
+    try:
+        import sounddevice as sd
+    except (ImportError, OSError) as error:
+        raise RuntimeError(
+            "live audio requires sounddevice and a working PortAudio installation"
+        ) from error
+    return sd.OutputStream(**kwargs)
+
 
 _LOG_HEADER = (
     "wall_seconds",
@@ -50,7 +63,7 @@ class AudioPlayer:
         self.blocksize = blocksize
 
         self._queue: queue.Queue[np.ndarray] = queue.Queue()
-        self._stream: sd.OutputStream | None = None
+        self._stream: Any | None = None
         self._buffer: np.ndarray = np.array([], dtype=np.float32)
         self._lock = threading.Lock()
         self._playing = False
@@ -89,7 +102,7 @@ class AudioPlayer:
             return
 
         self._start_log()
-        self._stream = sd.OutputStream(
+        self._stream = _open_output_stream(
             samplerate=self.sample_rate,
             channels=self.channels,
             blocksize=self.blocksize,
@@ -310,17 +323,19 @@ class AudioPlayer:
             if output_dac_time is not None and isinstance(audio_frames, int)
             else None
         )
-        self._log_queue.put((
-            f"{time.perf_counter() - self._log_start:.9f}",
-            event,
-            frames,
-            audio_frames,
-            silence_frames,
-            queued_frames,
-            buffered_frames,
-            priming,
-            f"{current_time:.9f}" if current_time is not None else "",
-            f"{output_dac_time:.9f}" if output_dac_time is not None else "",
-            f"{audio_end_time:.9f}" if audio_end_time is not None else "",
-            str(status) if status else "",
-        ))
+        self._log_queue.put(
+            (
+                f"{time.perf_counter() - self._log_start:.9f}",
+                event,
+                frames,
+                audio_frames,
+                silence_frames,
+                queued_frames,
+                buffered_frames,
+                priming,
+                f"{current_time:.9f}" if current_time is not None else "",
+                f"{output_dac_time:.9f}" if output_dac_time is not None else "",
+                f"{audio_end_time:.9f}" if audio_end_time is not None else "",
+                str(status) if status else "",
+            )
+        )

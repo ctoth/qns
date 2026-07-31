@@ -74,13 +74,15 @@ def phoneme_track(code: int) -> list[dict]:
             window = np.pad(window, (0, ORDER * 2 - len(window)))
         windowed = window * np.hanning(len(window))
         full = np.correlate(windowed, windowed, "full")
-        autocorr = full[len(windowed) - 1:len(windowed) + ORDER]
+        autocorr = full[len(windowed) - 1 : len(windowed) + ORDER]
         reflection, _ = levinson(autocorr, ORDER)
-        frames.append({
-            "reflection": reflection,
-            "taps": reflection_to_lpc(reflection)[1:],
-            "span": (start, stop),
-        })
+        frames.append(
+            {
+                "reflection": reflection,
+                "taps": reflection_to_lpc(reflection)[1:],
+                "span": (start, stop),
+            }
+        )
 
     # One inverse-filtering pass across the whole capture, carrying history,
     # so the residual is exactly what reproduces the capture on the way back.
@@ -168,7 +170,7 @@ def measure() -> None:
     for code in (0x27, 0x29, 0x0E, 0x30):
         raw = get_phoneme_samples(code - 2).astype(np.float64) / 32768.0
         got = TrackStream(transition_ms=0).render(code, len(raw), 15)
-        error = float(np.sqrt(((got - raw) ** 2).mean()) / np.sqrt((raw ** 2).mean()))
+        error = float(np.sqrt(((got - raw) ** 2).mean()) / np.sqrt((raw**2).mean()))
         print(f"  {PHONEMES[code][0]:5} relative RMS error {error:8.5f}")
 
     print("\nPeak level of each stop, isolated:")
@@ -176,9 +178,7 @@ def measure() -> None:
     print(f"  {'stop':6} {'pcm':>7} {'track':>7}")
     for code in STOPS:
         want = float(np.abs(pcm.get_phoneme_audio(code, 15, 0)).max())
-        got = float(np.abs(
-            TrackStream().render(code, playback_length_samples(code, 0), 15)
-        ).max())
+        got = float(np.abs(TrackStream().render(code, playback_length_samples(code, 0), 15)).max())
         print(f"  {PHONEMES[code][0]:6} {want:7.3f} {got:7.3f}")
 
 
@@ -198,17 +198,19 @@ def main() -> None:
         rows = list(csv.DictReader(handle))
 
     stream = TrackStream(transition_ms=args.transition_ms)
-    samples = np.concatenate([
-        stream.render(
-            int(row["code"]) & 0x3F,
-            playback_length_samples(
-                int(row["code"]),
-                int(row.get("playback_duration") or row["duration_mode"]),
-            ),
-            int(row["amplitude"]),
-        )
-        for row in rows
-    ])
+    samples = np.concatenate(
+        [
+            stream.render(
+                int(row["code"]) & 0x3F,
+                playback_length_samples(
+                    int(row["code"]),
+                    int(row.get("playback_duration") or row["duration_mode"]),
+                ),
+                int(row["amplitude"]),
+            )
+            for row in rows
+        ]
+    )
 
     pcm = np.clip(samples * 32767.0, -32768, 32767).astype("<i2")
     with wave.open(str(args.output), "wb") as handle:
@@ -216,10 +218,7 @@ def main() -> None:
         handle.setsampwidth(2)
         handle.setframerate(SAMPLE_RATE)
         handle.writeframes(pcm.tobytes())
-    print(
-        f"Rendered {len(rows)} phonemes to {args.output} "
-        f"({len(samples) / SAMPLE_RATE:.2f}s)"
-    )
+    print(f"Rendered {len(rows)} phonemes to {args.output} ({len(samples) / SAMPLE_RATE:.2f}s)")
 
     if args.measure:
         print()

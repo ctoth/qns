@@ -99,8 +99,7 @@ def probe_windows_console() -> int:
     sys.path.insert(0, str(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     from qns.keysource import windows_console_key_events
 
-    print(f"platform=win32 WT_SESSION="
-          f"{'set' if os.environ.get('WT_SESSION') else 'unset'}")
+    print(f"platform=win32 WT_SESSION={'set' if os.environ.get('WT_SESSION') else 'unset'}")
     print("\nPress and release some keys - 'f', then 'f'+'d' together.")
     print(f"  (recording up to {PROBE_SECONDS:.0f}s; press Escape to stop early)")
 
@@ -149,9 +148,11 @@ def main() -> int:
 
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
-    print(f"TERM={os.environ.get('TERM')!r} "
-          f"WT_SESSION={'set' if os.environ.get('WT_SESSION') else 'unset'} "
-          f"TERM_PROGRAM={os.environ.get('TERM_PROGRAM')!r}")
+    print(
+        f"TERM={os.environ.get('TERM')!r} "
+        f"WT_SESSION={'set' if os.environ.get('WT_SESSION') else 'unset'} "
+        f"TERM_PROGRAM={os.environ.get('TERM_PROGRAM')!r}"
+    )
 
     try:
         tty.setraw(fd)

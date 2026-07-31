@@ -3,8 +3,40 @@
 Run with: uv run pytest tests/test_synth.py -v
 """
 
+import subprocess
+import sys
+
 import numpy as np
 import pytest
+
+
+@pytest.fixture
+def fake_output_stream(monkeypatch):
+    """Keep automated audio-player tests independent of host audio hardware."""
+    from qns.synth import player as player_module
+
+    streams = []
+
+    class OutputStream:
+        def __init__(self, **kwargs):
+            self.callback = kwargs["callback"]
+            self.started = False
+            self.stopped = False
+            self.closed = False
+            streams.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(player_module, "_open_output_stream", OutputStream)
+    return streams
+
 
 # =============================================================================
 # Phoneme sample data
@@ -65,7 +97,39 @@ def test_get_phoneme_samples():
 # =============================================================================
 
 
-def test_audio_player_lifecycle():
+def test_audio_player_import_does_not_require_portaudio():
+    """Headless hosts can use non-audio QNS features without PortAudio."""
+    script = """
+import builtins
+
+real_import = builtins.__import__
+
+def import_without_portaudio(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "sounddevice":
+        raise OSError("PortAudio library not found")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = import_without_portaudio
+
+from qns.synth.player import AudioPlayer
+
+try:
+    AudioPlayer().start()
+except RuntimeError as error:
+    assert "PortAudio" in str(error)
+else:
+    raise AssertionError("live audio unexpectedly started without PortAudio")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_audio_player_lifecycle(fake_output_stream):
     """AudioPlayer can start and stop cleanly."""
     from qns.synth.player import AudioPlayer
 
@@ -75,9 +139,13 @@ def test_audio_player_lifecycle():
     player.start()
     assert not player.is_playing()  # No samples queued yet
     player.stop()
+    assert len(fake_output_stream) == 1
+    assert fake_output_stream[0].started
+    assert fake_output_stream[0].stopped
+    assert fake_output_stream[0].closed
 
 
-def test_audio_player_queues_samples():
+def test_audio_player_queues_samples(fake_output_stream):
     """AudioPlayer accepts samples for playback."""
     from qns.synth.player import AudioPlayer
 
@@ -148,29 +216,14 @@ def test_audio_player_does_not_release_initial_priming_for_control_frames():
 
 
 def test_audio_player_logs_callback_delivery_and_inserted_silence(
-    monkeypatch,
+    fake_output_stream,
     tmp_path,
 ):
     import csv
     from types import SimpleNamespace
 
-    from qns.synth import player as player_module
     from qns.synth.player import AudioPlayer
 
-    class OutputStream:
-        def __init__(self, **kwargs):
-            self.callback = kwargs["callback"]
-
-        def start(self):
-            pass
-
-        def stop(self):
-            pass
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(player_module.sd, "OutputStream", OutputStream)
     log_path = tmp_path / "pcm-audio.csv"
     player = AudioPlayer(
         sample_rate=1000,
@@ -212,7 +265,7 @@ def test_audio_player_logs_callback_delivery_and_inserted_silence(
 def test_audio_player_produces_sound():
     """Manual test: verify audio output works.
 
-    Run with: uv run pytest tests/test_synth.py -k manual -v -s
+    Run with: uv run pytest tests/test_synth.py -m manual -v -s
     """
     import time
 
@@ -318,7 +371,7 @@ def test_ssi263_chip_drives_formant_backend():
 def test_synth_speaks_phoneme():
     """Manual: hear a single phoneme.
 
-    Run with: uv run pytest tests/test_synth.py::test_synth_speaks_phoneme -v -s
+    Run with: uv run pytest tests/test_synth.py::test_synth_speaks_phoneme -m manual -v -s
     """
     import time
 
@@ -347,7 +400,7 @@ def test_synth_speaks_phoneme():
 def test_synth_with_emulator():
     """Manual: hear synth via emulator chip writes.
 
-    Run with: uv run pytest tests/test_synth.py::test_synth_with_emulator -v -s
+    Run with: uv run pytest tests/test_synth.py::test_synth_with_emulator -m manual -v -s
     """
     import time
 

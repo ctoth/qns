@@ -18,7 +18,7 @@ WINDOW = 110  # 5 ms, the same frame the synthesis works in
 def _envelope(samples: np.ndarray) -> np.ndarray:
     """Short-window RMS, which is what "choppy" is audible as."""
     count = len(samples) // WINDOW
-    return np.sqrt((samples[:count * WINDOW].reshape(count, WINDOW) ** 2).mean(axis=1))
+    return np.sqrt((samples[: count * WINDOW].reshape(count, WINDOW) ** 2).mean(axis=1))
 
 
 def _join_ratio(pieces: list[np.ndarray]) -> float:
@@ -27,7 +27,7 @@ def _join_ratio(pieces: list[np.ndarray]) -> float:
     joins = np.cumsum([len(piece) for piece in pieces])[:-1]
     envelope = _envelope(output)
     overall = float(np.median(envelope[envelope > 0]))
-    dips = [envelope[max(0, join // WINDOW - 1):join // WINDOW + 2].min() for join in joins]
+    dips = [envelope[max(0, join // WINDOW - 1) : join // WINDOW + 2].min() for join in joins]
     return float(np.median(dips)) / overall
 
 

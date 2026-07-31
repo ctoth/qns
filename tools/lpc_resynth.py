@@ -68,10 +68,11 @@ def synthesize(
         source, target, blend = frame["from"], frame["to"], frame["blend"]
         gain = (1 - blend) * source["gain"] + blend * target["gain"]
         voiced = source["voiced"] if blend < 0.5 else target["voiced"]
-        period = int(round(
-            ((1 - blend) * source["period"] + blend * target["period"])
-            / max(0.05, pitch_scale)
-        ))
+        period = int(
+            round(
+                ((1 - blend) * source["period"] + blend * target["period"]) / max(0.05, pitch_scale)
+            )
+        )
         period = max(2, period)
         start = position * frame_len
 
@@ -80,13 +81,11 @@ def synthesize(
             # so the excitation's character crosses over with the filter.
             pulse = resample_template(source["template"], period)
             if blend > 0 and target["voiced"]:
-                pulse = (1 - blend) * pulse + blend * resample_template(
-                    target["template"], period
-                )
+                pulse = (1 - blend) * pulse + blend * resample_template(target["template"], period)
             pulse = pulse * gain
             while next_pulse < start + frame_len:
                 end = min(next_pulse + len(pulse), len(excitation))
-                excitation[next_pulse:end] += pulse[:end - next_pulse]
+                excitation[next_pulse:end] += pulse[: end - next_pulse]
                 next_pulse += period
         else:
             # Fricative residual is noise; draw randomly from the captured
@@ -94,10 +93,10 @@ def synthesize(
             template = source["template"] if blend < 0.5 else target["template"]
             if len(template) > frame_len:
                 offset = int(rng.integers(0, len(template) - frame_len))
-                noise = template[offset:offset + frame_len]
+                noise = template[offset : offset + frame_len]
             else:
                 noise = rng.normal(0.0, 1.0, frame_len)
-            excitation[start:start + frame_len] += noise * gain
+            excitation[start : start + frame_len] += noise * gain
             next_pulse = start + frame_len
 
     for position, frame in enumerate(track):
@@ -143,9 +142,7 @@ def main() -> None:
             cache[code] = analyse_phoneme(code)
         sequence.append(cache[code])
 
-    samples = synthesize(
-        sequence, args.phoneme_ms, args.transition_ms, args.pitch_scale
-    )
+    samples = synthesize(sequence, args.phoneme_ms, args.transition_ms, args.pitch_scale)
     peak = float(np.max(np.abs(samples))) if len(samples) else 0.0
     if peak > 0:
         samples = samples / peak * 0.89
