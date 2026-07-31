@@ -19,15 +19,6 @@ class BQ2010GasGauge:
         self._reply_value: int | None = None
         self._reply_start = 0
 
-    @property
-    def cycle_timing_active(self) -> bool:
-        """Whether the current single-wire exchange needs exact CPU cycles."""
-        return (
-            self._fall_cycle is not None
-            or bool(self._command_bits)
-            or self._reply_value is not None
-        )
-
     def write_line(self, high: bool, cycle: int) -> None:
         """Observe one host-driven edge on the open-drain data line."""
         high = bool(high)

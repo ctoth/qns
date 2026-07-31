@@ -442,6 +442,9 @@ class BNS:
         self.disk_power_enabled = False
         self.charge_output_high = False
         self.power_latch = 0
+        self.main_power_held = False
+        self._power_off_requested = False
+        self.exit_reason: str | None = None
         self.parallel_ports = [0xFF, 0xFF, 0x00, 0xFF]
         self.bl4_latch = 0
         self.high_bank_latch = 0
@@ -480,8 +483,8 @@ class BNS:
                 },
                 mem_read=self._mem_read,
                 mem_write=self._mem_write,
-                io_read=self._io_read,
-                io_write=self._io_write,
+                io_read=self._native_io_read,
+                io_write=self._native_io_write,
             )
             self.memory.ram = self.cpu.ram(0x00000)
             self.cpu.set_io_trace(True)
@@ -716,16 +719,49 @@ class BNS:
                 port = event["port"] & 0xFF
                 if self.ssi263.base_port <= port < self.ssi263.base_port + 5:
                     self.ssi263.confirm_write_cycle(port, event["value"], event["cycle"])
+                if port == self._timed_power_latch_port():
+                    callback_cycle = self._callback_cycle
+                    self._callback_cycle = event["cycle"]
+                    try:
+                        self.io.write(port, event["value"])
+                    finally:
+                        self._callback_cycle = callback_cycle
+            elif (
+                event["kind"] == "io_read"
+                and self.profile.family == "bl4"
+                and event["port"] & 0xFF == self.keyboard.port
+            ):
+                self.watchdog.service(event["cycle"])
         if self.cpu.events_lost():
             raise RuntimeError("z-core memory events were lost; QNS observers are invalid")
 
+    def _native_io_read(self, port: int) -> int:
+        """Return native I/O data while exact-cycle read effects await events."""
+        return self._read_io(port, service_bl4_watchdog=False)
+
     def _io_read(self, port: int) -> int:
         """I/O read callback for CPU."""
+        return self._read_io(port, service_bl4_watchdog=True)
+
+    def _read_io(self, port: int, *, service_bl4_watchdog: bool) -> int:
+        """Read the I/O bus, optionally applying callback-timed read effects."""
         value = self.io.read(port)
+        if (
+            service_bl4_watchdog
+            and self.profile.family == "bl4"
+            and port & 0xFF == self.keyboard.port
+        ):
+            self.watchdog.service(self._callback_cycle)
         # Trace ITC register reads
         if self.trace_interrupts and (port & 0xFF) == self.PORT_ITC:
             self._log_itc("READ", value)
         return value
+
+    def _native_io_write(self, port: int, value: int) -> None:
+        """Defer cycle-sensitive native latch writes to exact-cycle events."""
+        if port & 0xFF == self._timed_power_latch_port():
+            return
+        self._io_write(port, value)
 
     def _io_write(self, port: int, value: int) -> None:
         """I/O write callback for CPU."""
@@ -736,6 +772,14 @@ class BNS:
         if self.core == "direct" and self.ssi263.base_port <= low_port < self.ssi263.base_port + 5:
             self.ssi263.defer_next_write_cycle()
         self.io.write(port, value)
+
+    def _timed_power_latch_port(self) -> int | None:
+        """Return the profile's exact-cycle power/gauge output port."""
+        if self.profile.family == "bsnew":
+            return 0xA0
+        if self.profile.family == "bl4":
+            return 0x80
+        return None
 
     def _log_itc(self, op: str, value: int) -> None:
         """Log ITC register access with decoded bits."""
@@ -869,6 +913,7 @@ class BNS:
     def _write_bsnew_power(self, port: int, value: int) -> None:
         """Apply the BSNEW combined serial, speech, flash, and disk latch."""
         self.power_latch = value
+        self._apply_main_power_hold(value)
         self.rs232_power_enabled = bool(value & 0x01)
         self.speech_power_enabled = bool(value & 0x02)
         self.flash_power_enabled = bool(value & 0x04)
@@ -900,12 +945,20 @@ class BNS:
     def _write_bl4_power(self, port: int, value: int) -> None:
         """Apply the BL4 combined power and gas-gauge output latch."""
         self.power_latch = value
+        self._apply_main_power_hold(value)
         self.rs232_power_enabled = bool(value & 0x01)
         self.speech_power_enabled = bool(value & 0x02)
         self.disk_power_enabled = bool(value & 0x10)
         self.charge_output_high = bool(value & 0x80)
         if self.gas_gauge:
             self.gas_gauge.write_line(bool(value & 0x80), self._callback_cycle)
+
+    def _apply_main_power_hold(self, value: int) -> None:
+        """Request shutdown when firmware releases an established main hold."""
+        held = bool(value & 0x08)
+        if self.main_power_held and not held:
+            self._power_off_requested = True
+        self.main_power_held = held
 
     def _read_bl4_status(self, port: int) -> int:
         """Return power-on status plus the BL4 gas-gauge input on bit three."""
@@ -1038,7 +1091,6 @@ class BNS:
         return any(
             (
                 self._english_capture_armed,
-                (self.gas_gauge is not None and self.gas_gauge.cycle_timing_active),
                 self.trace_interrupts,
                 self._keyboard_needs_steps(),
                 self.stdin_device not in (None, *CHORD_STDIN_DEVICES),
@@ -1379,7 +1431,7 @@ class BNS:
             print(f"Input: STDIN ({self.stdin_device})")
         return input_driver
 
-    def run(self, max_cycles: int = 0) -> None:
+    def run(self, max_cycles: int = 0) -> str | None:
         """Run emulation.
 
         Args:
@@ -1434,6 +1486,10 @@ class BNS:
                 budget_cycles += actual
                 executed_cycles = self._executed_cycles()
                 self.stats["cycles"] = executed_cycles
+                if self._power_off_requested:
+                    self.exit_reason = "device powered off"
+                    print(f"Emulation stopped: {self.exit_reason}")
+                    break
 
                 if self.realtime:
                     # Hold emulated time to wall-clock time.  The chip already
@@ -1496,6 +1552,7 @@ class BNS:
         print(f"Executed {executed_cycles:,} cycles")
         final_pc = self.cpu.reg(Reg.PC) if self.core == "direct" else self.cpu.pc
         print(f"Final PC: {final_pc:04X}")
+        return self.exit_reason
 
     def step(self) -> int:
         """Execute a single instruction. Returns cycles consumed."""

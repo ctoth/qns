@@ -60,6 +60,30 @@ REAL_BSP_REVISIONS = (
 DEFAULT_FILTER_FREQUENCY_TRACE = (0xFF,) * 3 + (0xF1,) * 113
 
 
+def _scripted_bs2_gauge_command(command: int) -> bytes:
+    """Build native OUT0 traffic with a short, exact one-bit low pulse."""
+    program = bytearray()
+
+    def write_latch(value: int) -> None:
+        program.extend((0x3E, value, 0xED, 0x39, 0xA0))
+
+    def delay(cycles: int) -> None:
+        program.extend((0x00,) * (cycles // 3))
+
+    write_latch(0x00)
+    delay(6_000)
+    write_latch(0x20)
+    delay(2_000)
+    for bit in range(8):
+        write_latch(0x00)
+        low_cycles = 200 if command & (1 << bit) else 3_000
+        delay(low_cycles)
+        write_latch(0x20)
+        delay(4_000 - low_cycles)
+    program.append(0x76)
+    return bytes(program)
+
+
 @pytest.mark.parametrize("image_offset", [0x3000, 0x7000, 0x8000])
 def test_load_rom_discovers_aligned_update_image_from_length_and_crc(
     tmp_path,
@@ -1372,6 +1396,19 @@ def test_bs2_wires_bq2010_data_line_between_power_latch_and_port_b():
     assert bns._io_read(0x81) == 0xFF
 
 
+def test_bs2_native_bulk_io_events_decode_exact_gauge_command():
+    """Fast-path OUT0 events retain the short edges of gauge command 03h."""
+    bns = BNS(model="bs2", core="direct")
+    assert bns.gas_gauge is not None
+    bns.memory.load_rom(_scripted_bs2_gauge_command(0x03))
+    bns._execute_instruction = Mock(side_effect=AssertionError("slow path used"))
+
+    bns._execute_budget(100_000)
+
+    assert bns.gas_gauge.command_log == [0x03]
+    assert not bns._requires_instruction_steps()
+
+
 def test_bs2_owns_8255_and_high_bank_ports():
     """BS2 must not apply the BSPLUS speech latch to its 8255 port A."""
     bns = BNS(model="bs2")
@@ -1469,6 +1506,51 @@ def test_bl4_owns_split_keyboard_parallel_display_and_four_megabyte_flash():
     assert bns.memory.high_bank_latch == 0x0F
 
 
+def test_bl4_main_power_latch_exits_run_only_after_hold_is_cleared():
+    """BL4 shutdown is the source sequence 99h, 08h, 00h on port 80h."""
+    bns = BNS(model="bl4", core="direct")
+    bns._io_write(0x80, 0x00)
+    assert not bns._power_off_requested
+    bns.memory.load_rom(
+        bytes(
+            (
+                0x3E,
+                0x99,
+                0xED,
+                0x39,
+                0x80,
+                0x3E,
+                0x08,
+                0xED,
+                0x39,
+                0x80,
+                0x3E,
+                0x00,
+                0xED,
+                0x39,
+                0x80,
+                0x18,
+                0xFE,
+            )
+        )
+    )
+
+    assert bns.run(max_cycles=1_000) == "device powered off"
+    assert not bns.main_power_held
+
+
+def test_bl4_native_b0_read_returns_dots_and_services_watchdog_at_exact_cycle():
+    """BL4's keyboard read also services its watchdog at the native read cycle."""
+    bns = BNS(model="bl4", core="direct")
+    bns.keyboard.press(0x15)
+    bns.memory.load_rom(bytes((0x00, 0xED, 0x38, 0xB0, 0x76)))
+
+    bns._execute_budget(100)
+
+    assert bns.cpu.reg(Reg.AF) >> 8 == 0x15
+    assert bns.watchdog.serviced_at == 6
+
+
 def test_bns_rejects_unknown_hardware_model():
     with pytest.raises(ValueError, match="Unsupported BNS model: unknown"):
         BNS(model="unknown")
@@ -1560,7 +1642,7 @@ def test_direct_external_write_callback_does_not_reenter_machine():
     assert bns.stats["writes"] == 1
 
 
-def test_flash_profile_without_active_observers_uses_bulk_execution():
+def test_gauge_traffic_never_enables_instruction_slow_path():
     bns = BNS(model="bs2", core="direct")
 
     assert not bns._requires_instruction_steps()
@@ -1568,11 +1650,39 @@ def test_flash_profile_without_active_observers_uses_bulk_execution():
     bns._callback_cycle = 100
     bns._io_write(0xA0, 0x00)
 
-    assert bns._requires_instruction_steps()
+    assert not bns._requires_instruction_steps()
 
     bns._callback_cycle = 903_480
     bns._io_write(0xA0, 0x20)
 
+    assert not bns._requires_instruction_steps()
+
+
+def test_active_speech_without_gauge_traffic_keeps_bulk_execution():
+    """An active phoneme retains the existing speech-throughput fast path."""
+    bns = BNS(model="bsp", core="direct")
+    bns.memory.load_rom(
+        bytes(
+            (
+                0x3E,
+                0xC1,
+                0xED,
+                0x39,
+                0xC0,
+                0x3E,
+                0x0F,
+                0xED,
+                0x39,
+                0xC3,
+                0x18,
+                0xFE,
+            )
+        )
+    )
+
+    bns._execute_budget(100)
+
+    assert bns.ssi263.phoneme_log == [1]
     assert not bns._requires_instruction_steps()
 
 

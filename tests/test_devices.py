@@ -220,6 +220,25 @@ def test_bq2010_break_resynchronizes_after_partial_boot_frame():
     assert value == 100
 
 
+def test_bq2010_exact_edges_preserve_short_one_bits_lost_to_chunk_quantization():
+    """A 1-bit pulse needs its exact edge cycles, not a 1000-cycle bucket."""
+    events: list[tuple[bool, int]] = [(False, 0), (True, 3_000)]
+    cycle = 3_900
+    for bit in range(8):
+        low_cycles = 200 if 0x03 & (1 << bit) else 2_000
+        events.extend(((False, cycle), (True, cycle + low_cycles)))
+        cycle += 3_000
+
+    exact = BQ2010GasGauge()
+    quantized = BQ2010GasGauge()
+    for high, edge_cycle in events:
+        exact.write_line(high, edge_cycle)
+        quantized.write_line(high, edge_cycle // 1_000 * 1_000)
+
+    assert exact.command_log == [0x03]
+    assert quantized.command_log == [0x00]
+
+
 def test_msm6242_exposes_bsp_bcd_clock_registers():
     """The BSP clock window uses MSM6242 BCD fields and Sunday-zero weeks."""
     current = datetime(2026, 7, 18, 23, 45, 56)
