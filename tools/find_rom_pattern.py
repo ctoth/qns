@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-BNS_IMAGE_OFFSET = 0x3000
+from qns.loader import load_firmware
+
 BANK_SIZE = 0x10000
 
 
@@ -43,23 +44,15 @@ def find_pattern(data: bytes, pattern: tuple[int | None, ...]) -> list[int]:
     ]
 
 
-def load_firmware(path: Path) -> tuple[bytes, int]:
-    """Return firmware bytes and their offset within the source file."""
-    data = path.read_bytes()
-    if len(data) >= 5 and data[2:5] == b"BNS":
-        if len(data) <= BNS_IMAGE_OFFSET:
-            raise ValueError(f"BNS package is only {len(data)} bytes")
-        return data[BNS_IMAGE_OFFSET:], BNS_IMAGE_OFFSET
-    return data, 0
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("rom", type=Path)
     parser.add_argument("pattern", help="hex bytes separated by spaces; ?? matches any byte")
     args = parser.parse_args()
 
-    firmware, file_base = load_firmware(args.rom)
+    image = load_firmware(args.rom)
+    firmware = image.data
+    file_base = image.image_offset or 0
     pattern = parse_pattern(args.pattern)
     matches = find_pattern(firmware, pattern)
     for offset in matches:

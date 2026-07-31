@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from package_fixtures import build_update_package
 from z180 import Machine, Reg
 from z180.compat import Z180 as CompatZ180
 
@@ -43,25 +44,6 @@ INPUT_BOUNDARIES: dict[str, InputBoundary] = {
 }
 
 
-def _build_update_package(image_offset, firmware):
-    package = bytearray(image_offset)
-    package[2:5] = b"BNS"
-    package[image_offset - 6 : image_offset - 2] = len(firmware).to_bytes(
-        4,
-        "little",
-    )
-
-    crc = 0
-    for byte in firmware:
-        high_bit = crc & 0x8000
-        crc = (crc << 1) & 0xFFFF
-        crc = (crc & 0xFF00) | ((crc + byte) & 0xFF)
-        if high_bit:
-            crc ^= 0xA097
-    package[image_offset - 2 : image_offset] = crc.to_bytes(2, "little")
-    return bytes(package) + firmware
-
-
 @pytest.mark.parametrize("image_offset", [0x3000, 0x7000, 0x8000])
 def test_load_rom_discovers_aligned_update_image_from_length_and_crc(
     tmp_path,
@@ -69,7 +51,7 @@ def test_load_rom_discovers_aligned_update_image_from_length_and_crc(
 ):
     firmware = bytes(range(251)) * 1000
     package_path = tmp_path / "firmware.bns"
-    package_path.write_bytes(_build_update_package(image_offset, firmware))
+    package_path.write_bytes(build_update_package(image_offset, firmware))
     bns = BNS()
 
     bns.load_rom(package_path)
@@ -81,7 +63,7 @@ def test_load_rom_discovers_aligned_update_image_from_length_and_crc(
 
 def test_load_rom_rejects_update_package_without_valid_image_crc(tmp_path):
     firmware = bytes(range(64))
-    package = bytearray(_build_update_package(0x7000, firmware))
+    package = bytearray(build_update_package(0x7000, firmware))
     package[-1] ^= 0xFF
     package_path = tmp_path / "corrupt.bns"
     package_path.write_bytes(package)
