@@ -359,6 +359,31 @@ def test_formant_duration_conformance_preserves_rms_and_pitch():
     assert 0.95 <= pitch_ratio <= 1.05
 
 
+def test_formant_duration_conformance_bounds_actual_waveform_seams():
+    """Repeated actual formants must not introduce click-sized discontinuities."""
+    from qns.ssi263 import playback_length_samples
+    from qns.synth import SSI263Synth
+    from qns.synth.sc02_to_sc01 import SC02_TO_SC01
+    from qns.synth.timing import conform_audio_to_length
+
+    for phoneme in range(1, 64):
+        raw = SSI263Synth(audio_enabled=False)._formant.synthesize_phoneme(SC02_TO_SC01[phoneme])
+        native_steps = np.abs(np.diff(raw.astype(np.float64)))
+        native_max = float(native_steps.max()) if len(native_steps) else 0.0
+
+        for duration in range(4):
+            for rate in (0, 4, 8, 12, 15):
+                target = playback_length_samples(phoneme, duration, rate)
+                if target <= len(raw):
+                    continue
+
+                conformed = conform_audio_to_length(raw, target)
+                conformed_steps = np.abs(np.diff(conformed.astype(np.float64)))
+                assert float(conformed_steps.max()) <= native_max, (
+                    f"phoneme={phoneme}, duration={duration}, rate={rate}"
+                )
+
+
 def test_synth_get_phoneme_audio():
     """get_phoneme_audio returns synthesized samples."""
     from qns.synth import SSI263Synth

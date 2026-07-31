@@ -8,19 +8,32 @@ import numpy as np
 def conform_audio_to_length(samples: np.ndarray, sample_count: int) -> np.ndarray:
     """Fit modeled phoneme content to its exact scheduled sample count.
 
-    Short content repeats its closing half at the original sample rate, which
-    fills the requested span without either a silent tail or resampling its
-    pitch.  Long content is truncated because only its leading scheduled
-    portion can play before the next phoneme.
+    Short content repeats its closing half at the original sample rate with
+    crossfaded joins, which fills the requested span without a silent tail,
+    pitch-changing resampling, or click-sized seams.  Long content is
+    truncated because only its leading scheduled portion can play before the
+    next phoneme.
     """
     sample_count = max(0, sample_count)
     if sample_count <= len(samples):
         return samples[:sample_count]
     if len(samples) == 0:
         return np.zeros(sample_count, dtype=samples.dtype)
+
     closing_samples = samples[len(samples) // 2 :]
-    extension = np.resize(closing_samples, sample_count - len(samples))
-    return np.concatenate((samples, extension))
+    overlap = min(128, len(closing_samples) // 4)
+    if overlap == 0:
+        extension = np.resize(closing_samples, sample_count - len(samples))
+        return np.concatenate((samples, extension))
+
+    ramp = np.linspace(0.0, 1.0, overlap).astype(samples.dtype)
+    conformed = samples.copy()
+    while len(conformed) < sample_count:
+        conformed[-overlap:] = (
+            conformed[-overlap:] * (1.0 - ramp) + closing_samples[:overlap] * ramp
+        )
+        conformed = np.concatenate((conformed, closing_samples[overlap:]))
+    return conformed[:sample_count]
 
 
 def fit_audio_to_elapsed(samples: np.ndarray, elapsed_samples: int) -> np.ndarray:
