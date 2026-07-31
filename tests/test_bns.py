@@ -22,6 +22,7 @@ from qns.cli import build_parser, settle_audio_backend
 from qns.cli import main as bns_main
 from qns.input_driver import (
     ASCII_TO_BNS_KEY,
+    ChordInputDriver,
     keyboard_input_chord,
     tns_input_scan,
 )
@@ -534,6 +535,129 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
     ]
     assert bns.memory.read(INPUT_BOUNDARIES[model].keyboard_input_buffer) == 0
     assert not bns.keyboard.latched
+
+
+def _ready_classic_input_driver(
+    *,
+    output_stream: StringIO | None = None,
+) -> tuple[BNS, ChordInputDriver]:
+    bns = BNS(
+        model="bsp",
+        stdin_device="keyboard",
+        stdio_output=JSONLOutput(output_stream) if output_stream is not None else None,
+    )
+    bns._input_boundary = INPUT_BOUNDARIES["bsp"]
+    driver = ChordInputDriver(bns)
+    bns._input_driver = driver
+    bns._observe_input_boundary(INPUT_BOUNDARIES["bsp"].keyboard_wait_pc)
+    return bns, driver
+
+
+def _advance_classic_chord_to_queued(
+    bns: BNS,
+    driver: ChordInputDriver,
+    chord: int,
+) -> None:
+    boundary = INPUT_BOUNDARIES["bsp"]
+    driver.queue.put(chord)
+    driver.tick()
+    assert driver._phase == "down"
+
+    bns.memory.write(boundary.keyboard_input_buffer, chord)
+    bns._observe_write(
+        boundary.keyboard_input_buffer,
+        chord,
+        pc=0,
+        cycle=0,
+    )
+    bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+    driver.tick()
+    assert driver._phase == "up"
+
+    bns.memory.write(boundary.keyboard_input_buffer, 0)
+    bns.keyboard.keyclr_write(bns.keyboard.keyclr_port, 0)
+    driver.tick()
+    assert driver._phase == "queued"
+
+
+def test_direct_zero_chord_cannot_wedge_later_valid_input():
+    output_stream = StringIO()
+    bns, driver = _ready_classic_input_driver(output_stream=output_stream)
+    driver.queue.put(0)
+
+    driver.tick()
+
+    assert driver._phase is None
+    assert not bns.keyboard.latched
+
+    _advance_classic_chord_to_queued(bns, driver, 0x03)
+    bns._keyboard_consume_epoch += 1
+    driver.tick()
+
+    assert not driver.busy
+    events = [json.loads(line) for line in output_stream.getvalue().splitlines()]
+    assert [event["state"] for event in events] == [
+        "rejected",
+        "accepted",
+        "ready",
+    ]
+
+
+def test_lost_queued_chord_reports_diagnostic_and_returns_idle(capsys):
+    output_stream = StringIO()
+    bns, driver = _ready_classic_input_driver(output_stream=output_stream)
+    _advance_classic_chord_to_queued(bns, driver, 0x3D)
+
+    for _ in range(2):
+        bns._observe_input_boundary(INPUT_BOUNDARIES["bsp"].keyboard_wait_pc)
+        driver.tick()
+
+    assert not driver.busy
+    events = [json.loads(line) for line in output_stream.getvalue().splitlines()]
+    assert events[0] == {
+        "device": "keyboard",
+        "state": "lost",
+        "chord": 0x3D,
+        "reason": "firmware-did-not-queue",
+        "epochs": 2,
+    }
+    assert (
+        capsys.readouterr().err
+        == "[Input] chord 0x3D lost after 2 input epochs; firmware did not queue it\n"
+    )
+
+
+def test_lost_queued_chord_releases_instruction_slow_path():
+    bns, driver = _ready_classic_input_driver()
+    _advance_classic_chord_to_queued(bns, driver, 0x3D)
+    assert bns._requires_instruction_steps()
+
+    for _ in range(2):
+        bns._observe_input_boundary(INPUT_BOUNDARIES["bsp"].keyboard_wait_pc)
+        driver.tick()
+
+    assert not driver.busy
+    assert not bns._requires_instruction_steps()
+
+
+def test_consumed_chord_wins_at_queued_deadline_boundary():
+    output_stream = StringIO()
+    bns, driver = _ready_classic_input_driver(output_stream=output_stream)
+    _advance_classic_chord_to_queued(bns, driver, 0x3D)
+
+    for _ in range(2):
+        bns._observe_input_boundary(INPUT_BOUNDARIES["bsp"].keyboard_wait_pc)
+    bns._keyboard_consume_epoch += 1
+    driver.tick()
+
+    assert not driver.busy
+    events = [json.loads(line) for line in output_stream.getvalue().splitlines()]
+    assert events[0] == {
+        "device": "keyboard",
+        "state": "accepted",
+        "chord": 0x3D,
+    }
+    assert all(event.get("state") != "lost" for event in events)
 
 
 def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):

@@ -9,6 +9,7 @@ and command-loop timer.
 from __future__ import annotations
 
 import queue
+import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -239,6 +240,8 @@ COLD_RESET_CHORD = 0x4A
 TNS_WARM_RESET_SCANS = (0xA1, 0x81)
 TNS_COLD_RESET_SCANS = (0xC9, 0xA1, 0x81)
 
+QUEUED_CHORD_DEADLINE_EPOCHS = 2
+
 
 def keyboard_input_chord(value: str | int, model: str = "bsp") -> int:
     """Convert one terminal character or raw JSONL chord to firmware dots."""
@@ -293,6 +296,7 @@ class ChordInputDriver:
         self._ready_epoch = bns._keyboard_ready_epoch
         self._queue_epoch = bns._keyboard_queue_epoch
         self._consume_epoch = bns._keyboard_consume_epoch
+        self._queued_ready_epoch: int | None = None
         self._has_consumed_input = False
 
     def start_reset(self, reset: str) -> None:
@@ -354,6 +358,13 @@ class ChordInputDriver:
                     assert self._chord is not None
                     keyboard.press(self._chord)
                     self._phase = "down"
+                self._queued_ready_epoch = None
+                return
+
+            assert self._queued_ready_epoch is not None
+            elapsed_epochs = bns._keyboard_ready_epoch - self._queued_ready_epoch
+            if elapsed_epochs >= QUEUED_CHORD_DEADLINE_EPOCHS:
+                self._lose(elapsed_epochs)
             return
 
         if self._phase == "reset":
@@ -399,15 +410,15 @@ class ChordInputDriver:
                 keyboard.release(TNS_LEFT_SHIFT_SCAN)
                 self._phase = "tns-shift-up"
             else:
-                self._phase = "queued"
+                self._enter_queued()
         elif self._phase == "tns-alt-up":
             if self._shifted:
                 keyboard.release(TNS_LEFT_SHIFT_SCAN)
                 self._phase = "tns-shift-up"
             else:
-                self._phase = "queued"
+                self._enter_queued()
         elif self._phase == "tns-shift-up":
-            self._phase = "queued"
+            self._enter_queued()
 
     def _start_next_chord(self) -> None:
         bns = self._bns
@@ -450,9 +461,17 @@ class ChordInputDriver:
             self._phase = "tns-alt-down"
         else:
             bns.keyboard.press(self._chord)
+            if not bns.keyboard.latched:
+                self._reject("chord produced no latched keys")
+                return
             self._phase = "down"
         self._ready_reported = False
         self._ready_epoch = bns._keyboard_ready_epoch
+
+    def _enter_queued(self) -> None:
+        """Wait a bounded number of input epochs for firmware consumption."""
+        self._phase = "queued"
+        self._queued_ready_epoch = self._bns._keyboard_ready_epoch
 
     def _accept(self) -> None:
         """Report the completed chord and return to the idle phase."""
@@ -461,11 +480,51 @@ class ChordInputDriver:
         self._chord = None
         self._shifted = False
         self._alt = False
+        self._queued_ready_epoch = None
         if self._bns.stdio_output is not None:
             self._bns.stdio_output.emit(
                 "keyboard",
                 state="accepted",
                 chord=chord,
+            )
+
+    def _reject(self, reason: str) -> None:
+        """Report an invalid producer chord and leave the driver usable."""
+        chord = self._chord
+        self._phase = None
+        self._chord = None
+        self._shifted = False
+        self._alt = False
+        self._queued_ready_epoch = None
+        print(f"[Input] rejected chord {chord}: {reason}", file=sys.stderr)
+        if self._bns.stdio_output is not None:
+            self._bns.stdio_output.emit(
+                "keyboard",
+                state="rejected",
+                chord=chord,
+                reason="no-keys",
+            )
+
+    def _lose(self, elapsed_epochs: int) -> None:
+        """Report a firmware-dropped chord without risking duplicate delivery."""
+        chord = self._chord
+        self._phase = None
+        self._chord = None
+        self._shifted = False
+        self._alt = False
+        self._queued_ready_epoch = None
+        print(
+            f"[Input] chord 0x{chord:02X} lost after {elapsed_epochs} input epochs; "
+            "firmware did not queue it",
+            file=sys.stderr,
+        )
+        if self._bns.stdio_output is not None:
+            self._bns.stdio_output.emit(
+                "keyboard",
+                state="lost",
+                chord=chord,
+                reason="firmware-did-not-queue",
+                epochs=elapsed_epochs,
             )
 
     def _input_buffer(self) -> int:

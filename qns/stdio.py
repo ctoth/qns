@@ -62,6 +62,8 @@ def parse_input_event(
         chord = event["chord"]
         if isinstance(chord, bool) or not isinstance(chord, int) or not 0 <= chord <= 0xFF:
             raise ValueError("keyboard chord must be an integer from 0 through 255")
+        if chord == 0:
+            raise ValueError("keyboard chord 0 encodes no keys")
         return KeyboardInput(chord)
 
     if device in ("serial0", "serial1"):

@@ -64,6 +64,11 @@ def test_input_events_reject_ambiguous_or_invalid_values(line: str, message: str
         parse_input_event(line)
 
 
+def test_keyboard_event_rejects_zero_chord_as_no_keys():
+    with pytest.raises(ValueError, match="chord 0 encodes no keys"):
+        parse_input_event('{"device":"keyboard","chord":0}')
+
+
 def test_output_events_are_compact_and_flushed_immediately():
     class FlushCountingStream(StringIO):
         def __init__(self):
