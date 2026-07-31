@@ -1,4 +1,11 @@
-# Software-only BNS implementation handoff
+# Historical execution record: software-only BNS implementation
+
+> This is an append-only historical execution record, not operational guidance.
+> It is not current-state documentation. Entries below describe the
+> repository as it existed when each entry was written. The production runtime
+> now uses the z-core dependency; the former local CPU wrapper, native build
+> script, generated extension, and compatibility tests were removed in issue
+> #27. Use current code, tests, and `CLAUDE.md` for present-day instructions.
 
 ## Objective
 

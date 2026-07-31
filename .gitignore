@@ -17,9 +17,6 @@ build/
 .vscode/
 *.swp
 
-# CFFI generated
-qns/_z180_cffi.c
-
 # Logs
 *.log
 

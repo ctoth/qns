@@ -26,6 +26,14 @@ REPRESENTATIVE_LOCAL_ARTIFACTS = {
     Path("sc01a.bin"),
     Path("test.txt"),
 }
+HISTORICAL_LEGACY_RECORDS = {Path("notes-software-bns.md")}
+RETIRED_CURRENT_POINTERS = {
+    "build_ffi",
+    "cffi_available",
+    "qns.cpu",
+    "z180emu",
+    "_z180_cffi",
+}
 
 
 def _git_paths(*args: str) -> set[Path]:
@@ -93,3 +101,27 @@ def test_retired_cffi_benchmark_surfaces_are_deleted() -> None:
     assert "build_ffi.py" not in project_guide
     assert "_z180_cffi" not in project_guide
     assert "legacy CFFI benchmark" not in project_guide
+
+
+def test_retired_cpu_core_cannot_return_as_current_guidance() -> None:
+    tracked = _git_paths("ls-files")
+    current_text: dict[Path, str] = {}
+    for path in tracked - HISTORICAL_LEGACY_RECORDS - {Path(__file__).relative_to(REPO_ROOT)}:
+        source = REPO_ROOT / path
+        if not source.is_file():
+            continue
+        try:
+            current_text[path] = source.read_text(encoding="utf-8").casefold()
+        except UnicodeDecodeError:
+            continue
+
+    violations = {
+        path: sorted(pointer for pointer in RETIRED_CURRENT_POINTERS if pointer in text)
+        for path, text in current_text.items()
+        if any(pointer in text for pointer in RETIRED_CURRENT_POINTERS)
+    }
+    assert not violations
+
+    historical = (REPO_ROOT / "notes-software-bns.md").read_text(encoding="utf-8")
+    assert "historical execution record" in historical.casefold()
+    assert "not operational guidance" in historical.casefold()
