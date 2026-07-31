@@ -2179,6 +2179,59 @@ def test_cli_jsonl_emits_complete_speech_and_display_events(
     assert "Loaded ROM" in captured.err
 
 
+def test_cli_setup_failure_closes_speech_trace_opened_before_display_validation(
+    monkeypatch,
+    tmp_path,
+):
+    """Unsupported display setup must not leak an already-open speech trace."""
+    idle_rom = tmp_path / "idle.rom"
+    idle_rom.write_bytes(bytes((0x18, 0xFE)))
+    speech_trace = tmp_path / "speech.csv"
+    trace_handles = []
+
+    def open_trace(path, *args, **kwargs):
+        handle = Path(path).open(*args, **kwargs)
+        trace_handles.append(handle)
+        return handle
+
+    monkeypatch.setattr("qns.cli.open", open_trace, raising=False)
+
+    with pytest.raises(RuntimeError, match="bsp has no built-in Braille display"):
+        bns_main(
+            [
+                str(idle_rom),
+                "--input",
+                "none",
+                "--trace-speech",
+                str(speech_trace),
+                "--display",
+                "codes",
+            ]
+        )
+
+    assert len(trace_handles) == 1
+    assert trace_handles[0].closed
+    assert speech_trace.read_text(encoding="ascii").startswith("cycle,code,name")
+
+
+def test_cli_trace_header_failure_closes_partially_initialized_trace(monkeypatch, tmp_path):
+    """A failure after open but during trace setup must still close the handle."""
+    idle_rom = tmp_path / "idle.rom"
+    idle_rom.write_bytes(bytes((0x18, 0xFE)))
+
+    class FailingTrace(StringIO):
+        def write(self, _text):
+            raise RuntimeError("injected trace header failure")
+
+    trace_handle = FailingTrace()
+    monkeypatch.setattr("qns.cli.open", Mock(return_value=trace_handle), raising=False)
+
+    with pytest.raises(RuntimeError, match="injected trace header failure"):
+        bns_main([str(idle_rom), "--input", "none", "--trace-speech", str(tmp_path / "x.csv")])
+
+    assert trace_handle.closed
+
+
 def test_cli_run_failure_still_closes_traces_and_persists_outputs(
     monkeypatch,
     tmp_path,

@@ -490,89 +490,90 @@ def main(argv: list[str] | None = None) -> None:
             stdio_watch_pc=args.watch_pc,
             english_callback=english_callback,
         )
-        speech_observers: list[Callable[[int, str], None]] = []
-        speech_trace: list[tuple[int, ...]] = []
-
-        if stdio_output is not None:
-
-            def emit_stdio_speech(_code: int, _name: str) -> None:
-                phoneme = bns.ssi263.get_phonemes(start=-1)[0]
-                stdio_output.emit(
-                    "speech",
-                    code=phoneme.code,
-                    name=phoneme.name,
-                    ipa=phoneme.ipa,
-                    example=phoneme.example,
-                )
-
-            speech_observers.append(emit_stdio_speech)
-            if bns.display is not None:
-                bns.display.set_frame_callback(
-                    lambda frame: stdio_output.emit("display", cells=list(frame))
-                )
-
-        elif args.speech_stream and args.speech_stream != "english":
-
-            def emit_speech_phoneme(code: int, _name: str) -> None:
-                if code == 0:
-                    return
-                phoneme = bns.ssi263.get_phonemes(start=-1)[0]
-                speech = _format_phoneme(phoneme, args.speech_stream)
-                print(f"Speech {args.speech_stream}: {speech}", flush=True)
-
-            speech_observers.append(emit_speech_phoneme)
-
-        if args.trace_speech:
-            # Written and flushed per event: a boot long enough to reach
-            # speech runs for minutes, and a trace only readable after the
-            # run finishes is a trace nobody can work with.
-            speech_trace_file = open(args.trace_speech, "w", encoding="ascii")
-            speech_trace_file.write(
-                "cycle,code,name,duration_mode,rate,inflection,"
-                "articulation,amplitude,filter_freq,playback_duration\n"
-            )
-            speech_trace_file.flush()
-
-            def record_speech_registers(code: int, name: str) -> None:
-                state = bns.ssi263.state()
-                speech_trace.append(())
-                speech_trace_file.write(
-                    f"{bns.ssi263.current_cycle},{code},{name},{state.duration},"
-                    f"{state.rate},{state.inflection},{state.articulation},"
-                    f"{state.amplitude},{state.filter_freq},"
-                    f"{state.playback_duration}\n"
-                )
-                speech_trace_file.flush()
-
-            speech_observers.append(record_speech_registers)
-
-        if speech_observers:
-
-            def dispatch_speech(code: int, name: str) -> None:
-                for observe in speech_observers:
-                    observe(code, name)
-
-            bns.ssi263.set_phoneme_callback(dispatch_speech)
-
-        if args.display:
-            if bns.display is None:
-                raise RuntimeError(f"{args.model} has no built-in Braille display")
-
-            def emit_display_frame(frame: bytes) -> None:
-                nonlocal display_frame_emitted
-                display_frame_emitted = True
-                if args.display == "codes":
-                    display = " ".join(f"{cell:02X}" for cell in frame)
-                else:
-                    display = "".join(chr(0x2800 | cell) for cell in frame)
-                print(f"Display {args.display}: {display}", flush=True)
-
-            bns.display.set_frame_callback(emit_display_frame)
-
         failure: BaseException | None = None
         cleanup_error: BaseException | None = None
         execution_started = False
+        speech_trace_file = None
+        speech_trace: list[tuple[int, ...]] = []
         try:
+            speech_observers: list[Callable[[int, str], None]] = []
+
+            if stdio_output is not None:
+
+                def emit_stdio_speech(_code: int, _name: str) -> None:
+                    phoneme = bns.ssi263.get_phonemes(start=-1)[0]
+                    stdio_output.emit(
+                        "speech",
+                        code=phoneme.code,
+                        name=phoneme.name,
+                        ipa=phoneme.ipa,
+                        example=phoneme.example,
+                    )
+
+                speech_observers.append(emit_stdio_speech)
+                if bns.display is not None:
+                    bns.display.set_frame_callback(
+                        lambda frame: stdio_output.emit("display", cells=list(frame))
+                    )
+
+            elif args.speech_stream and args.speech_stream != "english":
+
+                def emit_speech_phoneme(code: int, _name: str) -> None:
+                    if code == 0:
+                        return
+                    phoneme = bns.ssi263.get_phonemes(start=-1)[0]
+                    speech = _format_phoneme(phoneme, args.speech_stream)
+                    print(f"Speech {args.speech_stream}: {speech}", flush=True)
+
+                speech_observers.append(emit_speech_phoneme)
+
+            if args.trace_speech:
+                # Written and flushed per event: a boot long enough to reach
+                # speech runs for minutes, and a trace only readable after the
+                # run finishes is a trace nobody can work with.
+                speech_trace_file = open(args.trace_speech, "w", encoding="ascii")
+                speech_trace_file.write(
+                    "cycle,code,name,duration_mode,rate,inflection,"
+                    "articulation,amplitude,filter_freq,playback_duration\n"
+                )
+                speech_trace_file.flush()
+
+                def record_speech_registers(code: int, name: str) -> None:
+                    state = bns.ssi263.state()
+                    speech_trace.append(())
+                    speech_trace_file.write(
+                        f"{bns.ssi263.current_cycle},{code},{name},{state.duration},"
+                        f"{state.rate},{state.inflection},{state.articulation},"
+                        f"{state.amplitude},{state.filter_freq},"
+                        f"{state.playback_duration}\n"
+                    )
+                    speech_trace_file.flush()
+
+                speech_observers.append(record_speech_registers)
+
+            if speech_observers:
+
+                def dispatch_speech(code: int, name: str) -> None:
+                    for observe in speech_observers:
+                        observe(code, name)
+
+                bns.ssi263.set_phoneme_callback(dispatch_speech)
+
+            if args.display:
+                if bns.display is None:
+                    raise RuntimeError(f"{args.model} has no built-in Braille display")
+
+                def emit_display_frame(frame: bytes) -> None:
+                    nonlocal display_frame_emitted
+                    display_frame_emitted = True
+                    if args.display == "codes":
+                        display = " ".join(f"{cell:02X}" for cell in frame)
+                    else:
+                        display = "".join(chr(0x2800 | cell) for cell in frame)
+                    print(f"Display {args.display}: {display}", flush=True)
+
+                bns.display.set_frame_callback(emit_display_frame)
+
             bns.load_rom(args.rom_file)
             if args.state:
                 state_path = Path(args.state)
@@ -624,7 +625,7 @@ def main(argv: list[str] | None = None) -> None:
                     else:
                         print(f"{description} also failed: {error}", file=sys.stderr)
 
-            if args.trace_speech:
+            if speech_trace_file is not None:
 
                 def close_speech_trace() -> None:
                     speech_trace_file.close()
