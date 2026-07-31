@@ -96,12 +96,23 @@ def render_rows(
         start_sample = int((int(row["cycle"]) - origin_cycle) * SAMPLE_RATE / cpu_clock)
         end_sample = int((int(next_row["cycle"]) - origin_cycle) * SAMPLE_RATE / cpu_clock)
         elapsed_samples = max(0, end_sample - start_sample)
-        pieces.append(
-            fit_audio_to_elapsed(
-                render_row(backend, row, name),
-                elapsed_samples,
+        if name == "lpc":
+            pieces.append(
+                backend.get_elapsed_phoneme_audio(
+                    int(row["code"]) & 0x3F,
+                    int(row["amplitude"]),
+                    _duration(row),
+                    _rate(row),
+                    elapsed_samples,
+                )
             )
-        )
+        else:
+            pieces.append(
+                fit_audio_to_elapsed(
+                    render_row(backend, row, name),
+                    elapsed_samples,
+                )
+            )
     return np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
 
 

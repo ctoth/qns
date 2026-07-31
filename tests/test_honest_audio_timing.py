@@ -124,6 +124,54 @@ def test_pause_heavy_player_lead_never_jumps_to_prime_mid_utterance() -> None:
         assert player.realtime_lead_seconds() < 0.25
 
 
+def test_staged_phoneme_does_not_reprime_an_empty_reservoir() -> None:
+    """Empty mid-utterance means genuinely behind, not permission to jump."""
+    from qns.synth.player import AudioPlayer
+
+    player = AudioPlayer(sample_rate=1_000, blocksize=100, prime_ms=250)
+    output = np.empty((100, 1), dtype=np.float32)
+    player.play(np.ones(250, dtype=np.float32))
+    for _ in range(3):
+        player._audio_callback(output, 100, None, None)
+
+    backend = SSI263PCMSynth(audio_enabled=False)
+    backend._player = player
+    backend.play(_state(0x08))
+
+    assert player._queued_frames == 0
+    assert backend.realtime_lead_seconds() == 0.0
+
+
+def test_lpc_supersession_advances_stream_only_through_elapsed_audio() -> None:
+    player = _Player()
+    backend = SSI263LPCSynth(audio_enabled=False)
+    backend._player = player
+    first = _state(0x08)
+    second = _state(0x0A)
+
+    backend.play(first)
+    backend.end_phoneme(500)
+    backend.play(second)
+    backend.end_phoneme(
+        playback_length_samples(
+            second.phoneme,
+            second.playback_duration,
+            second.rate,
+        )
+    )
+
+    reference = SSI263LPCSynth(audio_enabled=False)
+    reference._stream.render(first.phoneme, 500, first.amplitude)
+    expected = reference.get_phoneme_audio(
+        second.phoneme,
+        second.amplitude,
+        second.playback_duration,
+        second.rate,
+    )
+
+    np.testing.assert_array_equal(player.pieces[1], expected)
+
+
 def _silent_spans(samples: np.ndarray) -> list[int]:
     silent = np.abs(samples) <= 1e-8
     changes = np.flatnonzero(np.diff(np.pad(silent.astype(np.int8), (1, 1))))

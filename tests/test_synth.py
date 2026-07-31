@@ -172,7 +172,7 @@ def test_audio_player_requests_only_the_runahead_needed_to_refill():
     assert player.realtime_lead_seconds() == 0.0
 
 
-def test_audio_player_requests_runahead_without_repriming_after_underrun():
+def test_audio_player_does_not_grant_prime_lead_after_underrun():
     from qns.synth.player import AudioPlayer
 
     player = AudioPlayer(sample_rate=1000, blocksize=100, prime_ms=250)
@@ -183,7 +183,7 @@ def test_audio_player_requests_runahead_without_repriming_after_underrun():
     player._audio_callback(output, 100, None, None)
     player._audio_callback(output, 100, None, None)
 
-    assert player.realtime_lead_seconds() == pytest.approx(0.25)
+    assert player.realtime_lead_seconds() == 0.0
 
     player.play(np.ones(100, dtype=np.float32))
     player._audio_callback(output, 100, None, None)

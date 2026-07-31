@@ -32,7 +32,7 @@ class SSI263LPCSynth:
         self._player = AudioPlayer(sample_rate=SAMPLE_RATE) if audio_enabled else None
         self._phoneme_callback: Callable[[int], None] | None = None
         self._stream = LPCStream()
-        self._pending_audio: np.ndarray | None = None
+        self._pending_state: SSI263State | None = None
         # Analysing a capture the first time it is spoken would land inside
         # the emulator's real-time budget.  All 62 cost ~40 ms together, so
         # pay it once here instead.
@@ -53,22 +53,24 @@ class SSI263LPCSynth:
         self._phoneme_callback = callback
 
     def play(self, state: SSI263State) -> None:
-        """Stage audio for one decoded phoneme event from the chip."""
+        """Stage one event without advancing LPC through unplayed time."""
         if self._phoneme_callback is not None:
             self._phoneme_callback(state.phoneme)
-        self._pending_audio = self.get_phoneme_audio(
+        self._pending_state = state
+
+    def end_phoneme(self, elapsed_samples: int) -> None:
+        """Queue a decay-tail-capped span equal to elapsed chip time."""
+        if self._pending_state is None:
+            return
+        state = self._pending_state
+        self._pending_state = None
+        audio = self.get_elapsed_phoneme_audio(
             state.phoneme,
             state.amplitude,
             state.playback_duration,
             state.rate,
+            elapsed_samples,
         )
-
-    def end_phoneme(self, elapsed_samples: int) -> None:
-        """Queue a decay-tail-capped span equal to elapsed chip time."""
-        if self._pending_audio is None:
-            return
-        audio = fit_audio_to_elapsed(self._pending_audio, elapsed_samples)
-        self._pending_audio = None
         if self._player is not None:
             self._player.play(audio)
 
@@ -108,6 +110,27 @@ class SSI263LPCSynth:
 
         samples = playback_length_samples(phoneme, duration, rate)
         return self._stream.render(phoneme & 0x3F, samples, amplitude)
+
+    def get_elapsed_phoneme_audio(
+        self,
+        phoneme: int,
+        amplitude: int,
+        duration: int,
+        rate: int,
+        elapsed_samples: int,
+    ) -> np.ndarray:
+        """Render only the LPC state that could have played before its end."""
+        elapsed_samples = max(0, elapsed_samples)
+        if phoneme & 0x3F == 0:
+            return np.zeros(elapsed_samples, dtype=np.float32)
+
+        modeled_samples = playback_length_samples(phoneme, duration, rate)
+        rendered = self._stream.render(
+            phoneme & 0x3F,
+            min(elapsed_samples, modeled_samples),
+            amplitude,
+        )
+        return fit_audio_to_elapsed(rendered, elapsed_samples)
 
     def _emit(
         self,
