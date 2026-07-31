@@ -360,12 +360,13 @@ def test_formant_duration_conformance_preserves_rms_and_pitch():
 
 
 def test_formant_duration_conformance_bounds_actual_waveform_seams():
-    """Repeated actual formants must not introduce click-sized discontinuities."""
+    """Stretched actual formants preserve level without click discontinuities."""
     from qns.ssi263 import playback_length_samples
     from qns.synth import SSI263Synth
     from qns.synth.sc02_to_sc01 import SC02_TO_SC01
     from qns.synth.timing import conform_audio_to_length
 
+    stretched_cases = 0
     for phoneme in range(1, 64):
         raw = SSI263Synth(audio_enabled=False)._formant.synthesize_phoneme(SC02_TO_SC01[phoneme])
         native_steps = np.abs(np.diff(raw.astype(np.float64)))
@@ -377,11 +378,34 @@ def test_formant_duration_conformance_bounds_actual_waveform_seams():
                 if target <= len(raw):
                     continue
 
+                stretched_cases += 1
                 conformed = conform_audio_to_length(raw, target)
                 conformed_steps = np.abs(np.diff(conformed.astype(np.float64)))
                 assert float(conformed_steps.max()) <= native_max, (
                     f"phoneme={phoneme}, duration={duration}, rate={rate}"
                 )
+                assert np.isfinite(conformed).all()
+
+                raw_rms = float(np.sqrt(np.mean(raw.astype(np.float64) ** 2)))
+                conformed_rms = float(np.sqrt(np.mean(conformed.astype(np.float64) ** 2)))
+                if raw_rms == 0.0:
+                    assert conformed_rms == 0.0
+                    continue
+                assert 0.8 <= conformed_rms / raw_rms <= 1.2, (
+                    f"phoneme={phoneme}, duration={duration}, rate={rate}"
+                )
+    assert stretched_cases == 508
+
+
+def test_audio_conformance_crossfades_short_tails_without_new_jumps():
+    from qns.synth.timing import conform_audio_to_length
+
+    raw = np.arange(9, dtype=np.float32)
+    conformed = conform_audio_to_length(raw, 25)
+
+    assert len(conformed) == 25
+    assert np.isfinite(conformed).all()
+    assert float(np.abs(np.diff(conformed)).max()) <= 1.0
 
 
 def test_synth_get_phoneme_audio():
