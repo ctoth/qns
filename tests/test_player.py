@@ -64,16 +64,20 @@ def test_callback_uses_one_preallocated_bounded_ring_without_python_growth(
     monkeypatch.setattr(np, "empty", forbidden)
     monkeypatch.setattr(np, "zeros", forbidden)
 
-    # Warm interpreter/NumPy call-site caches before measuring retained
-    # allocations attributed to the player's callback implementation.
+    # Warm interpreter/NumPy call-site caches, then warm tracemalloc's own
+    # per-line bookkeeping before taking the steady-state baseline.
     player.play(np.arange(8, dtype=np.float32))
     player._audio_callback(output, 4, None, None)
     player._audio_callback(output, 4, None, None)
     gc.collect()
     tracemalloc.start()
-    before = tracemalloc.take_snapshot()
     for _ in range(1_000):
         player._audio_callback(output, 4, None, None)
+    gc.collect()
+    before = tracemalloc.take_snapshot()
+    for _ in range(10_000):
+        player._audio_callback(output, 4, None, None)
+    gc.collect()
     after = tracemalloc.take_snapshot()
     tracemalloc.stop()
 
