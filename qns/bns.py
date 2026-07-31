@@ -29,9 +29,6 @@ from .devices import (
 )
 from .input_driver import ChordInputDriver
 from .keysource import (
-    KeyEvent,
-    VTKeyDecoder,
-    Win32InputDecoder,
     win32_input_mode,
     windows_console_key_events,
 )
@@ -52,7 +49,7 @@ from .loader import (
 from .memory import Memory
 from .pc_disk import PCDisk
 from .profiles import PROFILES
-from .sixkey import VK_F4, VK_F5, SixKeyAssembler, TimedChordAssembler
+from .sixkey import VK_F4, VK_F5, SixKeyAssembler, SixKeyInputDecoder
 from .ssi263 import SSI263
 from .stdio import (
     JSONLOutput,
@@ -149,8 +146,19 @@ def _six_key_reader(layout: str, emit, control=lambda action: None, read_events=
     daemon thread, which never unwinds: the console mode has to be owned
     by whoever cleans up after the run.
     """
+    assembler = SixKeyAssembler(layout=layout)
+
+    def handle(event) -> bool:
+        """Handle one normalized transition; False once reading should stop."""
+        action = _six_key_control(event)
+        if action is not None:
+            control(action)
+            return False
+        for chord in assembler.feed(event):
+            emit(chord)
+        return True
+
     if read_events is not None:
-        assembler = SixKeyAssembler(layout=layout)
         while True:
             try:
                 events = read_events()
@@ -158,12 +166,8 @@ def _six_key_reader(layout: str, emit, control=lambda action: None, read_events=
                 return  # the run loop cancelled us, or the console ended
             try:
                 for event in events:
-                    action = _six_key_control(event)
-                    if action is not None:
-                        control(action)
+                    if not handle(event):
                         return
-                    for chord in assembler.feed(event):
-                        emit(chord)
             except Exception:
                 # The console owns every host control while this loop is
                 # active. If assembly or delivery fails, hand control back
@@ -178,58 +182,21 @@ def _six_key_reader(layout: str, emit, control=lambda action: None, read_events=
     except (AttributeError, ValueError, OSError):
         return
 
-    decoder = Win32InputDecoder()
-    transitions = SixKeyAssembler(layout=layout)
-    # The escape sequences a terminal names its special keys with have to
-    # be read before the characters do, or their final bytes spell dots:
-    # Left is `ESC [ D`, and D is dot 3 on the default layout.  Piped
-    # input's line ending is a cell delimiter rather than the Enter key,
-    # which is the same reason its chords end at a line and not a clock.
-    named = SixKeyAssembler(layout=layout)
-    vt = VTKeyDecoder(
+    decoder = SixKeyInputDecoder(
+        layout=layout,
         timeout=SIX_KEY_CHORD_TIMEOUT if interactive else None,
         newline_is_return=interactive,
     )
-    # Redirected input carries no timing worth reading, so let a line
-    # ending delimit the cell rather than a stopwatch.
-    timed = TimedChordAssembler(
-        layout=layout, timeout=SIX_KEY_CHORD_TIMEOUT if interactive else None
-    )
-
-    def handle_key(event) -> bool:
-        """Act on one named key; False once the reader should stop."""
-        action = _six_key_control(event)
-        if action is not None:
-            control(action)
-            return False
-        # A named key stands alone, so whatever the dots were spelling
-        # goes first rather than being swallowed by it.
-        for chord in timed.flush():
-            emit(chord)
-        for chord in named.feed(event):
-            emit(chord)
-        return True
 
     while True:
-        # An unfinished sequence needs a deadline of its own, wherever it
-        # is being held: the Escape key looks exactly like one until the
-        # quiet interval says otherwise, and without a deadline the read
-        # below would wait for a rest that is never coming.
-        held = SIX_KEY_CHORD_TIMEOUT if interactive and decoder.pending else None
-        timeout = _earliest(timed.wait_timeout, vt.wait_timeout, held)
+        timeout = _earliest(decoder.wait_timeout, assembler.wait_timeout)
         if timeout is not None:
             ready, _, _ = select.select([fd], [], [], timeout)
             if not ready:
-                # A record split across reads is worth waiting for, but a
-                # bare ESC that stays bare is the Escape key; the quiet
-                # interval is what tells the two apart.
-                for item in vt.feed(decoder.flush()):
-                    if isinstance(item, KeyEvent) and not handle_key(item):
+                for event in decoder.poll():
+                    if not handle(event):
                         return
-                for item in vt.poll():
-                    if isinstance(item, KeyEvent) and not handle_key(item):
-                        return
-                for chord in timed.poll():
+                for chord in assembler.poll():
                     emit(chord)
                 continue
         try:
@@ -237,36 +204,13 @@ def _six_key_reader(layout: str, emit, control=lambda action: None, read_events=
         except OSError:
             return
         if not data:
-            for item in vt.feed(decoder.flush()):
-                if isinstance(item, KeyEvent) and not handle_key(item):
+            for event in decoder.flush():
+                if not handle(event):
                     return
-            for item in vt.flush():
-                if isinstance(item, KeyEvent) and not handle_key(item):
-                    return
-            for chord in timed.flush():
-                emit(chord)
             return
-        events, text = decoder.feed(data)
-        for event in events:
-            action = _six_key_control(event)
-            if action is not None:
-                control(action)
+        for event in decoder.feed(data):
+            if not handle(event):
                 return
-            for chord in transitions.feed(event):
-                emit(chord)
-        for item in vt.feed(text):
-            if isinstance(item, KeyEvent):
-                if not handle_key(item):
-                    return
-                continue
-            if item == "\x03":
-                # A terminal that ignored the mode leaves cbreak's ISIG to
-                # raise the signal, but a redirected stdin has no line
-                # discipline at all, so honour the byte here too.
-                control("exit")
-                return
-            for chord in timed.feed_char(item):
-                emit(chord)
 
 
 @contextlib.contextmanager

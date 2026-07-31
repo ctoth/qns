@@ -205,8 +205,13 @@ pause phonemes (0x00) during the boot sequence.
      the whole Win32 `KEY_EVENT_RECORD` - and `ReadConsoleInput` gives the
      same fields natively, so one assembler serves WSL and Windows.  Run
      `uv run tools/probe_terminal_keys.py` to see what a terminal supports;
-     ones that report no releases fall back to ending a chord on a gap in
-     arrival times, and redirected input ends it at a line break
+     ones that report no releases synthesize key releases after a gap in
+     arrival times, and redirected input synthesizes them at a line break
+   - Win32 records, VT named keys, and synthesized plain-character
+     transitions stay in byte-stream order and feed exactly one chord
+     assembler.  It tracks physical virtual-key identity (with a character
+     fallback), abandons uncertain held keys after a stuck-key horizon, and
+     never guesses a partial cell
    - On those terminals the named keys arrive as escape sequences, which
      `VTKeyDecoder` reads before any character reaches the chord tables -
      `ESC [ D` ends in the dot-3 key, so an undecoded Left would spell a
