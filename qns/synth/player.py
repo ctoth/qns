@@ -173,7 +173,11 @@ class AudioPlayer:
         """Emulator lead needed to restore the active audio reservoir."""
         with self._lock:
             if self._queued_frames <= 0:
-                return 0.0 if self._priming else self._prime_frames / self.sample_rate
+                # Once the reservoir is empty, audio is genuinely behind.
+                # Granting a fresh prime-sized lead here makes emulated time
+                # jump forward during a pause instead of recovering from the
+                # underrun at wall-clock pace.
+                return 0.0
             missing = max(0, self._prime_frames - self._queued_frames)
             return missing / self.sample_rate
 

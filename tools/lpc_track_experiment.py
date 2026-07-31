@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 import wave
 from pathlib import Path
 
@@ -48,6 +49,20 @@ FRAME = 110  # 5 ms
 STOPS = (0x24, 0x25, 0x27, 0x28, 0x29)  # B D P T K
 
 _tracks: dict[int, list[dict]] = {}
+
+
+def playback_samples_for_row(row: dict, *, warn_legacy: bool = True) -> int:
+    """Return the trace row's chip-modeled length, including speech rate."""
+    if not row.get("rate") and warn_legacy:
+        print(
+            "warning: legacy trace has no rate column; using SSI-263 rate 8",
+            file=sys.stderr,
+        )
+    return playback_length_samples(
+        int(row["code"]),
+        int(row.get("playback_duration") or row["duration_mode"]),
+        int(row.get("rate") or 8),
+    )
 
 
 def phoneme_track(code: int) -> list[dict]:
@@ -196,16 +211,19 @@ def main() -> None:
 
     with open(args.trace, encoding="ascii", newline="") as handle:
         rows = list(csv.DictReader(handle))
+    legacy_rate = any(not row.get("rate") for row in rows)
+    if legacy_rate:
+        print(
+            "warning: legacy trace has no rate column; using SSI-263 rate 8",
+            file=sys.stderr,
+        )
 
     stream = TrackStream(transition_ms=args.transition_ms)
     samples = np.concatenate(
         [
             stream.render(
                 int(row["code"]) & 0x3F,
-                playback_length_samples(
-                    int(row["code"]),
-                    int(row.get("playback_duration") or row["duration_mode"]),
-                ),
+                playback_samples_for_row(row, warn_legacy=False),
                 int(row["amplitude"]),
             )
             for row in rows

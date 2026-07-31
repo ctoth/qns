@@ -13,21 +13,36 @@ it takes.
 Each phoneme is rendered for exactly the length the chip holds it, so the
 result runs the same length as the live audio rather than being paced by
 however fast the emulator happened to run.
+
+Traces made before the rate column was added remain supported.  They use
+the capture-neutral SSI-263 rate 8 and emit one warning on stderr.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import sys
 import wave
 from pathlib import Path
 
 import numpy as np
 
+from qns.ssi263 import playback_length_samples
 from qns.synth import SSI263LPCSynth, SSI263PCMSynth, SSI263Synth
 from qns.synth.phonemes import SAMPLE_RATE
+from qns.synth.timing import fit_audio_to_elapsed
 
 BACKENDS = {"pcm": SSI263PCMSynth, "lpc": SSI263LPCSynth, "formant": SSI263Synth}
+CPU_CLOCK_HZ = 12_288_000
+
+
+def _duration(row: dict) -> int:
+    return int(row.get("playback_duration") or row["duration_mode"])
+
+
+def _rate(row: dict) -> int:
+    return int(row.get("rate") or 8)
 
 
 def render_row(backend, row: dict, name: str) -> np.ndarray:
@@ -39,13 +54,66 @@ def render_row(backend, row: dict, name: str) -> np.ndarray:
     """
     code = int(row["code"]) & 0x3F
     amplitude = int(row["amplitude"])
+    duration = _duration(row)
+    rate = _rate(row)
     if name == "formant":
-        return backend.get_phoneme_audio(code, amplitude, int(row["inflection"]))
+        audio = backend.get_phoneme_audio(code, amplitude, int(row["inflection"]))
+    else:
+        audio = backend.get_phoneme_audio(code, amplitude, duration, rate)
 
-    # Older traces predate the playback_duration column; the duration mode as
-    # written is the best available stand-in for them.
-    duration = int(row.get("playback_duration") or row["duration_mode"])
-    return backend.get_phoneme_audio(code, amplitude, duration)
+    return fit_audio_to_elapsed(
+        audio,
+        playback_length_samples(code, duration, rate),
+    )
+
+
+def render_rows(
+    backend,
+    rows: list[dict],
+    name: str,
+    *,
+    cpu_clock: int = CPU_CLOCK_HZ,
+) -> np.ndarray:
+    """Render events for their measured trace-cycle spans.
+
+    The last trace row marks the end of the measurable span.  Every earlier
+    phoneme is truncated or zero-padded to the next event's cycle, exactly as
+    the live chip's ``end_phoneme`` event treats supersession.
+    """
+    if not rows:
+        return np.zeros(0, dtype=np.float32)
+    if any(not row.get("rate") for row in rows):
+        print(
+            "warning: legacy trace has no rate column; using SSI-263 rate 8",
+            file=sys.stderr,
+        )
+    if len(rows) == 1:
+        return render_row(backend, rows[0], name)
+
+    pieces = []
+    origin_cycle = int(rows[0]["cycle"])
+    for row, next_row in zip(rows, rows[1:]):
+        start_sample = int((int(row["cycle"]) - origin_cycle) * SAMPLE_RATE / cpu_clock)
+        end_sample = int((int(next_row["cycle"]) - origin_cycle) * SAMPLE_RATE / cpu_clock)
+        elapsed_samples = max(0, end_sample - start_sample)
+        if name == "lpc":
+            pieces.append(
+                backend.get_elapsed_phoneme_audio(
+                    int(row["code"]) & 0x3F,
+                    int(row["amplitude"]),
+                    _duration(row),
+                    _rate(row),
+                    elapsed_samples,
+                )
+            )
+        else:
+            pieces.append(
+                fit_audio_to_elapsed(
+                    render_row(backend, row, name),
+                    elapsed_samples,
+                )
+            )
+    return np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
 
 
 def main() -> None:
@@ -76,8 +144,16 @@ def main() -> None:
         rows = [row for row in rows if int(row["code"]) != 0]
 
     backend = BACKENDS[args.backend](audio_enabled=False)
-    pieces = [render_row(backend, row, args.backend) for row in rows]
-    samples = np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
+    if args.drop_pauses:
+        if any(not row.get("rate") for row in rows):
+            print(
+                "warning: legacy trace has no rate column; using SSI-263 rate 8",
+                file=sys.stderr,
+            )
+        pieces = [render_row(backend, row, args.backend) for row in rows]
+        samples = np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
+    else:
+        samples = render_rows(backend, rows, args.backend)
 
     peak = float(np.max(np.abs(samples))) if len(samples) else 0.0
     if peak > 1.0:

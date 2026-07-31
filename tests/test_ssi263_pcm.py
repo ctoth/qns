@@ -138,7 +138,9 @@ def test_pcm_transition_changes_pitch_without_moving_formants() -> None:
 
     synth.play(state(0, 3, 3288))
     assert synth._current_inflection_level == 16.6
+    synth.end_phoneme(playback_length_samples(0, 3))
     synth.play(state(2, 0, 3288))
+    synth.end_phoneme(playback_length_samples(2, 0))
 
     transitioned = played[-1]
     assert synth._current_inflection_level == 19.0
@@ -154,8 +156,10 @@ def test_pcm_transition_changes_pitch_without_moving_formants() -> None:
     assert envelope_similarity > 0.95
 
     synth.play(state(2, 0, 3072))
+    synth.end_phoneme(playback_length_samples(2, 0))
     assert synth._current_inflection_level == 17.5
     synth.play(state(2, 0, 3072))
+    synth.end_phoneme(playback_length_samples(2, 0))
     assert synth._current_inflection_level == 16.0
 
 
