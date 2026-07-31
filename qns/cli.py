@@ -126,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-realtime",
         dest="realtime",
         action="store_false",
-        help="Run as fast as possible even with --audio",
+        help="Run fast with bounded audio latency; drop newest overflow frames",
     )
     parser.set_defaults(realtime=None)
     parser.add_argument(

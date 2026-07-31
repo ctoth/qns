@@ -46,6 +46,7 @@ class SSI263Synth:
         self,
         sample_rate: int = 22050,
         audio_enabled: bool = True,
+        realtime: bool = False,
     ):
         self.sample_rate = sample_rate
         # Standalone-mode settings, used when speaking outside the emulator
@@ -53,7 +54,14 @@ class SSI263Synth:
         self.inflection = 2048
 
         self._formant = FormantSynth(sample_rate=sample_rate)
-        self._player = AudioPlayer(sample_rate=sample_rate) if audio_enabled else None
+        self._player = (
+            AudioPlayer(
+                sample_rate=sample_rate,
+                overflow_policy="block" if realtime else "drop_newest",
+            )
+            if audio_enabled
+            else None
+        )
         self._phoneme_callback: Callable[[int], None] | None = None
         self._pending_audio: np.ndarray | None = None
 

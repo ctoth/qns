@@ -10,7 +10,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Literal, TextIO
 
 import numpy as np
 
@@ -43,7 +43,14 @@ _LOG_HEADER = (
 
 
 class AudioPlayer:
-    """Real-time audio player using sounddevice."""
+    """Real-time audio player using a bounded, preallocated mono ring.
+
+    ``overflow_policy="block"`` preserves every frame by holding the producer
+    until PortAudio makes room. ``"drop_newest"`` never blocks: it accepts the
+    prefix that fits and drops the newest overflow frames. The CLI uses the
+    blocking policy in real time and the bounded drop-newest policy for
+    ``--no-realtime``, where emulation can outrun the sound device indefinitely.
+    """
 
     def __init__(
         self,
@@ -51,23 +58,43 @@ class AudioPlayer:
         channels: int = 1,
         blocksize: int = 2048,
         prime_ms: int = 250,
+        max_buffer_ms: int = 1000,
+        overflow_policy: Literal["block", "drop_newest"] = "drop_newest",
         log_path: Path | str | None = None,
     ):
+        if sample_rate <= 0:
+            raise ValueError("sample_rate must be positive")
+        if channels != 1:
+            raise ValueError("QNS audio output is mono")
+        if blocksize <= 0:
+            raise ValueError("blocksize must be positive")
+        if prime_ms < 0:
+            raise ValueError("prime_ms cannot be negative")
+        if max_buffer_ms <= 0:
+            raise ValueError("max_buffer_ms must be positive")
+        if overflow_policy not in ("block", "drop_newest"):
+            raise ValueError(f"unsupported overflow policy: {overflow_policy}")
+
         # 512 frames is 23 ms of headroom, which PulseAudio under WSL does
         # not reliably meet while the emulator thread holds the GIL between
-        # sleeps; 2048 gives 93 ms.  The queue itself never starves the
+        # sleeps; 2048 gives 93 ms.  The ring itself never starves the
         # callback - it pads with silence - so underruns here are host
         # scheduling jitter, not missing audio.
         self.sample_rate = sample_rate
         self.channels = channels
         self.blocksize = blocksize
 
-        self._queue: queue.Queue[np.ndarray] = queue.Queue()
         self._stream: Any | None = None
-        self._buffer: np.ndarray = np.array([], dtype=np.float32)
         self._lock = threading.Lock()
+        self._space_available = threading.Condition(self._lock)
         self._playing = False
         self._queued_frames = 0
+        self._read_index = 0
+        self._write_index = 0
+        self._dropped_frames = 0
+        self._accepting = True
+        self._generation = 0
+        self._overflow_policy = overflow_policy
         self._log_path = Path(log_path) if log_path is not None else None
         self._log_start = 0.0
         self._log_file: TextIO | None = None
@@ -95,11 +122,23 @@ class AudioPlayer:
         # start, so give up waiting after this many starved callbacks once
         # more than a one-frame control sample has reached the queue.
         self._max_primed_waits = max(1, int(sample_rate * 0.4 / blocksize))
+        self._capacity_frames = max(
+            1,
+            blocksize,
+            self._prime_frames,
+            int(sample_rate * max_buffer_ms / 1000),
+        )
+        self._ring = np.empty(self._capacity_frames, dtype=np.float32)
 
     def start(self) -> None:
         """Start the audio stream."""
         if self._stream is not None:
             return
+
+        with self._space_available:
+            if not self._accepting:
+                self._reset_ring_locked()
+                self._accepting = True
 
         self._start_log()
         self._stream = _open_output_stream(
@@ -114,60 +153,92 @@ class AudioPlayer:
         self._stream.start()
 
     def stop(self) -> None:
-        """Stop the audio stream."""
-        if self._stream is None:
-            return
+        """Stop playback and atomically close/reset the producer generation."""
+        with self._space_available:
+            queued_frames = self._queued_frames
+            priming = self._priming
+            self._accepting = False
+            self._generation += 1
+            self._reset_ring_locked()
+            self._space_available.notify_all()
 
-        self._stream.stop()
-        self._stream.close()
-        self._stream = None
+        stream = self._stream
+        if stream is not None:
+            stream.stop()
+            stream.close()
+            self._stream = None
 
-        with self._lock:
-            self._log_event(
-                "stream_stop",
-                queued_frames=self._queued_frames,
-                buffered_frames=len(self._buffer),
-                priming=self._priming,
-            )
-
-        # Clear queue
-        while not self._queue.empty():
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                break
-
-        with self._lock:
-            self._buffer = np.array([], dtype=np.float32)
-            self._playing = False
-            self._queued_frames = 0
-            self._priming = True
-            self._primed_waits = 0
-            self._substantive_audio_queued = False
-
+        self._log_event(
+            "stream_stop",
+            queued_frames=queued_frames,
+            buffered_frames=queued_frames,
+            priming=priming,
+        )
         self._finish_log()
 
-    def play(self, samples: np.ndarray) -> None:
-        """Queue samples for playback.
+    def play(self, samples: np.ndarray) -> int:
+        """Queue samples for playback and return the accepted frame count.
 
         Args:
             samples: Audio samples (float32, -1.0 to 1.0)
+
+        With ``drop_newest``, only the prefix that fits is accepted and the
+        remaining newest frames are counted by :attr:`dropped_frames`.
+        ``block`` waits for callback consumption and aborts if :meth:`stop`
+        closes the current producer generation.
         """
         if samples.dtype != np.float32:
             samples = samples.astype(np.float32)
 
-        with self._lock:
-            self._queue.put(samples)
-            self._queued_frames += len(samples)
-            if len(samples) > 1:
+        accepted = 0
+        dropped = 0
+        with self._space_available:
+            generation = self._generation
+            while (
+                accepted < len(samples)
+                and self._accepting
+                and generation == self._generation
+            ):
+                available = self._capacity_frames - self._queued_frames
+                if available == 0:
+                    if self._overflow_policy == "drop_newest":
+                        dropped = len(samples) - accepted
+                        self._dropped_frames += dropped
+                        break
+                    self._space_available.wait()
+                    continue
+
+                count = min(available, len(samples) - accepted)
+                first = min(count, self._capacity_frames - self._write_index)
+                self._ring[self._write_index : self._write_index + first] = samples[
+                    accepted : accepted + first
+                ]
+                second = count - first
+                if second:
+                    self._ring[0:second] = samples[accepted + first : accepted + count]
+                self._write_index = (self._write_index + count) % self._capacity_frames
+                self._queued_frames += count
+                accepted += count
+
+            if accepted < len(samples) and (
+                not self._accepting or generation != self._generation
+            ):
+                dropped = len(samples) - accepted
+
+            if accepted and len(samples) > 1:
                 self._substantive_audio_queued = True
-            self._log_event(
-                "enqueue",
-                frames=len(samples),
-                queued_frames=self._queued_frames,
-                buffered_frames=len(self._buffer),
-                priming=self._priming,
-            )
+            queued_frames = self._queued_frames
+            priming = self._priming
+
+        self._log_event(
+            "enqueue",
+            frames=accepted,
+            silence_frames=dropped,
+            queued_frames=queued_frames,
+            buffered_frames=queued_frames,
+            priming=priming,
+        )
+        return accepted
 
     def realtime_lead_seconds(self) -> float:
         """Emulator lead needed to restore the active audio reservoir."""
@@ -184,7 +255,13 @@ class AudioPlayer:
     def is_playing(self) -> bool:
         """Check if audio is currently playing."""
         with self._lock:
-            return self._playing or not self._queue.empty() or len(self._buffer) > 0
+            return self._playing or self._queued_frames > 0
+
+    @property
+    def dropped_frames(self) -> int:
+        """Number of newest frames discarded by this player generation."""
+        with self._lock:
+            return self._dropped_frames
 
     def _audio_callback(
         self,
@@ -193,23 +270,14 @@ class AudioPlayer:
         time_info,
         status,
     ) -> None:
-        """Sounddevice callback - fills output buffer from queue."""
-        with self._lock:
-            # Drain everything available, not just enough for this block:
-            # the surplus is the reservoir that absorbs the emulator
-            # running briefly below real time.
-            target = max(frames, self._prime_frames if self._priming else 0)
-            while len(self._buffer) < target:
-                try:
-                    chunk = self._queue.get_nowait()
-                    self._buffer = np.concatenate([self._buffer, chunk])
-                except queue.Empty:
-                    break
-
+        """Fill one PortAudio block with at most two bounded ring copies."""
+        outdata.fill(0)
+        with self._space_available:
             if self._priming:
-                if len(self._buffer) >= self._prime_frames:
+                if self._queued_frames >= self._prime_frames:
                     self._priming = False
                     self._primed_waits = 0
+                    audio_frames = min(frames, self._queued_frames)
                 elif (
                     not self._substantive_audio_queued
                     or self._primed_waits < self._max_primed_waits
@@ -219,52 +287,51 @@ class AudioPlayer:
                     # than the reservoir would never play at all.
                     if self._substantive_audio_queued:
                         self._primed_waits += 1
-                    outdata[:, 0] = 0
-                    self._log_event(
-                        "callback",
-                        frames=frames,
-                        audio_frames=0,
-                        silence_frames=frames,
-                        queued_frames=self._queued_frames,
-                        buffered_frames=len(self._buffer),
-                        priming=self._priming,
-                        time_info=time_info,
-                        status=status,
-                    )
-                    return
+                    audio_frames = 0
                 else:
                     self._priming = False
                     self._primed_waits = 0
-
-            # Output samples
-            if len(self._buffer) >= frames:
-                outdata[:, 0] = self._buffer[:frames]
-                self._buffer = self._buffer[frames:]
-                self._playing = True
-                self._queued_frames = max(0, self._queued_frames - frames)
-                audio_frames = frames
+                    audio_frames = min(frames, self._queued_frames)
             else:
-                # Not enough samples - output what we have, pad with silence
-                available = len(self._buffer)
-                if available > 0:
-                    outdata[:available, 0] = self._buffer
-                    self._buffer = np.array([], dtype=np.float32)
-                outdata[available:, 0] = 0
-                self._playing = False
-                self._queued_frames = max(0, self._queued_frames - available)
-                audio_frames = available
+                audio_frames = min(frames, self._queued_frames)
 
-            self._log_event(
-                "callback",
-                frames=frames,
-                audio_frames=audio_frames,
-                silence_frames=frames - audio_frames,
-                queued_frames=self._queued_frames,
-                buffered_frames=len(self._buffer),
-                priming=self._priming,
-                time_info=time_info,
-                status=status,
-            )
+            if audio_frames:
+                first = min(audio_frames, self._capacity_frames - self._read_index)
+                outdata[:first, 0] = self._ring[self._read_index : self._read_index + first]
+                second = audio_frames - first
+                if second:
+                    outdata[first:audio_frames, 0] = self._ring[0:second]
+                self._read_index = (self._read_index + audio_frames) % self._capacity_frames
+                self._queued_frames -= audio_frames
+                self._space_available.notify_all()
+
+            self._playing = audio_frames == frames
+            queued_frames = self._queued_frames
+            priming = self._priming
+
+        # Logging is deliberately outside the callback state lock.  This
+        # queues raw values only; CSV/string formatting belongs to the writer.
+        self._log_event(
+            "callback",
+            frames=frames,
+            audio_frames=audio_frames,
+            silence_frames=frames - audio_frames,
+            queued_frames=queued_frames,
+            buffered_frames=queued_frames,
+            priming=priming,
+            time_info=time_info,
+            status=status,
+        )
+
+    def _reset_ring_locked(self) -> None:
+        self._playing = False
+        self._queued_frames = 0
+        self._read_index = 0
+        self._write_index = 0
+        self._dropped_frames = 0
+        self._priming = True
+        self._primed_waits = 0
+        self._substantive_audio_queued = False
 
     def _start_log(self) -> None:
         if self._log_path is None:
@@ -281,7 +348,7 @@ class AudioPlayer:
             assert self._log_queue is not None
             assert self._log_file is not None
             while (record := self._log_queue.get()) is not None:
-                writer.writerow(record)
+                writer.writerow(self._format_log_record(record))
                 self._log_file.flush()
 
         self._log_thread = threading.Thread(
@@ -320,16 +387,9 @@ class AudioPlayer:
         if self._log_queue is None:
             return
 
-        current_time = getattr(time_info, "currentTime", None)
-        output_dac_time = getattr(time_info, "outputBufferDacTime", None)
-        audio_end_time = (
-            output_dac_time + audio_frames / self.sample_rate
-            if output_dac_time is not None and isinstance(audio_frames, int)
-            else None
-        )
         self._log_queue.put(
             (
-                f"{time.perf_counter() - self._log_start:.9f}",
+                time.perf_counter() - self._log_start,
                 event,
                 frames,
                 audio_frames,
@@ -337,9 +397,42 @@ class AudioPlayer:
                 queued_frames,
                 buffered_frames,
                 priming,
-                f"{current_time:.9f}" if current_time is not None else "",
-                f"{output_dac_time:.9f}" if output_dac_time is not None else "",
-                f"{audio_end_time:.9f}" if audio_end_time is not None else "",
-                str(status) if status else "",
+                getattr(time_info, "currentTime", None),
+                getattr(time_info, "outputBufferDacTime", None),
+                status,
             )
+        )
+
+    def _format_log_record(self, record: tuple[object, ...]) -> tuple[object, ...]:
+        (
+            wall_seconds,
+            event,
+            frames,
+            audio_frames,
+            silence_frames,
+            queued_frames,
+            buffered_frames,
+            priming,
+            current_time,
+            output_dac_time,
+            status,
+        ) = record
+        audio_end_time = (
+            output_dac_time + audio_frames / self.sample_rate
+            if isinstance(output_dac_time, (int, float)) and isinstance(audio_frames, int)
+            else None
+        )
+        return (
+            f"{wall_seconds:.9f}",
+            event,
+            frames,
+            audio_frames,
+            silence_frames,
+            queued_frames,
+            buffered_frames,
+            priming,
+            f"{current_time:.9f}" if isinstance(current_time, (int, float)) else "",
+            f"{output_dac_time:.9f}" if isinstance(output_dac_time, (int, float)) else "",
+            f"{audio_end_time:.9f}" if audio_end_time is not None else "",
+            str(status) if status else "",
         )
