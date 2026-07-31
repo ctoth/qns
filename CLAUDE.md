@@ -242,17 +242,20 @@ pause phonemes (0x00) during the boot sequence.
      `docs/reports/lpc-backend-investigation.md` for the measurements, the
      four theories that were refuted, and what to do next
 
-3. **A chord delivered during the greeting is silently lost**
+3. **A chord delivered during the greeting can be reported lost**
    - `ChordInputDriver`'s ready gate opens around 37M cycles, part way
      through the boot greeting.  A chord delivered while the firmware is
      still speaking is accepted into its input buffer - `input_buffer`
      reads the chord back - and then cleared without
-     `keyboard_queue_count` ever going non-zero.  The driver waits in its
-     `queued` phase forever and the command is gone
+     `keyboard_queue_count` ever going non-zero.  After two later input
+     epochs the driver reports the chord as lost on stderr (and as a
+     structured `keyboard`/`lost` event in JSONL mode), returns to idle,
+     and does not retry the chord because redelivery could duplicate input
    - This predates six-key input and affects every mode: `printf 'O' |
-     ... --input keyboard` loses its chord the same way.  Interactive use
-     is unaffected because a person waits for the greeting; scripted use
-     is not, which makes the input layer look broken when it is not
+     ... --input keyboard` can lose its chord the same way.  Later chords
+     remain deliverable and the direct core returns to its full-speed path.
+     Interactive use is unaffected because a person waits for the greeting;
+     scripted callers should wait for the greeting or handle the loss event
    - Deliver after ~80M cycles.  `investigations/chord_delivery_trace.py`
      prints every driver phase change with the epochs and buffer bytes it
      consults, which is how this was located
