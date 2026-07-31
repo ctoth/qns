@@ -18,9 +18,8 @@ uv run -m qns.bns --audio lpc roms/bspeng.bns      # pcm (default), lpc, or form
 uv run -m qns.bns --audio --input 6-key roms/bspeng.bns   # fdsjkl = dots 1-6
 ```
 
-To compare the backends by ear without a working sound device, or without
-waiting out a real-time boot each time, render a trace through the very
-backend `--audio` uses:
+To compare backend output without waiting out a real-time boot, render a trace
+offline with the same candidate generators used by `--audio`:
 
 ```bash
 uv run -m qns.bns --cycles 60000000 --input none \
@@ -29,27 +28,32 @@ uv run tools/render_backend.py greeting.csv out/lpc.wav --backend lpc
 paplay out/lpc.wav
 ```
 
-**Do not combine `--audio` with `--speech`/`--speech-stream english`.** Those
-set an english callback, and any callback needing instruction boundaries drops
-the core to the per-instruction path at ~4-5M cycles/s - below the 6.144M phi
-cycles/s real-time need - so speech develops audible gaps. Watch the text or listen to
-the audio, not both, until observation moves onto z-core's native PC watch.
+The renderer preserves the trace's cycle spans and silent gaps, but it does not
+exercise the live sound callback. Its WAV output is not proof that live playback
+is audible or gap-free. Use a real callback capture or listen to live output for
+those claims.
 
-Both blockers named in earlier notes are resolved, and neither was what it
-looked like. The "~1000x too slow" throughput wall was a **deadlock**: the
-firmware sleeps in a RAM-resident `SLP; RET` stub between phonemes, a sleeping
-core advances no cycles, so the scheduled wake was never reached and the loop
-span forever. Measured without contention the core runs 4-32M cycles/s against
-the 6.144M phi cycles/s real-time need. See
+**Do not combine `--audio` with `--speech`/`--speech-stream english`.** Those
+set an English callback, and instruction-boundary callbacks select the
+per-instruction path at about 4-5M cycles/s, below the 6.144M phi cycles/s
+real-time need. The producer can then starve the audio queue. Use callback
+capture or `--audio-log` to measure this; a passing test alone is not audible
+proof.
+
+The earlier SLP deadlock is resolved in z-core. Sleeping stops instruction
+fetch while cycle time and the PRT continue, so timer interrupts wake the
+firmware without compensation in the QNS loop. Measured without contention
+the core runs 4-32M cycles/s against the 6.144M phi cycles/s real-time need. See
 `docs/reports/speech-pipeline-investigation.md`.
 
 The old "amplitude 0" blocker is **resolved**, and was not a decode bug. The
 four speech settings live in RAM that no shipped code path initialises - a real
 unit retains them on battery - so a machine booting RAM at zero made the
 firmware correctly write silence, at the wrong rate and pitch too. `qns.loader`
-discovers the cells and `BNS` seeds them at load; `--force-amplitude` is no
-longer needed. Override with `--volume/--rate/--pitch/--frequency` (names follow
-`BSAPI.H`, so `--pitch` is filter frequency and `--frequency` is inflection).
+discovers the cells and `BNS` seeds them at load; the retired amplitude
+workaround is no longer needed. Override with
+`--volume/--rate/--pitch/--frequency` (names follow `BSAPI.H`, so `--pitch` is
+filter frequency and `--frequency` is inflection).
 
 A warm reset legitimately reverts retained speech settings to the firmware's
 factory values: volume 6, rate 11, filter frequency 7, and inflection 69. This
@@ -83,6 +87,7 @@ qns/
 │   │   ├── formant.py        # SC-01 formant model (from MAME votrax)
 │   │   ├── sc01_rom.py       # Decoded SC-01A ROM parameters
 │   │   ├── sc02_to_sc01.py   # SSI-263 -> SC-01 phoneme mapping
+│   │   ├── timing.py         # Conform candidate audio to elapsed chip time
 │   │   └── player.py         # sounddevice real-time audio
 │   ├── devices/              # Peripherals: bus, keyboards, displays,
 │   │                         # rtc, clock_pic, gas_gauge, watchdog
@@ -94,24 +99,34 @@ qns/
 │   ├── input_driver.py       # Stdin chord tables + press/release driver
 │   ├── keysource.py          # Key transitions: win32-input-mode decode,
 │   │                         # ReadConsoleInput, Ctrl-C recognition
+│   ├── pc_disk.py            # BS2 PC-disk protocol and host storage
 │   ├── sixkey.py             # Six-key layouts + chord assembly
 │   ├── stdio.py              # JSONL structured I/O events
 │   ├── cli.py                # argparse CLI (python -m qns.bns)
 │   └── bns.py                # Main emulator machine
 ├── tools/
+│   ├── bns_external.py       # Run an external BNS program through JSONL
+│   ├── bs2_harness.py        # Interactive BS2 firmware harness
+│   ├── bs2_stdio_harness.py  # BS2 JSONL subprocess harness
+│   ├── stdio_process.py      # JSONL emulator process controller
+│   ├── verify_bs2_dictionary.py # Verify dictionary persistence
+│   ├── verify_bs2_external_program.py # Verify external program loading
+│   ├── verify_bs2_help.py    # Verify help navigation
+│   ├── verify_bs2_pc_disk.py # Verify PC-disk transfers
 │   ├── extract_phonemes.py   # Regenerate compact captures from AppleWin
 │   ├── decode_sc01_rom.py    # Regenerates qns/synth/sc01_rom.py
 │   ├── extract_firmware.py   # Package -> .bin extraction (uses qns.loader)
 │   ├── probe_terminal_keys.py # What key info a terminal can deliver
-│   ├── render_backend.py     # Trace -> WAV through a live --audio backend
+│   ├── render_backend.py     # Offline trace-cycle WAV renderer
 │   ├── lpc_track_experiment.py # Unfinished time-varying LPC (not a backend)
 │   └── rom_analyzer.py       # ROM bank/structure analysis
 ├── tests/                    # pytest suite (uv run pytest tests/)
-├── roms/NFB99/               # ROM images (update packages)
-└── prompts/
-    ├── handoff.md                    # General handoff
-    ├── z180-investigation.md         # Z180 research (RESOLVED)
-    └── silent-startup-investigation.md # Silent startup (RESOLVED)
+├── docs/                     # User and architecture documentation
+│   └── reports/              # Reproducible investigation reports
+├── investigations/           # Focused diagnostic scripts and records
+├── examples/                 # Example assembly and C programs
+├── sdk/                      # BNS API headers and startup code
+└── toolchain/                # Reproducible z88dk and Tera Term setup
 ```
 
 ## Related Resources
@@ -163,7 +178,7 @@ pause phonemes (0x00) during the boot sequence.
 ## What Works
 
 1. **Z180 CPU** - Executes firmware without crashing
-   - MMU properly initialized via cpu_reset_z180()
+   - Firmware initializes the MMU through z-core
    - ~265K memory writes during boot
    - Keyboard interrupt (INT2) wired to CPU
 
@@ -182,10 +197,10 @@ pause phonemes (0x00) during the boot sequence.
      (see `docs/sc02-phoneme-mapping.md` and `datasheet.pdf`)
    - The chip (`qns/ssi263.py`) owns register decode and pushes decoded
      `SSI263State` snapshots to a backend via `set_synth()`
-   - Every backend renders each phoneme for exactly
-     `qns.ssi263.playback_length_samples()`, the same duration model the
-     chip schedules its completion interrupt from, so audio cannot drift
-     against the emulated clock
+   - Backends produce modeled candidate audio. The SSI-263 calls
+     `end_phoneme(elapsed_samples)` when a queued phoneme ends and conforms
+     queued output to actual elapsed emulated time. This includes silence for
+     elapsed pauses and truncation when speech is superseded or interrupted
 
 4. **Six-key Braille entry** (`--input 6-key`, `--input 6-key-dvorak`)
    - `fdsjkl` are dots 1-6, `ueohtn` on Dvorak; space and Alt both give
@@ -281,7 +296,9 @@ pause phonemes (0x00) during the boot sequence.
 
 1. **Always use project tooling** - CLI tools in `qns/bns.py` and `tools/`
 2. **If tooling doesn't exist, build it first** - Spec what you need, dispatch subagent to implement, then use it
-3. **Expand the CLI** - Add click commands for any repeated debugging task
+3. **Expand the CLI** - argparse is the project CLI framework. Use it for
+   `qns.bns` and new or reworked tools. Two older standalone utilities still
+   use Click; do not expand that split
 4. **Invest in visibility** - Every mystery is a missing debug tool
 
 Current CLI (`qns/bns.py`):

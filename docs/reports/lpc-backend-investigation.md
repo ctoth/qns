@@ -27,11 +27,14 @@ not wired to `--audio`.
 All three exceed the corrected 6.144M phi cycles/s real-time need. Measured
 over 50M cycles with `--input none`.
 
-Every backend renders a phoneme for exactly
-`qns.ssi263.playback_length_samples()`, the same duration model the chip
-schedules its completion interrupt from. A backend producing a different
-length drifts against the emulated clock, which is heard as the audio queue
-draining mid-utterance.
+Each backend produces modeled candidate audio. The SSI-263 owns completion
+timing and passes the actual elapsed emulated time to `end_phoneme`. Queued
+output is then truncated or zero-padded to that span. This also applies to
+pauses and to phonemes ended early by supersession or interruption.
+
+The by-ear findings below are observations from listening trials. Automated
+tests enforce samples, callback delivery, and timing; they do not establish
+that output is audible or subjectively fluent on a live sound device.
 
 ## Theories that were wrong
 
@@ -90,27 +93,25 @@ join, leaving the new backend measurably worse than the captures it replaced
 - 30% of normal level at joins against pcm's 37%. Carrying the tail takes it
 to 61%. Regression test in `tests/test_lpc_backend.py`.
 
-**Pause was rendered at a length that does not exist.** Pause has no capture,
-so the duration model borrows the first phoneme's length and reports 30 ms.
-Against the cycle counts of a real `--trace-speech` run, pauses elapse in a
-median of **0.0 ms** - the firmware writes a pause and the next phoneme
-without waiting, and 44 of the greeting's 116 events have no gap at all. The
-duration model claims 5.68 s for a greeting that spans 3.28 s. Honouring it
-stretched the audio to 5.7 s with a hole punched between every phoneme. `pcm`
-was already right here by accident, returning one sample whatever the
-duration says.
+**Pause candidate length was mistaken for elapsed time.** Pause has no capture,
+so its modeled candidate is silence. The SSI-263 now decides how much of that
+candidate enters the queue when the pause ends. A pause superseded at the same
+cycle contributes no samples; one that persists contributes silence for its
+elapsed cycle span. This replaced the earlier behavior that either invented a
+full modeled pause or returned an accidental one-sample placeholder.
 
-**Pause was treated as an utterance boundary.** Emitting nothing for a pause
-is not sufficient: the greeting carries 88 pause events around its 28
-phonemes, so resetting the stream at each one starts *every* phoneme cold,
-which is the isolated-capture choppiness the backend exists to remove. A
-pause that elapses in no time is a no-op between two phonemes, and continuity
-must survive it.
+**Pause was treated as an utterance boundary.** The greeting carries 88 pause
+events around its 28 phonemes. LPC now stages pause state without resetting the
+stream. The end lifecycle commits only the elapsed silent span, preserving
+continuity when the pause has no elapsed time.
 
 That last pair is why `--audio lpc` sounded worse than the same trace
 rendered offline, and it went unnoticed because
 `tools/render_backend.py` dropped pause events by default. **A preview that
-omits 76% of the event stream is not a preview.** It now keeps them.
+omits 76% of the event stream is not a preview.** It now keeps them and uses
+adjacent trace timestamps to preserve timing and gaps. It remains an offline
+renderer: it does not exercise the live sound callback or prove audible
+behavior.
 
 ## The finding that matters most, and is not addressed
 
@@ -182,7 +183,7 @@ could ship.
 uv run -m qns.bns --cycles 60000000 --input none --no-realtime \
     --trace-speech greeting.csv roms/bspeng.bns
 
-# Render it through any live backend (keeps pauses - that is the point)
+# Render it offline with a backend candidate generator (keeps trace gaps)
 uv run tools/render_backend.py greeting.csv out/lpc.wav --backend lpc
 
 # The unfinished time-varying model, with its numbers

@@ -1,18 +1,15 @@
-"""Render a traced phoneme stream through a live --audio backend, offline.
+"""Offline renderer for a traced phoneme stream.
 
-`--audio` can only be judged on a machine with working sound, and only in
-real time.  This replays a `--trace-speech` CSV through the very backend
-`--audio BACKEND` would use, writing a WAV instead of opening a stream - so
-the three backends can be compared by ear, on any machine, as many times as
-it takes.
+This replays a `--trace-speech` CSV through the candidate generator used by
+`--audio BACKEND` and writes a WAV. It preserves trace timing and gaps from
+adjacent cycle timestamps.
 
     uv run -m qns.bns --cycles 60000000 --input none \\
         --trace-speech greeting.csv roms/bspeng.bns
     uv run tools/render_backend.py greeting.csv lpc.wav --backend lpc
 
-Each phoneme is rendered for exactly the length the chip holds it, so the
-result runs the same length as the live audio rather than being paced by
-however fast the emulator happened to run.
+The offline renderer does not open `AudioPlayer` or exercise its sound-device
+callback, so it does not prove live or audible behavior.
 
 Traces made before the rate column was added remain supported.  They use
 the capture-neutral SSI-263 rate 8 and emit one warning on stderr.
