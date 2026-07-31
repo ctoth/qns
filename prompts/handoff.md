@@ -8,7 +8,7 @@
 
 QNS (Q's Note Speak) is an emulator for the Blazie Engineering BNS (Braille 'N Speak) family of devices - portable note-takers for the blind from the 1990s. These devices use:
 
-- **Z180 (HD64180) CPU** @ 12.288 MHz
+- **Z180 (HD64180)**: 12.288 MHz crystal input, 6.144 MHz phi/system clock
 - **SSI-263 phoneme speech synthesizer** (64 phonemes)
 - **8-dot Braille keyboard** for input
 - **Braille display cells** for output

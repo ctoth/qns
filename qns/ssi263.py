@@ -21,6 +21,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from .clock import HD64180_PHI_HZ
+
 # SSI-263 (SC-02) phoneme table from datasheet (64 phonemes)
 # Format: code -> (name, example_word, IPA approximation)
 PHONEMES: dict[int, tuple[str, str, str]] = {
@@ -241,12 +243,12 @@ class SSI263:
     REG_CTRLAMP = 3  # Control/Articulation/Amplitude
     REG_FILTER = 4  # Filter frequency
 
-    def __init__(self, base_port: int = 0xC0, clock: int = 12_288_000):
+    def __init__(self, base_port: int = 0xC0, clock: int = HD64180_PHI_HZ):
         """Initialize SSI-263.
 
         Args:
             base_port: Base I/O port (0xC0 for BSPLUS, 0x90 for BL40)
-            clock: CPU clock frequency in Hz for timing calculations
+            clock: HD64180 phi/system-clock frequency in Hz for timing calculations
         """
         self.base_port = base_port
         self.phoneme_log: list[int] = []

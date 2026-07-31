@@ -15,6 +15,7 @@ from typing import BinaryIO
 from z180 import IrqLine, Machine, Reg, WatchKind
 from z180.compat import Z180 as CompatZ180
 
+from .clock import HD64180_PHI_HZ
 from .devices import (
     MSM6242RTC,
     BQ2010GasGauge,
@@ -326,7 +327,7 @@ class BNS:
 
     def __init__(
         self,
-        clock: int = 12_288_000,
+        clock: int = HD64180_PHI_HZ,
         audio: bool = False,
         synth_backend: str = "pcm",
         audio_log: Path | str | None = None,
@@ -352,7 +353,8 @@ class BNS:
         """Initialize the BNS emulator.
 
         Args:
-            clock: CPU clock frequency in Hz (default 12.288 MHz for BSPLUS)
+            clock: HD64180 phi/system-clock frequency in Hz (default 6.144 MHz;
+                the BSPLUS crystal input is 12.288 MHz)
             audio: Enable audio output for SSI-263 speech
             synth_backend: Audio backend: pcm, lpc, or formant
             audio_log: Live PCM producer/callback CSV path
@@ -412,13 +414,15 @@ class BNS:
         self._speech_parameters: SpeechParameters | None = None
         self.realtime = realtime
         # Real-time pacing sleeps between chunks, so the chunk sets the
-        # granularity of that sleep.  1000 cycles is 81 us at 12.288 MHz -
+        # granularity of that sleep.  1000 cycles is 163 us at 6.144 MHz -
         # far below the host's sleep resolution - so pace in ~1 ms chunks
         # instead, still two orders of magnitude finer than a phoneme.
         # The shortest real English utterance writes SPBUF 424 cycles before
         # its exact capture boundary.  Drain native write events within that
         # interval so the observer can switch to exact instruction stepping.
-        self._chunk_cycles = 256 if english_callback is not None else (12_288 if realtime else 1000)
+        self._chunk_cycles = (
+            256 if english_callback is not None else (self.clock // 1000 if realtime else 1000)
+        )
         self._english_capture_cycle: int | None = None
         self._english_capture_armed = False
         self._serial_input_queue: queue.Queue[int] = queue.Queue()

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from .clock import HD64180_PHI_HZ
+
 # Try to import the compiled CFFI module
 try:
     from ._z180_cffi import ffi, lib
@@ -46,7 +48,7 @@ class Z180:
 
     def __init__(
         self,
-        clock: int = 12_288_000,
+        clock: int = HD64180_PHI_HZ,
         mem_read: Callable[[int], int] | None = None,
         mem_write: Callable[[int, int], None] | None = None,
         io_read: Callable[[int], int] | None = None,
@@ -59,7 +61,7 @@ class Z180:
         """Create a Z180 CPU.
 
         Args:
-            clock: CPU clock frequency in Hz (default 12.288 MHz)
+            clock: HD64180 phi/system-clock frequency in Hz (default 6.144 MHz)
             mem_read: Callback for memory reads (address) -> value
             mem_write: Callback for memory writes (address, value) -> None
             io_read: Callback for I/O reads (port) -> value

@@ -251,10 +251,10 @@ wake the background task, and asleep is not dead.
 
 Measured without contention:
 
-| path | cycles/s | vs real time (12.288M) |
+| path | cycles/s | vs real time (6.144M phi) |
 |---|---|---|
 | per-instruction stepping | ~4-5.7M | too slow |
-| `cpu.run` over a whole budget | ~32M | 2.6x headroom |
+| `cpu.run` over a whole budget | ~32M | 5.2x headroom |
 
 `--audio` holds emulated time to wall-clock time and speaks the greeting in
 the 3.6 s the hardware takes.
@@ -263,7 +263,8 @@ the 3.6 s the hardware takes.
 
 The greeting keeps up because the CPU sleeps between phonemes and pacing
 dominates. While the firmware is actually working we manage ~6.9M cycles/s,
-so the audio queue drains between phonemes and a command response is gappier
+only modestly above the 6.144M phi requirement; input observation can still
+select the slower per-instruction path, so a command response is gappier
 than the greeting.
 
 The cause is the per-instruction path, which delivering a chord still needs:

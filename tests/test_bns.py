@@ -157,6 +157,38 @@ def test_real_bsp_revision_seeds_fifth_cell_without_changing_default_filter_trac
     assert tuple(state.filter_freq for state in states) == DEFAULT_FILTER_FREQUENCY_TRACE
 
 
+@pytest.mark.parametrize(
+    ("revision", "relative_rom"),
+    ((revision, relative_rom) for revision, relative_rom, _voice_flag in REAL_BSP_REVISIONS),
+)
+def test_real_bsp_speech_power_timeout_uses_ten_seconds_of_hardware_time(
+    revision,
+    relative_rom,
+):
+    """Local ROM authority; both BSP links must retain the hardware idle timeout."""
+    from tools.measure_speech_power_timeout import measure_speech_power_timeout
+
+    rom = ROM_ROOT / relative_rom
+    if not rom.is_file():
+        pytest.skip(f"local proprietary {revision} BSP ROM is unavailable: {rom}")
+
+    measurement, _power_events = measure_speech_power_timeout(rom)
+
+    assert measurement.elapsed_seconds == pytest.approx(10.0, abs=0.2)
+
+
+def test_bsp_cycle_clock_is_phi_not_the_crystal_input():
+    """Pacing and cycle-based devices must share the HD64180 phi frequency."""
+    from qns.clock import HD64180_CRYSTAL_HZ, HD64180_PHI_HZ
+
+    bns = BNS(realtime=True)
+
+    assert HD64180_CRYSTAL_HZ == 2 * HD64180_PHI_HZ
+    assert bns.clock == HD64180_PHI_HZ
+    assert bns.ssi263._clock == HD64180_PHI_HZ
+    assert bns._chunk_cycles == HD64180_PHI_HZ // 1000
+
+
 def test_english_stdio_characters_use_firmware_keyboard_chords():
     """Terminal characters map to physical English keyboard chords."""
     assert ASCII_TO_BNS_KEY[ord("a")] == 0x01
@@ -1245,10 +1277,10 @@ def test_mid_chunk_speech_end_uses_exact_io_write_cycle(
         )
     )
 
-    bns._execute_budget(12_288)
+    bns._execute_budget(2 * bns._chunk_cycles)
 
     assert backend.plays == expected_plays
-    assert backend.ends == [21]
+    assert backend.ends == [43]
 
 
 def test_bsplus_port_80_is_watchdog_read_and_speech_power_write():

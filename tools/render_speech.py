@@ -23,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
+from qns.clock import HD64180_PHI_HZ
 from qns.ssi263 import playback_length_samples
 from qns.synth.formant import FormantSynth
 from qns.synth.phonemes import SAMPLE_RATE
@@ -31,7 +32,7 @@ from qns.synth.ssi263_pcm import SSI263PCMSynth
 
 # Z180 clock the profiles run the machine at; the trace's cycle column is
 # in these units.
-CPU_CLOCK_HZ = 12_288_000
+CPU_CLOCK_HZ = HD64180_PHI_HZ
 
 
 def _sc01_inflection(inflection: int) -> int:

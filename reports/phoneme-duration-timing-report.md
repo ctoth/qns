@@ -48,14 +48,14 @@ Successfully implemented phoneme duration timing for INT1 in the SSI-263 emulati
 
 ## Duration Calculations Verified
 
-| Mode | Rate | Duration (ms) | Cycles at 12.288 MHz |
+| Mode | Rate | Duration (ms) | Cycles at 6.144 MHz phi |
 |------|------|---------------|---------------------|
-| 3    | 0    | 64            | 786,432             |
-| 2    | 0    | 128           | 1,572,864           |
-| 1    | 0    | 192           | 2,359,296           |
-| 0    | 0    | 256           | 3,145,728           |
-| 3    | 15   | 4             | 49,152              |
-| 0    | 15   | 16            | 196,608             |
+| 3    | 0    | 64            | 393,216             |
+| 2    | 0    | 128           | 786,432             |
+| 1    | 0    | 192           | 1,179,648           |
+| 0    | 0    | 256           | 1,572,864           |
+| 3    | 15   | 4             | 24,576              |
+| 0    | 15   | 16            | 98,304              |
 
 ## Test Results
 
