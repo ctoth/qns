@@ -18,7 +18,7 @@ build-backend = "hatchling.build"
 packages = ["qns"]
 
 [tool.uv.sources]
-z180 = { git = "https://github.com/ctoth/z-core", rev = "9142185ef8d9d9a93d909e422d3a9a287f1d4f02", subdirectory = "crates/z180-py" }
+z180 = { git = "https://github.com/ctoth/z-core", rev = "f144ef8bb7c91a648c5a0a96a79dfb6b286941f9", subdirectory = "crates/z180-py" }
 
 [tool.pytest.ini_options]
 addopts = '-m "not manual"'

@@ -332,7 +332,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.0.0" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "sounddevice", specifier = ">=0.4.6" },
-    { name = "z180", git = "https://github.com/ctoth/z-core?subdirectory=crates%2Fz180-py&rev=9142185ef8d9d9a93d909e422d3a9a287f1d4f02" },
+    { name = "z180", git = "https://github.com/ctoth/z-core?subdirectory=crates%2Fz180-py&rev=f144ef8bb7c91a648c5a0a96a79dfb6b286941f9" },
 ]
 
 [package.metadata.requires-dev]
@@ -407,4 +407,4 @@ wheels = [
 [[package]]
 name = "z180"
 version = "0.1.0"
-source = { git = "https://github.com/ctoth/z-core?subdirectory=crates%2Fz180-py&rev=9142185ef8d9d9a93d909e422d3a9a287f1d4f02#9142185ef8d9d9a93d909e422d3a9a287f1d4f02" }
+source = { git = "https://github.com/ctoth/z-core?subdirectory=crates%2Fz180-py&rev=f144ef8bb7c91a648c5a0a96a79dfb6b286941f9#f144ef8bb7c91a648c5a0a96a79dfb6b286941f9" }

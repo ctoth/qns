@@ -183,6 +183,30 @@ class SSI263State:
     transitioned_inflection: bool = False
 
 
+@dataclass(frozen=True)
+class _DeferredWriteTiming:
+    """One CPU-originated write awaiting z-core's exact I/O event cycle."""
+
+    port: int
+    value: int
+    phoneme_generation: int | None
+    duration_cycles: int
+    code: int
+    name: str
+    state: SSI263State | None
+    phoneme_end: _DeferredPhonemeEnd | None
+
+
+@dataclass(frozen=True)
+class _DeferredPhonemeEnd:
+    """Active phoneme state retained until an exact ending cycle arrives."""
+
+    generation: int | None
+    start_cycle: int
+    pending_irq_cycle: int | None
+    modeled_samples: int
+
+
 class SpeechBackend(Protocol):
     """Audio backend receiving decoded phoneme events from the chip."""
 
@@ -259,6 +283,13 @@ class SSI263:
         self._current_cycle: int = 0  # Current cycle count (set via set_cycle_count)
         self._phoneme_start_cycle: int | None = None
         self._phoneme_modeled_samples = 0
+        self._phoneme_generation = 0
+        self._active_phoneme_generation: int | None = None
+        self._defer_next_write = False
+        self._defer_current_write = False
+        self._deferred_end_for_current_write: _DeferredPhonemeEnd | None = None
+        self._deferred_write_timings: list[_DeferredWriteTiming] = []
+        self._exact_phoneme_starts: dict[int, int] = {}
 
         # Callbacks
         self._on_phoneme: Callable[[int, str], None] | None = None
@@ -332,13 +363,43 @@ class SSI263:
         """Update the current cycle count for timing calculations."""
         self._current_cycle = cycles
 
+    def defer_next_write_cycle(self) -> None:
+        """Wait for z-core's exact I/O event before publishing write timing."""
+        self._defer_next_write = True
+
+    def confirm_write_cycle(self, port: int, value: int, cycle: int) -> None:
+        """Apply the exact native cycle for one deferred CPU I/O write."""
+        if not self._deferred_write_timings:
+            raise RuntimeError("missing deferred SSI-263 write timing")
+        timing = self._deferred_write_timings.pop(0)
+        if (timing.port, timing.value) != (port, value):
+            raise RuntimeError(
+                "SSI-263 write event order diverged: "
+                f"expected {(timing.port, timing.value)}, got {(port, value)}"
+            )
+
+        self._current_cycle = cycle
+        if timing.phoneme_end is not None:
+            self._finish_deferred_phoneme(timing.phoneme_end, cycle)
+        generation = timing.phoneme_generation
+        if generation is None:
+            return
+        self._exact_phoneme_starts[generation] = cycle
+        if self._active_phoneme_generation == generation:
+            self._phoneme_start_cycle = cycle
+            self._pending_irq_cycle = cycle + timing.duration_cycles
+        if self._on_phoneme:
+            self._on_phoneme(timing.code, timing.name)
+        if self._synth is not None and timing.state is not None:
+            self._synth.play(timing.state)
+
     @property
     def current_cycle(self) -> int:
-        """Cycle count last pushed in by the run loop.
+        """Latest exact executed-cycle timestamp published to the chip.
 
         Observers run inside the emulator's mutable borrow of the CPU and
-        cannot read the cycle count back off it, so they read it here.
-        The run loop refreshes this every chunk.
+        cannot read the cycle count back off it. Native I/O events therefore
+        publish exact write cycles, while the run loop publishes chunk ends.
         """
         return self._current_cycle
 
@@ -406,49 +467,80 @@ class SSI263:
     def write(self, port: int, value: int) -> None:
         """Decode one register write and trigger phoneme events."""
         reg = port - self.base_port
+        deferred = self._defer_next_write
+        self._defer_next_write = False
+        self._defer_current_write = deferred
+        self._deferred_end_for_current_write = None
+        generation_before = self._phoneme_generation
 
-        # Writes to registers 0-2 complete the handshake: they de-assert the
-        # interrupt and clear A/!R.
-        if reg <= self.REG_RATEINF:
-            self._d7 = False
-            if self._irq_callback:
-                self._irq_callback(0)
-
-        if reg == self.REG_DURPHON:
-            self.duration = (value >> 6) & 0x03
-            self.phoneme = value & 0x3F
-            # If CTL=0 (not in standby), play the phoneme
-            if not self.control:
-                self._speak_phoneme()
-
-        elif reg == self.REG_INFLECT:
-            # Bits I10:I3 of the 12-bit inflection value
-            self.inflection = (self.inflection & 0x807) | ((value & 0xFF) << 3)
-
-        elif reg == self.REG_RATEINF:
-            self.rate = (value >> 4) & 0x0F
-            # Bit 3 = I11, bits 2:0 = I2:I0
-            self.inflection = ((value & 0x08) << 8) | (self.inflection & 0x7F8) | (value & 0x07)
-
-        elif reg == self.REG_CTRLAMP:
-            was_standby = self.control
-            self.control = bool(value & 0x80)
-            self.articulation = (value >> 4) & 0x07
-            self.amplitude = value & 0x0F
-            if was_standby and not self.control:
-                # CTL transition 1->0: latch the mode, then play the phoneme
-                self._latch_mode_and_ints()
-                self._speak_phoneme()
-            elif not was_standby and self.control:
-                # CTL transition 0->1: standby de-asserts the interrupt too
-                self._end_active_phoneme(self._current_cycle)
-                self.speaking = False
+        try:
+            # Writes to registers 0-2 complete the handshake: they de-assert the
+            # interrupt and clear A/!R.
+            if reg <= self.REG_RATEINF:
                 self._d7 = False
                 if self._irq_callback:
                     self._irq_callback(0)
 
-        elif reg == self.REG_FILTER:
-            self.filter_freq = value & 0xFF
+            if reg == self.REG_DURPHON:
+                self.duration = (value >> 6) & 0x03
+                self.phoneme = value & 0x3F
+                # If CTL=0 (not in standby), play the phoneme
+                if not self.control:
+                    self._speak_phoneme()
+
+            elif reg == self.REG_INFLECT:
+                # Bits I10:I3 of the 12-bit inflection value
+                self.inflection = (self.inflection & 0x807) | ((value & 0xFF) << 3)
+
+            elif reg == self.REG_RATEINF:
+                self.rate = (value >> 4) & 0x0F
+                # Bit 3 = I11, bits 2:0 = I2:I0
+                self.inflection = ((value & 0x08) << 8) | (self.inflection & 0x7F8) | (value & 0x07)
+
+            elif reg == self.REG_CTRLAMP:
+                was_standby = self.control
+                self.control = bool(value & 0x80)
+                self.articulation = (value >> 4) & 0x07
+                self.amplitude = value & 0x0F
+                if was_standby and not self.control:
+                    # CTL transition 1->0: latch the mode, then play the phoneme
+                    self._latch_mode_and_ints()
+                    self._speak_phoneme()
+                elif not was_standby and self.control:
+                    # CTL transition 0->1: standby de-asserts the interrupt too
+                    self._end_active_phoneme(self._current_cycle)
+                    self.speaking = False
+                    self._d7 = False
+                    if self._irq_callback:
+                        self._irq_callback(0)
+
+            elif reg == self.REG_FILTER:
+                self.filter_freq = value & 0xFF
+        finally:
+            self._defer_current_write = False
+
+        if deferred:
+            generation = (
+                self._phoneme_generation if self._phoneme_generation != generation_before else None
+            )
+            duration_cycles = (
+                self._pending_irq_cycle - self._current_cycle
+                if generation is not None and self._pending_irq_cycle is not None
+                else 0
+            )
+            name = PHONEMES.get(self.phoneme, ("?", "unknown", ""))[0]
+            self._deferred_write_timings.append(
+                _DeferredWriteTiming(
+                    port=port,
+                    value=value,
+                    phoneme_generation=generation,
+                    duration_cycles=duration_cycles,
+                    code=self.phoneme,
+                    name=name,
+                    state=self.state() if generation is not None else None,
+                    phoneme_end=self._deferred_end_for_current_write,
+                )
+            )
 
     def state(self) -> SSI263State:
         """Return a snapshot of the decoded register state."""
@@ -468,15 +560,17 @@ class SSI263:
         """Capture one phoneme event, notify observers, and schedule INT1."""
         self._end_active_phoneme(self._current_cycle)
         self.phoneme_log.append(self.phoneme)
+        self._phoneme_generation += 1
+        self._active_phoneme_generation = self._phoneme_generation
 
-        if self._on_phoneme:
+        if self._on_phoneme and not self._defer_current_write:
             name = PHONEMES.get(self.phoneme, ("?", "unknown", ""))[0]
             self._on_phoneme(self.phoneme, name)
 
         # Mark as speaking while phoneme plays
         self.speaking = True
 
-        if self._synth is not None:
+        if self._synth is not None and not self._defer_current_write:
             self._synth.play(self.state())
 
         # The real SSI-263 asserts the A/R line AFTER the phoneme finishes,
@@ -496,17 +590,64 @@ class SSI263:
         if self._phoneme_start_cycle is None:
             return
 
-        elapsed_cycles = max(0, end_cycle - self._phoneme_start_cycle)
-        if self._pending_irq_cycle is not None and end_cycle >= self._pending_irq_cycle:
-            elapsed_samples = self._phoneme_modeled_samples
+        generation = self._active_phoneme_generation
+        if self._defer_current_write:
+            self._deferred_end_for_current_write = _DeferredPhonemeEnd(
+                generation=generation,
+                start_cycle=self._phoneme_start_cycle,
+                pending_irq_cycle=self._pending_irq_cycle,
+                modeled_samples=self._phoneme_modeled_samples,
+            )
         else:
-            elapsed_samples = int(elapsed_cycles * _PHONEME_SAMPLE_RATE / self._clock)
-            elapsed_samples = min(elapsed_samples, self._phoneme_modeled_samples)
-
-        if self._synth is not None:
-            self._synth.end_phoneme(elapsed_samples)
+            elapsed_samples = self._elapsed_phoneme_samples(
+                start_cycle=self._phoneme_start_cycle,
+                pending_irq_cycle=self._pending_irq_cycle,
+                modeled_samples=self._phoneme_modeled_samples,
+                end_cycle=end_cycle,
+            )
+            if self._synth is not None:
+                self._synth.end_phoneme(elapsed_samples)
+            if generation is not None:
+                self._exact_phoneme_starts.pop(generation, None)
         self._phoneme_start_cycle = None
         self._phoneme_modeled_samples = 0
+        self._active_phoneme_generation = None
+
+    def _finish_deferred_phoneme(
+        self,
+        phoneme_end: _DeferredPhonemeEnd,
+        end_cycle: int,
+    ) -> None:
+        """Publish an exact backend end after its native I/O event drains."""
+        generation = phoneme_end.generation
+        start_cycle = (
+            self._exact_phoneme_starts.pop(generation, phoneme_end.start_cycle)
+            if generation is not None
+            else phoneme_end.start_cycle
+        )
+        elapsed_samples = self._elapsed_phoneme_samples(
+            start_cycle=start_cycle,
+            pending_irq_cycle=phoneme_end.pending_irq_cycle,
+            modeled_samples=phoneme_end.modeled_samples,
+            end_cycle=end_cycle,
+        )
+        if self._synth is not None:
+            self._synth.end_phoneme(elapsed_samples)
+
+    def _elapsed_phoneme_samples(
+        self,
+        *,
+        start_cycle: int,
+        pending_irq_cycle: int | None,
+        modeled_samples: int,
+        end_cycle: int,
+    ) -> int:
+        """Convert an exact executed-cycle interval to bounded output samples."""
+        elapsed_cycles = max(0, end_cycle - start_cycle)
+        if pending_irq_cycle is not None and end_cycle >= pending_irq_cycle:
+            return modeled_samples
+        elapsed_samples = int(elapsed_cycles * _PHONEME_SAMPLE_RATE / self._clock)
+        return min(elapsed_samples, modeled_samples)
 
     def get_io_handlers(self) -> list[tuple[int, Callable[[int], int], Callable[[int, int], None]]]:
         """Return (port, read_handler, write_handler) for all ports."""

@@ -141,6 +141,9 @@ def test_real_bsp_revision_seeds_fifth_cell_without_changing_default_filter_trac
         def play(self, state: SSI263State) -> None:
             states.append(state)
 
+        def end_phoneme(self, _elapsed_samples: int) -> None:
+            pass
+
         def realtime_lead_seconds(self) -> float:
             return 0.0
 
@@ -1116,6 +1119,138 @@ def test_address_trace_retains_causal_write_event_once():
     assert bns.traced_writes == [(12, 0x0002, 0xF000, 0x5A)]
 
 
+def test_speech_and_memory_write_observers_share_native_cycle_order():
+    """Speech callbacks and writes from one run use z-core's executed clock."""
+    bns = BNS(
+        core="direct",
+        trace_writes=0xF000,
+    )
+    bns.memory.load_rom(
+        bytes(
+            (
+                0x3E,
+                0x5A,  # LD A,5Ah
+                0x32,
+                0x00,
+                0xF0,  # LD (F000h),A
+                *(0x00 for _ in range(40)),  # Put speech well inside one chunk.
+                0x3E,
+                0xC1,  # LD A, phoneme 1 in duration mode 3
+                0xED,
+                0x39,
+                0xC0,  # OUT0 (DURPHON),A
+                0x3E,
+                0x0F,  # LD A, CTL low and audible amplitude
+                0xED,
+                0x39,
+                0xC3,  # OUT0 (CTRLAMP),A: start the phoneme
+                0x18,
+                0xFE,  # JR $
+            )
+        )
+    )
+    speech_cycles = []
+    bns.ssi263.set_phoneme_callback(
+        lambda _code, _name: speech_cycles.append(bns.ssi263.current_cycle)
+    )
+
+    bns._execute_budget(1_000)
+
+    write_cycle = bns.traced_writes[0][0]
+    assert len(speech_cycles) == 1
+    assert write_cycle < speech_cycles[0]
+    assert speech_cycles[0] - write_cycle < 500
+
+
+def test_mid_chunk_phoneme_completion_uses_exact_io_write_cycle():
+    """Completion is scheduled from the OUT0 cycle, not the chunk boundary."""
+    bns = BNS(core="direct")
+    bns.memory.load_rom(
+        bytes(
+            (
+                *(0x00 for _ in range(40)),
+                0x3E,
+                0xC1,
+                0xED,
+                0x39,
+                0xC0,
+                0x3E,
+                0x0F,
+                0xED,
+                0x39,
+                0xC3,
+                0x18,
+                0xFE,
+            )
+        )
+    )
+    speech_cycles = []
+    bns.ssi263.set_phoneme_callback(
+        lambda _code, _name: speech_cycles.append(bns.ssi263.current_cycle)
+    )
+
+    bns._execute_budget(1_000)
+
+    assert len(speech_cycles) == 1
+    assert speech_cycles[0] > 200
+    modeled_duration = bns.ssi263._calc_phoneme_duration_cycles()
+    assert bns.ssi263.pending_irq_cycle is not None
+    assert abs(bns.ssi263.pending_irq_cycle - (speech_cycles[0] + modeled_duration)) <= 20
+
+
+@pytest.mark.parametrize(
+    ("final_port", "final_value", "expected_plays"),
+    (
+        (0xC0, 0xC2, [1, 2]),  # A new DURPHON write supersedes phoneme 1.
+        (0xC3, 0x8F, [1]),  # CTL high ends phoneme 1 in standby.
+    ),
+)
+def test_mid_chunk_speech_end_uses_exact_io_write_cycle(
+    final_port,
+    final_value,
+    expected_plays,
+):
+    """Supersession and standby retain exact elapsed audio within a chunk."""
+
+    class CaptureBackend:
+        def __init__(self):
+            self.plays = []
+            self.ends = []
+
+        def play(self, state):
+            self.plays.append(state.phoneme)
+
+        def end_phoneme(self, elapsed_samples):
+            self.ends.append(elapsed_samples)
+
+        def realtime_lead_seconds(self):
+            return 0.0
+
+    def out0(port, value):
+        return (0x3E, value, 0xED, 0x39, port)
+
+    backend = CaptureBackend()
+    bns = BNS(core="direct", realtime=True)
+    bns.ssi263.set_synth(backend)
+    bns.memory.load_rom(
+        bytes(
+            (
+                *out0(0xC0, 0xC1),
+                *out0(0xC3, 0x0F),
+                *(0x00 for _ in range(2_000)),
+                *out0(final_port, final_value),
+                0x18,
+                0xFE,
+            )
+        )
+    )
+
+    bns._execute_budget(12_288)
+
+    assert backend.plays == expected_plays
+    assert backend.ends == [21]
+
+
 def test_bsplus_port_80_is_watchdog_read_and_speech_power_write():
     """The speech-only BSP model must not expose a display at port 0x80."""
     bns = BNS()
@@ -1497,6 +1632,58 @@ def test_run_keeps_advancing_native_time_while_cpu_is_halted():
 
     assert bns.cpu.halted()
     assert bns.stats["cycles"] >= 2000
+
+
+def test_run_stats_and_exit_banner_report_executed_cycles(capsys):
+    bns = BNS(core="direct")
+    bns.memory.load_rom(b"\xed\x76")  # SLP
+    capsys.readouterr()
+
+    bns.run(max_cycles=100)
+
+    executed = bns.cpu.cycle_count()
+    assert bns.stats["cycles"] == executed
+    assert f"Executed {executed:,} cycles" in capsys.readouterr().out
+
+
+def test_prt_wraps_and_wakes_during_first_phoneme_sleep():
+    """The native PRT advances during SLP without a QNS time jump."""
+
+    def out0(port, value):
+        return (0x3E, value, 0xED, 0x39, port)
+
+    bns = BNS(core="direct")
+    program = bytes(
+        (
+            *out0(0x33, 0xA0),  # IL: PRT0 vector is 20A4h with IR=20h.
+            *out0(0x0C, 0x0A),  # TMDR0 = 10
+            *out0(0x0D, 0x00),
+            *out0(0x0E, 0x0A),  # RLDR0 = 10
+            *out0(0x0F, 0x00),
+            *out0(0x10, 0x11),  # Enable PRT0 and its interrupt.
+            *out0(0xC0, 0xC1),  # Select the first phoneme.
+            *out0(0xC3, 0x0F),  # Start it.
+            0xED,
+            0x76,  # SLP until the earlier PRT completion.
+            0x18,
+            0xFE,
+        )
+    )
+    bns.memory.load_rom(program)
+    bns.cpu.mem_poke(0x20A4, 0x56)
+    bns.cpu.mem_poke(0x20A5, 0x34)
+    bns.cpu.set_reg(Reg.IR, 0x2000)
+    bns.cpu.set_reg(Reg.SP, 0x8000)
+    bns.cpu.set_iff1(True)
+
+    bns.run(max_cycles=500)
+
+    assert bns.ssi263.phoneme_log == [1]
+    assert bns.ssi263.irq_pending
+    assert not bns.cpu.sleeping()
+    assert bns.cpu.reg(Reg.SP) == 0x7FFE
+    assert bns.cpu.mem_peek(0x7FFE) == len(program) - 2
+    assert bns.stats["cycles"] == bns.cpu.cycle_count()
 
 
 def test_serial_standard_streams_select_one_asci_channel():
