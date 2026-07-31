@@ -1198,6 +1198,59 @@ def test_mid_chunk_phoneme_completion_uses_exact_io_write_cycle():
     assert abs(bns.ssi263.pending_irq_cycle - (speech_cycles[0] + modeled_duration)) <= 20
 
 
+@pytest.mark.parametrize(
+    ("final_port", "final_value", "expected_plays"),
+    (
+        (0xC0, 0xC2, [1, 2]),  # A new DURPHON write supersedes phoneme 1.
+        (0xC3, 0x8F, [1]),  # CTL high ends phoneme 1 in standby.
+    ),
+)
+def test_mid_chunk_speech_end_uses_exact_io_write_cycle(
+    final_port,
+    final_value,
+    expected_plays,
+):
+    """Supersession and standby retain exact elapsed audio within a chunk."""
+
+    class CaptureBackend:
+        def __init__(self):
+            self.plays = []
+            self.ends = []
+
+        def play(self, state):
+            self.plays.append(state.phoneme)
+
+        def end_phoneme(self, elapsed_samples):
+            self.ends.append(elapsed_samples)
+
+        def realtime_lead_seconds(self):
+            return 0.0
+
+    def out0(port, value):
+        return (0x3E, value, 0xED, 0x39, port)
+
+    backend = CaptureBackend()
+    bns = BNS(core="direct", realtime=True)
+    bns.ssi263.set_synth(backend)
+    bns.memory.load_rom(
+        bytes(
+            (
+                *out0(0xC0, 0xC1),
+                *out0(0xC3, 0x0F),
+                *(0x00 for _ in range(2_000)),
+                *out0(final_port, final_value),
+                0x18,
+                0xFE,
+            )
+        )
+    )
+
+    bns._execute_budget(12_288)
+
+    assert backend.plays == expected_plays
+    assert backend.ends == [21]
+
+
 def test_bsplus_port_80_is_watchdog_read_and_speech_power_write():
     """The speech-only BSP model must not expose a display at port 0x80."""
     bns = BNS()
