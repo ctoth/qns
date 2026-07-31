@@ -194,11 +194,7 @@ class AudioPlayer:
         dropped = 0
         with self._space_available:
             generation = self._generation
-            while (
-                accepted < len(samples)
-                and self._accepting
-                and generation == self._generation
-            ):
+            while accepted < len(samples) and self._accepting and generation == self._generation:
                 available = self._capacity_frames - self._queued_frames
                 if available == 0:
                     if self._overflow_policy == "drop_newest":
@@ -220,9 +216,7 @@ class AudioPlayer:
                 self._queued_frames += count
                 accepted += count
 
-            if accepted < len(samples) and (
-                not self._accepting or generation != self._generation
-            ):
+            if accepted < len(samples) and (not self._accepting or generation != self._generation):
                 dropped = len(samples) - accepted
 
             if accepted and len(samples) > 1:
