@@ -28,13 +28,14 @@ from pathlib import Path
 
 import numpy as np
 
+from qns.clock import HD64180_PHI_HZ
 from qns.ssi263 import playback_length_samples
 from qns.synth import SSI263LPCSynth, SSI263PCMSynth, SSI263Synth
 from qns.synth.phonemes import SAMPLE_RATE
 from qns.synth.timing import fit_audio_to_elapsed
 
 BACKENDS = {"pcm": SSI263PCMSynth, "lpc": SSI263LPCSynth, "formant": SSI263Synth}
-CPU_CLOCK_HZ = 12_288_000
+CPU_CLOCK_HZ = HD64180_PHI_HZ
 
 
 def _duration(row: dict) -> int:

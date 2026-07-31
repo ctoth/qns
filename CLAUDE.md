@@ -31,8 +31,8 @@ paplay out/lpc.wav
 
 **Do not combine `--audio` with `--speech`/`--speech-stream english`.** Those
 set an english callback, and any callback needing instruction boundaries drops
-the core to the per-instruction path at ~4-5M cycles/s - below the 12.288M
-real time needs - so speech develops audible gaps. Watch the text or listen to
+the core to the per-instruction path at ~4-5M cycles/s - below the 6.144M phi
+cycles/s real-time need - so speech develops audible gaps. Watch the text or listen to
 the audio, not both, until observation moves onto z-core's native PC watch.
 
 Both blockers named in earlier notes are resolved, and neither was what it
@@ -40,7 +40,8 @@ looked like. The "~1000x too slow" throughput wall was a **deadlock**: the
 firmware sleeps in a RAM-resident `SLP; RET` stub between phonemes, a sleeping
 core advances no cycles, so the scheduled wake was never reached and the loop
 span forever. Measured without contention the core runs 4-32M cycles/s against
-the 12.288M real time needs. See `docs/reports/speech-pipeline-investigation.md`.
+the 6.144M phi cycles/s real-time need. See
+`docs/reports/speech-pipeline-investigation.md`.
 
 The old "amplitude 0" blocker is **resolved**, and was not a decode bug. The
 four speech settings live in RAM that no shipped code path initialises - a real
@@ -129,7 +130,9 @@ qns/
 
 ## Hardware Target
 
-- **CPU**: Z180 (HD64180) @ 12.288 MHz
+- **CPU**: HD64180 with a 12.288 MHz crystal input and a 6.144 MHz phi/system
+  clock. QNS and z-core `clock_hz` values are phi Hz, not crystal Hz; instruction
+  cycles and the PRT's phi/20 prescaler are paced from 6.144 MHz.
 - **Speech**: SSI-263 phoneme synthesizer (64 phonemes)
 - **Display**: Braille cells
 - **Input**: 8-dot Braille keyboard with INT2 interrupt
@@ -149,14 +152,14 @@ uv run pytest tests/test_synth.py -v
 # Manual audio test (hear phoneme)
 uv run pytest tests/test_synth.py::test_synth_speaks_phoneme -v -s
 
-# Run emulator with audio - NEEDS ~40M CYCLES TO HEAR SPEECH
-uv run -m qns.bns --audio --cycles 40000000 roms/bspeng.bns
+# Run emulator with audio - NEEDS ~20M CYCLES TO HEAR SPEECH
+uv run -m qns.bns --audio --cycles 20000000 roms/bspeng.bns
 
 # Quick test (5M cycles) - only shows pauses during boot
 uv run -m qns.bns --audio --cycles 5000000 roms/bspeng.bns
 ```
 
-**IMPORTANT**: The emulator needs approximately 40 million cycles before the firmware
+**IMPORTANT**: The emulator needs approximately 20 million cycles before the firmware
 starts producing actual speech phonemes. Running with fewer cycles will only show
 pause phonemes (0x00) during the boot sequence.
 
@@ -222,9 +225,10 @@ pause phonemes (0x00) during the boot sequence.
 ## What's Not Working
 
 1. **Command responses are gappier than the greeting**
-   - The greeting holds real time because the CPU sleeps between phonemes;
-     while the firmware is working we manage ~6.9M cycles/s against the
-     12.288M real time needs, so the audio queue drains between phonemes
+   - The greeting holds real time because the CPU sleeps between phonemes.
+     Firmware work measures ~6.9M cycles/s against the 6.144M phi cycles/s
+     real-time need, but delivering a chord temporarily selects the slower
+     per-instruction path, so the audio queue can still drain between phonemes
    - Delivering a chord still needs the per-instruction path.  Moving
      `keyboard_wait_pc` observation onto z-core's native PC watch should
      reach the fast path's ~32M cycles/s and close the gaps

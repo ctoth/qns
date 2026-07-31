@@ -30,7 +30,7 @@ To understand the specific demands placed on the speech synthesizer, one must fi
 
 
 
-The device was powered by a Zilog Z180 microprocessor (or its variants like the Hitachi HD64180), an enhanced version of the ubiquitous Z80.6 The Z180 offered higher clock speeds (up to 12.288 MHz or 33 MHz in later models), integrated peripheral functions, and an expanded address space.7 However, the crucial interaction loop occurred between the Z180 and the speech chip. In a screenless device, the latency between a keystroke and the auditory confirmation is the critical usability metric. The Braille 'n Speak achieved remarkable responsiveness by driving the speech synthesizer directly at the phoneme level, bypassing the buffers and processing delays inherent in slower, pre-packaged text-to-speech systems of the era.
+The device was powered by a Zilog Z180 microprocessor (or its variants like the Hitachi HD64180), an enhanced version of the ubiquitous Z80.6 The original board's 12.288 MHz figure is the HD64180 crystal input; the processor's phi/system clock is 6.144 MHz. The Z180 offered integrated peripheral functions and an expanded address space.7 However, the crucial interaction loop occurred between the Z180 and the speech chip. In a screenless device, the latency between a keystroke and the auditory confirmation is the critical usability metric. The Braille 'n Speak achieved remarkable responsiveness by driving the speech synthesizer directly at the phoneme level, bypassing the buffers and processing delays inherent in slower, pre-packaged text-to-speech systems of the era.
 
 
 
@@ -180,7 +180,7 @@ The SSI-263 requires a stable time base. In the Braille 'n Speak, this is likely
 
 
 
-\* \*\*Z180 Clock:\*\* 12.288 MHz (typical for audio/serial applications) or similar.  
+\* \*\*Z180 Clock:\*\* 12.288 MHz crystal input, producing a 6.144 MHz phi/system clock.
 
 \* \*\*SSI-263 XCK:\*\* The datasheet specifies a typical operating range of 0.8 MHz to 2.0 MHz for the XCK input.  
 
@@ -649,4 +649,3 @@ This logic is encoded in the "Missing" ROM table available in the AppleWin sourc
 16\. source/SSI263.h · v1.30.14.0 · warmenhoven / AppleWin \\- Libretro GitLab, accessed January 10, 2026, \[https://git.libretro.com/warmenhoven/applewin/-/blob/v1.30.14.0/source/SSI263.h](https://git.libretro.com/warmenhoven/applewin/-/blob/v1.30.14.0/source/SSI263.h)  
 
 17\. mame/src/devices/sound/votrax.cpp at master \\- GitHub, accessed January 10, 2026, \[https://github.com/mamedev/mame/blob/master/src/devices/sound/votrax.cpp](https://github.com/mamedev/mame/blob/master/src/devices/sound/votrax.cpp)
-

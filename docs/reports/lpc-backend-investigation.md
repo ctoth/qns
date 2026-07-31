@@ -24,8 +24,8 @@ not wired to `--audio`.
 | `lpc` | the chip's, resynthesized | one continuous gliding filter | 13.5M cycles/s |
 | `formant` | SC-01 - a different chip | continuous by construction | 8.3M cycles/s |
 
-Against the 12.288M cycles/s real time needs, `formant` is the only one that
-cannot hold real time. Measured over 50M cycles with `--input none`.
+All three exceed the corrected 6.144M phi cycles/s real-time need. Measured
+over 50M cycles with `--input none`.
 
 Every backend renders a phoneme for exactly
 `qns.ssi263.playback_length_samples()`, the same duration model the chip
@@ -160,7 +160,7 @@ Listener verdict so far: with a short glide it is indistinguishable from
 it gets choppier, consistent with the envelope finding above.
 
 Not measured: throughput. It does more per-phoneme filtering than the shipped
-model, so it needs checking against the 12.288M cycles/s budget before it
+model, so it needs checking against the 6.144M phi cycles/s budget before it
 could ship.
 
 ## Recommended next steps

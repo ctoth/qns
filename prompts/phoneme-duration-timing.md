@@ -16,7 +16,8 @@ Where:
 - ssi2 = rate_inflection register (bits 7:4 = rate, 0=fastest, 15=slowest)
 - ssi0 = duration_phoneme register (bits 7:6 = duration mode)
 
-At 12.288 MHz clock: 1 ms = 12,288 cycles
+At the 6.144 MHz phi/system clock: 1 ms = 6,144 cycles. The board's
+12.288 MHz value is the HD64180 crystal input, not the cycle clock.
 
 ## Objective
 
@@ -37,7 +38,7 @@ Implement phoneme duration timing in SSI-263 so INT1 triggers after the phoneme 
 1. Add instance variables:
 ```python
 self._pending_irq_cycle = None  # Cycle when INT1 should fire
-self._clock = 12_288_000  # CPU clock for timing
+self._clock = 6_144_000  # HD64180 phi/system clock for timing
 ```
 
 2. Add method to calculate phoneme duration:
