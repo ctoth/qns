@@ -1,13 +1,15 @@
 """Authorities for masked firmware byte-pattern searches."""
 
+import sys
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from package_fixtures import build_update_package
 
 from tools.find_rom_pattern import (
-    BNS_IMAGE_OFFSET,
     find_pattern,
-    load_firmware,
+    main,
     parse_pattern,
 )
 
@@ -38,12 +40,31 @@ def test_parse_pattern_rejects_malformed_bytes(text: str):
         parse_pattern(text)
 
 
-def test_load_firmware_strips_exact_bns_header(tmp_path):
-    """Reported firmware offsets must exclude the BNS package header."""
-    payload = b"firmware"
-    package = bytearray(BNS_IMAGE_OFFSET)
-    package[2:5] = b"BNS"
+@pytest.mark.parametrize("image_offset", [0x3000, 0x7000, 0x8000])
+def test_main_reports_loader_discovered_package_offsets(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    image_offset,
+):
+    """Classic and Millennium matches must use the discovered image boundary."""
+    pattern = bytes.fromhex("DE AD BE EF 42")
+    pattern_offset = 0x123
+    firmware = bytearray(0x10000)
+    firmware[pattern_offset : pattern_offset + len(pattern)] = pattern
     path = tmp_path / "firmware.bns"
-    path.write_bytes(package + payload)
+    path.write_bytes(build_update_package(image_offset, bytes(firmware)))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["find_rom_pattern.py", str(path), pattern.hex(" ")],
+    )
 
-    assert load_firmware(path) == (payload, BNS_IMAGE_OFFSET)
+    main()
+
+    assert capsys.readouterr().out == (
+        f"file=0x{image_offset + pattern_offset:06X} "
+        f"firmware=0x{pattern_offset:06X} "
+        f"bank=0 address=0x{pattern_offset:04X} "
+        "bytes=DE AD BE EF 42\n"
+    )
