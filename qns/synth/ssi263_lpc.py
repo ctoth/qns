@@ -27,9 +27,16 @@ class SSI263LPCSynth:
     phoneme for, so the stream stays paced against the emulated clock.
     """
 
-    def __init__(self, audio_enabled: bool = True) -> None:
+    def __init__(self, audio_enabled: bool = True, realtime: bool = False) -> None:
         self.sample_rate = SAMPLE_RATE
-        self._player = AudioPlayer(sample_rate=SAMPLE_RATE) if audio_enabled else None
+        self._player = (
+            AudioPlayer(
+                sample_rate=SAMPLE_RATE,
+                overflow_policy="block" if realtime else "drop_newest",
+            )
+            if audio_enabled
+            else None
+        )
         self._phoneme_callback: Callable[[int], None] | None = None
         self._stream = LPCStream()
         self._pending_state: SSI263State | None = None

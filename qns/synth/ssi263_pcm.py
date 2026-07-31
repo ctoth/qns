@@ -26,10 +26,17 @@ class SSI263PCMSynth:
         self,
         audio_enabled: bool = True,
         audio_log: Path | str | None = None,
+        realtime: bool = False,
     ) -> None:
         self.sample_rate = SAMPLE_RATE
         self._player = (
-            AudioPlayer(sample_rate=SAMPLE_RATE, log_path=audio_log) if audio_enabled else None
+            AudioPlayer(
+                sample_rate=SAMPLE_RATE,
+                overflow_policy="block" if realtime else "drop_newest",
+                log_path=audio_log,
+            )
+            if audio_enabled
+            else None
         )
         self._phoneme_callback: Callable[[int], None] | None = None
         self._current_inflection_level = float(_NORMAL_INFLECTION_TARGET)

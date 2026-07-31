@@ -506,9 +506,9 @@ class BNS:
         self.synth = None
         if audio:
             self.synth = (
-                SSI263PCMSynth(audio_log=audio_log)
+                SSI263PCMSynth(audio_log=audio_log, realtime=realtime)
                 if synth_backend == "pcm"
-                else SYNTH_BACKENDS[synth_backend]()
+                else SYNTH_BACKENDS[synth_backend](realtime=realtime)
             )
             self.ssi263.set_synth(self.synth)
 
