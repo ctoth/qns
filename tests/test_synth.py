@@ -330,8 +330,8 @@ def test_synth_backends_match_the_chip_duration_contract(
     assert len(samples) == playback_length_samples(phoneme, duration, rate)
 
 
-def test_formant_duration_conformance_preserves_rms():
-    """Lengthening formant audio must not fill the extra time with silence."""
+def test_formant_duration_conformance_preserves_rms_and_pitch():
+    """Lengthening formant audio must preserve both its energy and pitch."""
     from qns.synth import SSI263Synth
 
     phoneme = 0x30
@@ -348,6 +348,15 @@ def test_formant_duration_conformance_preserves_rms():
     raw_rms = float(np.sqrt(np.mean(raw.astype(np.float64) ** 2)))
     conformed_rms = float(np.sqrt(np.mean(conformed.astype(np.float64) ** 2)))
     assert 0.8 <= conformed_rms / raw_rms <= 1.2
+
+    def dominant_frequency(samples):
+        windowed = samples * np.hanning(len(samples))
+        spectrum = np.abs(np.fft.rfft(windowed))
+        frequencies = np.fft.rfftfreq(len(samples), 1 / synth.sample_rate)
+        return float(frequencies[1:][np.argmax(spectrum[1:])])
+
+    pitch_ratio = dominant_frequency(conformed) / dominant_frequency(raw)
+    assert 0.95 <= pitch_ratio <= 1.05
 
 
 def test_synth_get_phoneme_audio():
