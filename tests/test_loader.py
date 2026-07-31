@@ -16,21 +16,42 @@ from qns.loader import (
 # the source listing (a CP 0Fh/DEC A rate clamp, and a pitch bias read
 # from the flag byte at 0xDA28), and discovery has to survive that.
 ISSET_AS_LINKED = bytes.fromhex(
-    "f5c5"                  # PUSH AF; PUSH BC
-    "3afdd5" "f650" "d3c3"  # LD A,(VOLUME); OR 50h; OUT (C3),A
-    "cd530a"                # CALL ssi_delay
-    "3afed5" "fe0f" "2001" "3d"          # LD A,(RATE); CP 0Fh; JR NZ; DEC A
-    "cb27cb27cb27cb27" "f608" "d3c2"     # SLA A x4; OR 08h; OUT (C2),A
+    "f5c5"  # PUSH AF; PUSH BC
+    "3afdd5"
+    "f650"
+    "d3c3"  # LD A,(VOLUME); OR 50h; OUT (C3),A
+    "cd530a"  # CALL ssi_delay
+    "3afed5"
+    "fe0f"
+    "2001"
+    "3d"  # LD A,(RATE); CP 0Fh; JR NZ; DEC A
+    "cb27cb27cb27cb27"
+    "f608"
+    "d3c2"  # SLA A x4; OR 08h; OUT (C2),A
     "cd530a"
-    "3a20d6" "d3c1"         # LD A,(INFL); OUT (C1),A
+    "3a20d6"
+    "d3c1"  # LD A,(INFL); OUT (C1),A
     "cd530a"
-    "3a02da" "47"           # LD A,(flags); LD B,A
-    "3affd5"                # LD A,(PITCH)
-    "e5" "2128da" "cb46" "280c" "cb56" "2008" "cb4e" "2003"
-    "80" "1801" "90" "e1"   # ADD A,B / SUB B inflection bias
-    "f6e0" "d3c4"           # OR E0h; OUT (C4),A
+    "3a02da"
+    "47"  # LD A,(flags); LD B,A
+    "3affd5"  # LD A,(PITCH)
+    "e5"
+    "2128da"
+    "cb46"
+    "280c"
+    "cb56"
+    "2008"
+    "cb4e"
+    "2003"
+    "80"
+    "1801"
+    "90"
+    "e1"  # ADD A,B / SUB B inflection bias
+    "f6e0"
+    "d3c4"  # OR E0h; OUT (C4),A
     "cd530a"
-    "3ec0" "d3c0"           # LD A,C0h; OUT (C0),A
+    "3ec0"
+    "d3c0"  # LD A,C0h; OUT (C0),A
 )
 
 # BSSERIAL.ASM's Echo parameter handlers as linked in bspeng.bns.  Rate
@@ -38,23 +59,47 @@ ISSET_AS_LINKED = bytes.fromhex(
 # back; EHVOL sits alongside, and that company is what distinguishes a
 # settings handler from other routines writing the same working cell.
 HANDLER_AS_LINKED = bytes.fromhex(
-    "3a9bd4" "e60f" "2002" "3e0a" "32fed5" "321dd6" "18e7"  # RATE, NRATE
-    "3a9bd4" "cb27" "cb27" "3220d6" "321ed6" "18c2"         # EHPITC: INFL, NINFL
-    "3a9bd4" "32fdd5" "18ba"                                 # EHVOL:  VOLUME
-    "3a9bd4" "e61f" "32ffd5" "18b0"                          # EHTONE: PITCH
+    "3a9bd4"
+    "e60f"
+    "2002"
+    "3e0a"
+    "32fed5"
+    "321dd6"
+    "18e7"  # RATE, NRATE
+    "3a9bd4"
+    "cb27"
+    "cb27"
+    "3220d6"
+    "321ed6"
+    "18c2"  # EHPITC: INFL, NINFL
+    "3a9bd4"
+    "32fdd5"
+    "18ba"  # EHVOL:  VOLUME
+    "3a9bd4"
+    "e61f"
+    "32ffd5"
+    "18b0"  # EHTONE: PITCH
 )
 
 DOPITCH_AS_LINKED = bytes.fromhex(
-    "fe3c2801"                # CP PITCHDN; JR Z,LOW1
-    "fe3d2802"                # CP PITCHNM; JR Z,NORMAL
-    "fe3ec0"                  # CP PITCHUP; RET NZ
-    "3a20d6" "c61b" "1801"    # LD A,(INFL); ADD A,1Bh; JR DOPIT0
-    "3a20d6" "d61b" "3001"    # LD A,(INFL); SUB 1Bh; JR NC,DOPIT0
-    "3a1ed6"                  # LD A,(NINFL)
-    "f5" "3a05da"             # PUSH AF; LD A,(_VIFLAG)
-    "cb47" "2801" "f1"        # BIT 0,A; JR Z,DOPIT1; POP AF
-    "3220d6" "321fd6"         # LD (INFL),A; LD (NXTINFL),A
-    "ed39c1"                  # OUT0 (SSI263+1),A
+    "fe3c2801"  # CP PITCHDN; JR Z,LOW1
+    "fe3d2802"  # CP PITCHNM; JR Z,NORMAL
+    "fe3ec0"  # CP PITCHUP; RET NZ
+    "3a20d6"
+    "c61b"
+    "1801"  # LD A,(INFL); ADD A,1Bh; JR DOPIT0
+    "3a20d6"
+    "d61b"
+    "3001"  # LD A,(INFL); SUB 1Bh; JR NC,DOPIT0
+    "3a1ed6"  # LD A,(NINFL)
+    "f5"
+    "3a05da"  # PUSH AF; LD A,(_VIFLAG)
+    "cb47"
+    "2801"
+    "f1"  # BIT 0,A; JR Z,DOPIT1; POP AF
+    "3220d6"
+    "321fd6"  # LD (INFL),A; LD (NXTINFL),A
+    "ed39c1"  # OUT0 (SSI263+1),A
 )
 
 MFULL3_SHAPES = ("bsp", "nfb99-braille-lite", "2003-braille-lite")
@@ -67,11 +112,19 @@ def make_mfull3_image(
     size: int = 0x10000,
 ) -> bytes:
     """Place one linked MFULL3 signature into an otherwise empty image."""
-    prologue = bytes((
-        0x21, spbuf & 0xFF, spbuf >> 8,  # LD HL,SPBUF
-        0xAF, 0x47, 0x79, 0xB7,          # XOR A; LD B,A; LD A,C; OR A
-        0x28, 0x4D,                      # JR Z,d
-    ))
+    prologue = bytes(
+        (
+            0x21,
+            spbuf & 0xFF,
+            spbuf >> 8,  # LD HL,SPBUF
+            0xAF,
+            0x47,
+            0x79,
+            0xB7,  # XOR A; LD B,A; LD A,C; OR A
+            0x28,
+            0x4D,  # JR Z,d
+        )
+    )
     speech_enable = bytes((0x3A, 0x35, 0xE6, 0xB7, 0xCC, 0xCF, 0x59))
     display = bytes((0x3A, 0x49, 0xD4, 0xCB, 0x5F, 0x28, 0x4D))
     spmain_spon = bytes((0xCD, 0x15, 0x59, 0xCD, 0x14, 0x08))
@@ -79,14 +132,13 @@ def make_mfull3_image(
         "bsp": prologue + speech_enable + spmain_spon,
         "nfb99-braille-lite": prologue + display + speech_enable + spmain_spon,
         "2003-braille-lite": (
-            prologue + speech_enable + display
-            + spmain_spon + bytes((0xCD, 0x8F, 0xBC))
+            prologue + speech_enable + display + spmain_spon + bytes((0xCD, 0x8F, 0xBC))
         ),
     }[shape]
 
     image = bytearray(size)
     start = capture_addr - 3
-    image[start:start + len(body)] = body
+    image[start : start + len(body)] = body
     return bytes(image)
 
 
@@ -127,59 +179,105 @@ def make_input_boundary_image(
     size: int = 0x10000,
 ) -> bytes:
     """Place the input-boundary signatures into an empty image."""
-    starta = bytes((
-        0xAF,                                            # XOR A
-        0x32, 0x4C, 0xD6,                                # LD (nn),A
-        0x21, timer_logical & 0xFF, timer_logical >> 8,  # LD HL,timer
-        0x36, 0x00,                                      # LD (HL),0
-        0xCD, 0x2F, 0x13,                                # CALL nn
-    ))
-    accept = bytes((
-        0x3E, 0x7D,                                        # LD A,7DH
-        0x18, 0xE1,                                        # JR d
-        0x32, buffer_logical & 0xFF, buffer_logical >> 8,  # LD (_IIB),A
-        0xAF,                                              # XOR A
-        0x32, 0x68, 0xD4,                                  # LD (nn),A
-        0x18, 0x0E,                                        # JR d
-    ))
-    key_queue = bytes((
-        0xF3,                                                # DI
-        0x44,                                                # LD B,H
-        0x4D,                                                # LD C,L
-        0x21, queue_logical & 0xFF, queue_logical >> 8,      # LD HL,count
-        0x3E, 0x40,                                          # LD A,queue size
-        0xBE,                                                # CP (HL)
-        0x28, 0x18,                                          # JR Z,d
-        0x34,                                                # INC (HL)
-        0x2A, 0x33, 0xDA,                                    # LD HL,(queue in)
-        0x71,                                                # LD (HL),C
-        0x23,                                                # INC HL
-        0x70,                                                # LD (HL),B
-    ))
-    key_wait = bytes((
-        0x21, queue_logical & 0xFF, queue_logical >> 8,      # LD HL,count
-        0x7E,                                                # LD A,(HL)
-        0xB7,                                                # OR A
-        0x20, 0x09,                                          # JR NZ,d
-        0x3A, timer_logical & 0xFF, timer_logical >> 8,      # LD A,(timer)
-        0x76,                                                # HALT
-        0xCD, 0x2F, 0x13,                                    # CALL nn
-        0x18, 0xF0,                                          # JR d
-    ))
-    reset_complete = bytes((
-        0x3E, 0x02,                                            # LD A,2
-        0x32, 0xAF, 0xD4,                                      # LD (HNDSHK),A
-        0xCD, 0x00, 0x20,                                      # CALL flush
-        0x3E, 0x64,                                            # LD A,64H
-        0x32, reset_logical & 0xFF, reset_logical >> 8,        # LD (COMBYT),A
-    ))
+    starta = bytes(
+        (
+            0xAF,  # XOR A
+            0x32,
+            0x4C,
+            0xD6,  # LD (nn),A
+            0x21,
+            timer_logical & 0xFF,
+            timer_logical >> 8,  # LD HL,timer
+            0x36,
+            0x00,  # LD (HL),0
+            0xCD,
+            0x2F,
+            0x13,  # CALL nn
+        )
+    )
+    accept = bytes(
+        (
+            0x3E,
+            0x7D,  # LD A,7DH
+            0x18,
+            0xE1,  # JR d
+            0x32,
+            buffer_logical & 0xFF,
+            buffer_logical >> 8,  # LD (_IIB),A
+            0xAF,  # XOR A
+            0x32,
+            0x68,
+            0xD4,  # LD (nn),A
+            0x18,
+            0x0E,  # JR d
+        )
+    )
+    key_queue = bytes(
+        (
+            0xF3,  # DI
+            0x44,  # LD B,H
+            0x4D,  # LD C,L
+            0x21,
+            queue_logical & 0xFF,
+            queue_logical >> 8,  # LD HL,count
+            0x3E,
+            0x40,  # LD A,queue size
+            0xBE,  # CP (HL)
+            0x28,
+            0x18,  # JR Z,d
+            0x34,  # INC (HL)
+            0x2A,
+            0x33,
+            0xDA,  # LD HL,(queue in)
+            0x71,  # LD (HL),C
+            0x23,  # INC HL
+            0x70,  # LD (HL),B
+        )
+    )
+    key_wait = bytes(
+        (
+            0x21,
+            queue_logical & 0xFF,
+            queue_logical >> 8,  # LD HL,count
+            0x7E,  # LD A,(HL)
+            0xB7,  # OR A
+            0x20,
+            0x09,  # JR NZ,d
+            0x3A,
+            timer_logical & 0xFF,
+            timer_logical >> 8,  # LD A,(timer)
+            0x76,  # HALT
+            0xCD,
+            0x2F,
+            0x13,  # CALL nn
+            0x18,
+            0xF0,  # JR d
+        )
+    )
+    reset_complete = bytes(
+        (
+            0x3E,
+            0x02,  # LD A,2
+            0x32,
+            0xAF,
+            0xD4,  # LD (HNDSHK),A
+            0xCD,
+            0x00,
+            0x20,  # CALL flush
+            0x3E,
+            0x64,  # LD A,64H
+            0x32,
+            reset_logical & 0xFF,
+            reset_logical >> 8,  # LD (COMBYT),A
+        )
+    )
     image = bytearray(size)
     starta_offset = timer_pc - 7
-    image[starta_offset:starta_offset + len(starta)] = starta
-    image[0x0B00:0x0B00 + len(accept)] = accept
-    image[0x0C00:0x0C00 + len(key_queue)] = key_queue
-    image[0x0D00:0x0D00 + len(key_wait)] = key_wait
-    image[0x0E00:0x0E00 + len(reset_complete)] = reset_complete
+    image[starta_offset : starta_offset + len(starta)] = starta
+    image[0x0B00 : 0x0B00 + len(accept)] = accept
+    image[0x0C00 : 0x0C00 + len(key_queue)] = key_queue
+    image[0x0D00 : 0x0D00 + len(key_wait)] = key_wait
+    image[0x0E00 : 0x0E00 + len(reset_complete)] = reset_complete
     return bytes(image)
 
 
@@ -222,15 +320,15 @@ def test_find_input_boundary_requires_all_signatures():
 def make_isset_image(size: int = 0x10000, offset: int = 0x02D7) -> bytes:
     """Place ISSET and the settings handler into an empty image."""
     image = bytearray(size)
-    image[0x0287:0x0287 + len(HANDLER_AS_LINKED)] = HANDLER_AS_LINKED
-    image[offset:offset + len(ISSET_AS_LINKED)] = ISSET_AS_LINKED
+    image[0x0287 : 0x0287 + len(HANDLER_AS_LINKED)] = HANDLER_AS_LINKED
+    image[offset : offset + len(ISSET_AS_LINKED)] = ISSET_AS_LINKED
     return bytes(image)
 
 
 def make_dopitch_image(size: int = 0x10000, offset: int = 0x4200) -> bytes:
     """Place the linked English DOPITCH shape into an empty image."""
     image = bytearray(size)
-    image[offset:offset + len(DOPITCH_AS_LINKED)] = DOPITCH_AS_LINKED
+    image[offset : offset + len(DOPITCH_AS_LINKED)] = DOPITCH_AS_LINKED
     return bytes(image)
 
 

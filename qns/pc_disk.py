@@ -282,9 +282,8 @@ class PCDisk:
         self._packet.clear()
         block = packet[1]
         payload = packet[3:-2]
-        valid = (
-            packet[2] == 0xFF - block
-            and int.from_bytes(packet[-2:], "big") == _crc16_xmodem(payload)
+        valid = packet[2] == 0xFF - block and int.from_bytes(packet[-2:], "big") == _crc16_xmodem(
+            payload
         )
         if not valid:
             self._reply.append(NAK)

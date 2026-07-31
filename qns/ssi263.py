@@ -167,13 +167,13 @@ class Phoneme:
 class SSI263State:
     """Decoded SSI-263 register state captured at one phoneme event."""
 
-    phoneme: int        # 6-bit phoneme code (0-63)
-    duration: int       # 2-bit mode selector as written (0 = IRQ disabled)
-    inflection: int     # 12-bit inflection (0-4095), 2048 = neutral pitch
-    rate: int           # 4-bit rate (0-15), 0 = slowest
-    articulation: int   # 3-bit articulation (0-7)
-    amplitude: int      # 4-bit amplitude (0-15)
-    filter_freq: int    # 8-bit filter frequency (0-255), 0xFF = silence
+    phoneme: int  # 6-bit phoneme code (0-63)
+    duration: int  # 2-bit mode selector as written (0 = IRQ disabled)
+    inflection: int  # 12-bit inflection (0-4095), 2048 = neutral pitch
+    rate: int  # 4-bit rate (0-15), 0 = slowest
+    articulation: int  # 3-bit articulation (0-7)
+    amplitude: int  # 4-bit amplitude (0-15)
+    filter_freq: int  # 8-bit filter frequency (0-255), 0xFF = silence
     # Duration mode that actually governs playback speed.  Frame timing mode
     # forces it to 3 regardless of the bits written, and a mode-0 write keeps
     # whatever the last CTL H->L latched, so this is not always `duration`.
@@ -208,11 +208,11 @@ class SSI263:
     """
 
     # Register offsets
-    REG_DURPHON = 0    # Duration/Phoneme
-    REG_INFLECT = 1    # Inflection
-    REG_RATEINF = 2    # Rate/Inflection
-    REG_CTRLAMP = 3    # Control/Articulation/Amplitude
-    REG_FILTER = 4     # Filter frequency
+    REG_DURPHON = 0  # Duration/Phoneme
+    REG_INFLECT = 1  # Inflection
+    REG_RATEINF = 2  # Rate/Inflection
+    REG_CTRLAMP = 3  # Control/Articulation/Amplitude
+    REG_FILTER = 4  # Filter frequency
 
     def __init__(self, base_port: int = 0xC0, clock: int = 12_288_000):
         """Initialize SSI-263.
@@ -243,7 +243,7 @@ class SSI263:
         # only; does not change previous A/!R response" - so a mode-0 write
         # must NOT be read as "this phoneme has no interrupt", which would
         # silently remove the handshake that paces the whole utterance.
-        self._mode_function = 0     # 1 = frame timing, 2/3 = phoneme timing
+        self._mode_function = 0  # 1 = frame timing, 2/3 = phoneme timing
         self._mode_enable_ints = False
 
         # A/!R status, returned inverted in bit 7 of any register read.  Set
@@ -422,11 +422,7 @@ class SSI263:
         elif reg == self.REG_RATEINF:
             self.rate = (value >> 4) & 0x0F
             # Bit 3 = I11, bits 2:0 = I2:I0
-            self.inflection = (
-                ((value & 0x08) << 8)
-                | (self.inflection & 0x7F8)
-                | (value & 0x07)
-            )
+            self.inflection = ((value & 0x08) << 8) | (self.inflection & 0x7F8) | (value & 0x07)
 
         elif reg == self.REG_CTRLAMP:
             was_standby = self.control
@@ -479,16 +475,11 @@ class SSI263:
         # which triggers INT1 and lets the ISR queue the next phoneme.  The
         # completion is scheduled whether or not interrupts are enabled,
         # because it also drives the A/!R status bit.
-        self._pending_irq_cycle = (
-            self._current_cycle + self._calc_phoneme_duration_cycles()
-        )
+        self._pending_irq_cycle = self._current_cycle + self._calc_phoneme_duration_cycles()
 
     def get_io_handlers(self) -> list[tuple[int, Callable[[int], int], Callable[[int, int], None]]]:
         """Return (port, read_handler, write_handler) for all ports."""
-        return [
-            (self.base_port + offset, self.read, self.write)
-            for offset in range(5)
-        ]
+        return [(self.base_port + offset, self.read, self.write) for offset in range(5)]
 
     def get_phonemes(
         self,
@@ -507,6 +498,4 @@ class SSI263:
 
     def get_phoneme_text(self) -> str:
         """Return captured non-pause SSI-263 phoneme names."""
-        return " ".join(
-            phoneme.name for phoneme in self.get_phonemes(include_pauses=False)
-        )
+        return " ".join(phoneme.name for phoneme in self.get_phonemes(include_pauses=False))

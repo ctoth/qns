@@ -59,15 +59,15 @@ SIX_KEY_LAYOUTS: dict[str, str] = {
 # user could also produce by chording the dots by hand, so these are
 # aliases rather than a separate class of input.
 NAMED_CHORDS: dict[int, int] = {
-    VK_BACK: SPACE_BIT | 0x01 | 0x02,                  # space+1+2
+    VK_BACK: SPACE_BIT | 0x01 | 0x02,  # space+1+2
     VK_ESCAPE: SPACE_BIT | 0x01 | 0x04 | 0x10 | 0x20,  # space+1+3+5+6
-    VK_RETURN: SPACE_BIT | 0x01 | 0x10,                # space+1+5
-    VK_UP: SPACE_BIT | 0x01,                           # space+1
-    VK_DOWN: SPACE_BIT | 0x08,                         # space+4
-    VK_LEFT: SPACE_BIT | 0x04,                         # space+3
-    VK_RIGHT: SPACE_BIT | 0x20,                        # space+6
-    VK_PRIOR: SPACE_BIT | 0x02 | 0x04,                 # space+2+3
-    VK_NEXT: SPACE_BIT | 0x10 | 0x20,                  # space+5+6
+    VK_RETURN: SPACE_BIT | 0x01 | 0x10,  # space+1+5
+    VK_UP: SPACE_BIT | 0x01,  # space+1
+    VK_DOWN: SPACE_BIT | 0x08,  # space+4
+    VK_LEFT: SPACE_BIT | 0x04,  # space+3
+    VK_RIGHT: SPACE_BIT | 0x20,  # space+6
+    VK_PRIOR: SPACE_BIT | 0x02 | 0x04,  # space+2+3
+    VK_NEXT: SPACE_BIT | 0x10 | 0x20,  # space+5+6
 }
 
 # Named keys that mean a different chord while Ctrl is held.  These take
@@ -75,9 +75,9 @@ NAMED_CHORDS: dict[int, int] = {
 # than the plain Left arrow's space+3.
 CTRL_NAMED_CHORDS: dict[int, int] = {
     VK_HOME: SPACE_BIT | 0x01 | 0x02 | 0x04,  # ctrl+home  -> space+1+2+3
-    VK_END: SPACE_BIT | 0x08 | 0x10 | 0x20,   # ctrl+end   -> space+4+5+6
-    VK_RIGHT: SPACE_BIT | 0x10,               # ctrl+right -> dot-5 chord
-    VK_LEFT: SPACE_BIT | 0x02,                # ctrl+left  -> dot-2 chord
+    VK_END: SPACE_BIT | 0x08 | 0x10 | 0x20,  # ctrl+end   -> space+4+5+6
+    VK_RIGHT: SPACE_BIT | 0x10,  # ctrl+right -> dot-5 chord
+    VK_LEFT: SPACE_BIT | 0x02,  # ctrl+left  -> dot-2 chord
 }
 
 

@@ -126,10 +126,14 @@ def compare_phoneme(code: int):
 def main():
     parser = argparse.ArgumentParser(description="SSI-263 to SC-01 phoneme mapping analyzer")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--compare", "-c", type=lambda x: int(x, 0), metavar="CODE",
-                       help="Compare a specific phoneme (e.g., 0x01)")
-    group.add_argument("--mismatches", "-m", action="store_true",
-                       help="Show potential mismatches")
+    group.add_argument(
+        "--compare",
+        "-c",
+        type=lambda x: int(x, 0),
+        metavar="CODE",
+        help="Compare a specific phoneme (e.g., 0x01)",
+    )
+    group.add_argument("--mismatches", "-m", action="store_true", help="Show potential mismatches")
 
     args = parser.parse_args()
 

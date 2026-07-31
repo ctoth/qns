@@ -28,9 +28,7 @@ class SSI263PCMSynth:
     ) -> None:
         self.sample_rate = SAMPLE_RATE
         self._player = (
-            AudioPlayer(sample_rate=SAMPLE_RATE, log_path=audio_log)
-            if audio_enabled
-            else None
+            AudioPlayer(sample_rate=SAMPLE_RATE, log_path=audio_log) if audio_enabled else None
         )
         self._phoneme_callback: Callable[[int], None] | None = None
         self._current_inflection_level = float(_NORMAL_INFLECTION_TARGET)
@@ -119,12 +117,12 @@ class SSI263PCMSynth:
         if target_length <= len(samples):
             return samples[:target_length]
 
-        middle = samples[len(samples) // 4:3 * len(samples) // 4]
+        middle = samples[len(samples) // 4 : 3 * len(samples) // 4]
         if len(middle) < 8:
             return np.pad(samples, (0, target_length - len(samples)))
 
         centered = middle - middle.mean()
-        correlation = np.correlate(centered, centered, "full")[len(middle) - 1:]
+        correlation = np.correlate(centered, centered, "full")[len(middle) - 1 :]
         low = int(SAMPLE_RATE / 400)
         high = min(int(SAMPLE_RATE / 60), len(correlation) - 1)
         if high <= low or correlation[0] <= 0:
@@ -137,24 +135,22 @@ class SSI263PCMSynth:
 
         onset_end = max(period, (len(samples) // 4 // period) * period)
         loop_periods = max(1, min(4, (len(samples) // 2) // period))
-        loop = samples[onset_end:onset_end + period * loop_periods]
+        loop = samples[onset_end : onset_end + period * loop_periods]
         if len(loop) == 0:
             return np.resize(samples, target_length)
 
         repeats = (target_length - onset_end + len(loop) - 1) // len(loop)
-        return np.concatenate([samples[:onset_end], np.tile(loop, repeats)])[
-            :target_length
-        ]
+        return np.concatenate([samples[:onset_end], np.tile(loop, repeats)])[:target_length]
 
     @staticmethod
     def _periodicity(samples: np.ndarray) -> tuple[int, float]:
         """Return the capture's glottal period and normalized strength."""
-        middle = samples[len(samples) // 4:3 * len(samples) // 4]
+        middle = samples[len(samples) // 4 : 3 * len(samples) // 4]
         if len(middle) < 8:
             return 0, 0.0
 
         centered = middle - middle.mean()
-        correlation = np.correlate(centered, centered, "full")[len(middle) - 1:]
+        correlation = np.correlate(centered, centered, "full")[len(middle) - 1 :]
         low = int(SAMPLE_RATE / 400)
         high = min(int(SAMPLE_RATE / 60), len(correlation) - 1)
         if high <= low or correlation[0] <= 0:
@@ -171,11 +167,7 @@ class SSI263PCMSynth:
     ) -> np.ndarray:
         """Change glottal pulse spacing without resampling waveform grains."""
         ratios = np.asarray(ratio, dtype=np.float64).reshape(-1)
-        if (
-            len(samples) < 8
-            or len(ratios) == 0
-            or np.all(np.abs(ratios - 1.0) < 1e-9)
-        ):
+        if len(samples) < 8 or len(ratios) == 0 or np.all(np.abs(ratios - 1.0) < 1e-9):
             return samples
 
         period, strength = cls._periodicity(samples)
@@ -212,9 +204,7 @@ class SSI263PCMSynth:
 
             source_index = int(np.argmin(np.abs(analysis_marks - synthesis_mark)))
             source_center = int(analysis_marks[source_index]) + radius
-            grain = padded[
-                source_center - radius:source_center + radius + 1
-            ]
+            grain = padded[source_center - radius : source_center + radius + 1]
 
             output_start = center - radius
             output_stop = center + radius + 1
@@ -257,9 +247,7 @@ class SSI263PCMSynth:
             start = self._current_inflection_level
             if self._inflection_frames_remaining > 0:
                 if self._inflection_frames_remaining == 1:
-                    self._current_inflection_level = float(
-                        self._inflection_target
-                    )
+                    self._current_inflection_level = float(self._inflection_target)
                 else:
                     self._current_inflection_level += self._inflection_step
                 self._inflection_frames_remaining -= 1
@@ -276,9 +264,7 @@ class SSI263PCMSynth:
         levels = self._transition_levels(inflection, frame_count)
         immediate = (inflection & 0x800) | (inflection & 0x007)
         effective_inflections = immediate + levels * 64.0
-        ratios = (4096 - _NORMAL_INFLECTION) / (
-            4096 - effective_inflections
-        )
+        ratios = (4096 - _NORMAL_INFLECTION) / (4096 - effective_inflections)
         return self._pitch_shift_psola(samples, ratios)
 
     def get_phoneme_audio(

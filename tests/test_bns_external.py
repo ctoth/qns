@@ -23,17 +23,15 @@ TERATERM_LOCK = REPO_ROOT / "toolchain" / "teraterm.lock"
 TERATERM_SETUP = REPO_ROOT / "toolchain" / "setup-teraterm.ps1"
 
 
+def require_z88dk(executable: Path) -> None:
+    """Skip build authorities when the optional pinned toolchain is absent."""
+    if not executable.is_file():
+        pytest.skip("run toolchain/setup-z88dk.ps1 to enable z88dk build tests")
+
+
 def minimal_external_program() -> bytearray:
     """Return a structurally valid one-byte external program."""
-    return bytearray(
-        b"\x18\x0cBNS\0"
-        b"\x01\x00"
-        b"\x01\x00"
-        b"\x00\x00"
-        b"\x00\x10"
-        b"\x00"
-        b"\xaa"
-    )
+    return bytearray(b"\x18\x0cBNS\0\x01\x00\x01\x00\x00\x00\x00\x10\x00\xaa")
 
 
 def test_teraterm_lock_matches_official_portable_release() -> None:
@@ -63,16 +61,16 @@ def test_teraterm_setup_rejects_cached_archive_checksum_mismatch(
     archive.parent.mkdir(parents=True)
     archive.write_bytes(b"bad")
     (toolchain / TERATERM_LOCK.name).write_text(
-        '\n'.join(
+        "\n".join(
             (
                 'version = "test"',
                 'asset = "fake.zip"',
                 'url = "https://invalid.example/fake.zip"',
                 f'sha256 = "{"0" * 64}"',
-                'size = 3',
+                "size = 3",
             )
         )
-        + '\n'
+        + "\n"
     )
 
     result = subprocess.run(
@@ -88,7 +86,7 @@ def test_teraterm_setup_rejects_cached_archive_checksum_mismatch(
 
 def build_pack_fixture(build_root: Path) -> tuple[bytes, str]:
     """Assemble the symbol-bearing raw image in a fresh directory."""
-    assert Z88DK_ASSEMBLER.is_file(), "run toolchain/setup-z88dk.ps1 first"
+    require_z88dk(Z88DK_ASSEMBLER)
     build_root.mkdir()
     source = REPO_ROOT / "tests" / "fixtures" / "bns_pack_image.asm"
     temporary_source = build_root / source.name
@@ -113,7 +111,7 @@ def build_pack_fixture(build_root: Path) -> tuple[bytes, str]:
 
 def test_pinned_assembler_emits_z180_mlt(tmp_path: Path) -> None:
     """The selected backend must assemble a real Z180-only instruction."""
-    assert Z88DK_ASSEMBLER.is_file(), "run toolchain/setup-z88dk.ps1 first"
+    require_z88dk(Z88DK_ASSEMBLER)
     source = REPO_ROOT / "tests" / "fixtures" / "z180_mlt.asm"
     temporary_source = tmp_path / source.name
     copyfile(source, temporary_source)
@@ -272,7 +270,7 @@ def test_two_clean_builds_are_byte_identical(tmp_path: Path) -> None:
 
 def test_hello_asm_build_has_linked_layout_and_api_calls(tmp_path: Path) -> None:
     """The actual assembly example must build through the selected target."""
-    assert Z88DK_ZCC.is_file(), "run toolchain/setup-z88dk.ps1 first"
+    require_z88dk(Z88DK_ZCC)
     source = tmp_path / "hello.asm"
     copyfile(REPO_ROOT / "examples" / "hello-asm" / "hello.asm", source)
     output = tmp_path / "hello-asm.bin"
@@ -319,7 +317,7 @@ def test_hello_asm_build_has_linked_layout_and_api_calls(tmp_path: Path) -> None
 
 def test_hello_c_build_matches_sccz80_api_contract(tmp_path: Path) -> None:
     """The C example and API shims must match the measured Small-C ABI."""
-    assert Z88DK_ZCC.is_file(), "run toolchain/setup-z88dk.ps1 first"
+    require_z88dk(Z88DK_ZCC)
     source = tmp_path / "hello.c"
     api_assembly = tmp_path / "bns_api.asm"
     copyfile(REPO_ROOT / "examples" / "hello-c" / "hello.c", source)
@@ -428,9 +426,7 @@ def test_pack_rejects_missing_link_symbol(tmp_path: Path, missing_symbol: str) -
 def test_pack_rejects_entry_at_wrong_logical_address(tmp_path: Path) -> None:
     raw_image, map_text = build_pack_fixture(tmp_path / "build")
     altered_map = "\n".join(
-        "__bns_entry = $100f ; altered"
-        if line.startswith("__bns_entry")
-        else line
+        "__bns_entry = $100f ; altered" if line.startswith("__bns_entry") else line
         for line in map_text.splitlines()
     )
     with pytest.raises(ValueError, match="__bns_entry is 0x100f, not 0x100e"):
@@ -440,9 +436,7 @@ def test_pack_rejects_entry_at_wrong_logical_address(tmp_path: Path) -> None:
 def test_pack_rejects_marker_symbol_not_at_final_byte(tmp_path: Path) -> None:
     raw_image, map_text = build_pack_fixture(tmp_path / "build")
     altered_map = "\n".join(
-        "__bns_end_marker = $1012 ; altered"
-        if line.startswith("__bns_end_marker")
-        else line
+        "__bns_end_marker = $1012 ; altered" if line.startswith("__bns_end_marker") else line
         for line in map_text.splitlines()
     )
     with pytest.raises(ValueError, match="not final offset"):

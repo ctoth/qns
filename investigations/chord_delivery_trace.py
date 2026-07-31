@@ -37,8 +37,9 @@ def main() -> None:
         if not state["seeded"] and self._bns.stats.get("cycles", 0) >= delay:
             state["seeded"] = True
             self.queue.put(chord)
-            print(f"seeded chord {chord:02X} at cycles="
-                  f"{self._bns.stats.get('cycles', 0)}", flush=True)
+            print(
+                f"seeded chord {chord:02X} at cycles={self._bns.stats.get('cycles', 0)}", flush=True
+            )
         original_tick(self)
         state["ticks"] += 1
         boundary = self._bns._input_boundary

@@ -24,18 +24,18 @@ def get_banks(firmware: bytes) -> list[bytes]:
     """Split firmware into 64KB banks."""
     banks = []
     for i in range(0, len(firmware), BANK_SIZE):
-        bank = firmware[i:i + BANK_SIZE]
+        bank = firmware[i : i + BANK_SIZE]
         if len(bank) > 0:
             # Pad to full size if needed
             if len(bank) < BANK_SIZE:
-                bank = bank + b'\xff' * (BANK_SIZE - len(bank))
+                bank = bank + b"\xff" * (BANK_SIZE - len(bank))
             banks.append(bank)
     return banks
 
 
 def format_hex_bytes(data: bytes, max_bytes: int = 16) -> str:
     """Format bytes as hex string."""
-    return ' '.join(f'{b:02X}' for b in data[:max_bytes])
+    return " ".join(f"{b:02X}" for b in data[:max_bytes])
 
 
 def is_printable_ascii(byte: int) -> bool:
@@ -45,7 +45,7 @@ def is_printable_ascii(byte: int) -> bool:
 
 def format_ascii(data: bytes) -> str:
     """Format bytes as ASCII, replacing non-printable with dots."""
-    return ''.join(chr(b) if is_printable_ascii(b) else '.' for b in data)
+    return "".join(chr(b) if is_printable_ascii(b) else "." for b in data)
 
 
 @click.group()
@@ -58,7 +58,7 @@ def cli():
 
 
 @cli.command()
-@click.argument('rom_file', type=click.Path(exists=True, path_type=Path))
+@click.argument("rom_file", type=click.Path(exists=True, path_type=Path))
 def info(rom_file: Path):
     """Show ROM structure and bank information.
 
@@ -71,9 +71,7 @@ def info(rom_file: Path):
 
     if image.kind == "package":
         click.echo("Format: BNS update package")
-        click.echo(
-            f"  Header bytes: {format_hex_bytes(rom_file.read_bytes()[:16])}"
-        )
+        click.echo(f"  Header bytes: {format_hex_bytes(rom_file.read_bytes()[:16])}")
         click.echo(f"  Firmware offset: 0x{image.image_offset:04X}")
         click.echo(f"  Firmware size: {len(firmware):,} bytes")
     else:
@@ -104,7 +102,7 @@ def info(rom_file: Path):
             offset = bank[1]
             entry = 2 + offset
             click.echo(f"  Entry: JR +{offset} -> 0x{entry:04X}")
-            click.echo(f"  At entry point: {format_hex_bytes(bank[entry:entry+16])}")
+            click.echo(f"  At entry point: {format_hex_bytes(bank[entry : entry + 16])}")
         elif first == 0xC3:  # JP opcode
             addr = bank[1] | (bank[2] << 8)
             click.echo(f"  Entry: JP 0x{addr:04X}")
@@ -113,12 +111,12 @@ def info(rom_file: Path):
 
         # Check for magic strings
         magic = bank[2:6]
-        if magic.isalpha() or magic in [b'BNS\x00', b'BNSP']:
+        if magic.isalpha() or magic in [b"BNS\x00", b"BNSP"]:
             click.echo(f"  Magic: {magic!r}")
 
 
-@cli.command('compare-banks')
-@click.argument('rom_file', type=click.Path(exists=True, path_type=Path))
+@cli.command("compare-banks")
+@click.argument("rom_file", type=click.Path(exists=True, path_type=Path))
 def compare_banks(rom_file: Path):
     """Compare all banks for similarities and differences.
 
@@ -186,11 +184,11 @@ def compare_banks(rom_file: Path):
             click.echo()
 
 
-@cli.command('find-pattern')
-@click.argument('rom_file', type=click.Path(exists=True, path_type=Path))
-@click.argument('pattern')
-@click.option('--context', '-c', default=8, help='Context bytes to show before/after match')
-@click.option('--limit', '-l', default=20, help='Maximum matches to show (0 for all)')
+@cli.command("find-pattern")
+@click.argument("rom_file", type=click.Path(exists=True, path_type=Path))
+@click.argument("pattern")
+@click.option("--context", "-c", default=8, help="Context bytes to show before/after match")
+@click.option("--limit", "-l", default=20, help="Maximum matches to show (0 for all)")
 def find_pattern(rom_file: Path, pattern: str, context: int, limit: int):
     """Search for hex pattern across all banks.
 
@@ -199,7 +197,7 @@ def find_pattern(rom_file: Path, pattern: str, context: int, limit: int):
     Example: find-pattern rom.bns "AF 32" (finds XOR A; LD (nn),A)
     """
     # Parse hex pattern
-    pattern = pattern.replace(' ', '')
+    pattern = pattern.replace(" ", "")
     if len(pattern) % 2 != 0:
         click.echo(f"Error: Invalid hex pattern (odd length): {pattern}")
         return
@@ -236,8 +234,8 @@ def find_pattern(rom_file: Path, pattern: str, context: int, limit: int):
                 ctx_end = min(len(bank), pos + len(search_bytes) + context)
 
                 before = bank[ctx_start:pos]
-                matched = bank[pos:pos + len(search_bytes)]
-                after = bank[pos + len(search_bytes):ctx_end]
+                matched = bank[pos : pos + len(search_bytes)]
+                after = bank[pos + len(search_bytes) : ctx_end]
 
                 click.echo(f"Bank {bank_num}, offset 0x{pos:04X}:")
                 click.echo(
@@ -250,8 +248,7 @@ def find_pattern(rom_file: Path, pattern: str, context: int, limit: int):
                     if pos + 4 <= len(bank):
                         addr = bank[pos + 2] | (bank[pos + 3] << 8)
                         click.echo(
-                            f"  -> XOR A; LD (0x{addr:04X}),A  ; "
-                            f"clears address 0x{addr:04X}"
+                            f"  -> XOR A; LD (0x{addr:04X}),A  ; clears address 0x{addr:04X}"
                         )
 
                 shown_matches += 1
@@ -263,12 +260,12 @@ def find_pattern(rom_file: Path, pattern: str, context: int, limit: int):
         click.echo(f"(showing {shown_matches} of {total_matches} matches, use --limit 0 for all)")
 
 
-@cli.command('find-string')
-@click.argument('rom_file', type=click.Path(exists=True, path_type=Path))
-@click.argument('search_string')
-@click.option('--context', '-c', default=16, help='Context bytes to show before/after match')
-@click.option('--case-sensitive', '-s', is_flag=True, help='Case-sensitive search')
-@click.option('--limit', '-l', default=20, help='Maximum matches to show (0 for all)')
+@cli.command("find-string")
+@click.argument("rom_file", type=click.Path(exists=True, path_type=Path))
+@click.argument("search_string")
+@click.option("--context", "-c", default=16, help="Context bytes to show before/after match")
+@click.option("--case-sensitive", "-s", is_flag=True, help="Case-sensitive search")
+@click.option("--limit", "-l", default=20, help="Maximum matches to show (0 for all)")
 def find_string(rom_file: Path, search_string: str, context: int, case_sensitive: bool, limit: int):
     """Search for ASCII string across all banks.
 
@@ -277,7 +274,7 @@ def find_string(rom_file: Path, search_string: str, context: int, case_sensitive
     firmware = load_firmware(rom_file)
     banks = get_banks(firmware)
 
-    search_bytes = search_string.encode('ascii')
+    search_bytes = search_string.encode("ascii")
     search_lower = search_string.lower()
     if not case_sensitive:
         click.echo(f"Searching for (case-insensitive): '{search_string}'")
@@ -297,7 +294,7 @@ def find_string(rom_file: Path, search_string: str, context: int, case_sensitive
         else:
             # Create lowercase version for searching
             search_in = bytes(b if not (0x41 <= b <= 0x5A) else b + 0x20 for b in bank)
-            search_for = search_lower.encode('ascii')
+            search_for = search_lower.encode("ascii")
 
         offset = 0
         while True:
@@ -321,7 +318,7 @@ def find_string(rom_file: Path, search_string: str, context: int, case_sensitive
                 click.echo(f"  ASCII: {format_ascii(context_bytes)}")
 
                 # Highlight match position
-                marker = ' ' * match_offset_in_ctx + '^' * len(search_string)
+                marker = " " * match_offset_in_ctx + "^" * len(search_string)
                 click.echo(f"         {marker}")
 
                 shown_matches += 1
@@ -333,10 +330,10 @@ def find_string(rom_file: Path, search_string: str, context: int, case_sensitive
         click.echo(f"(showing {shown_matches} of {total_matches} matches, use --limit 0 for all)")
 
 
-@cli.command('dump-bank')
-@click.argument('rom_file', type=click.Path(exists=True, path_type=Path))
-@click.argument('bank_num', type=int)
-@click.argument('output_file', type=click.Path(path_type=Path))
+@cli.command("dump-bank")
+@click.argument("rom_file", type=click.Path(exists=True, path_type=Path))
+@click.argument("bank_num", type=int)
+@click.argument("output_file", type=click.Path(path_type=Path))
 def dump_bank(rom_file: Path, bank_num: int, output_file: Path):
     """Extract a single bank to a file.
 
@@ -346,7 +343,7 @@ def dump_bank(rom_file: Path, bank_num: int, output_file: Path):
     banks = get_banks(firmware)
 
     if bank_num < 0 or bank_num >= len(banks):
-        click.echo(f"Error: Bank {bank_num} does not exist. Available: 0-{len(banks)-1}")
+        click.echo(f"Error: Bank {bank_num} does not exist. Available: 0-{len(banks) - 1}")
         return
 
     bank = banks[bank_num]
@@ -357,11 +354,11 @@ def dump_bank(rom_file: Path, bank_num: int, output_file: Path):
     click.echo(f"  First 16 bytes: {format_hex_bytes(bank[:16])}")
 
 
-@cli.command('disasm')
-@click.argument('rom_file', type=click.Path(exists=True, path_type=Path))
-@click.argument('bank_num', type=int)
-@click.argument('offset', type=str)
-@click.option('--count', '-n', default=16, help='Number of bytes to show')
+@cli.command("disasm")
+@click.argument("rom_file", type=click.Path(exists=True, path_type=Path))
+@click.argument("bank_num", type=int)
+@click.argument("offset", type=str)
+@click.option("--count", "-n", default=16, help="Number of bytes to show")
 def disasm(rom_file: Path, bank_num: int, offset: str, count: int):
     """Show raw bytes at offset (hex dump, not actual disassembly).
 
@@ -371,12 +368,12 @@ def disasm(rom_file: Path, bank_num: int, offset: str, count: int):
     banks = get_banks(firmware)
 
     if bank_num < 0 or bank_num >= len(banks):
-        click.echo(f"Error: Bank {bank_num} does not exist. Available: 0-{len(banks)-1}")
+        click.echo(f"Error: Bank {bank_num} does not exist. Available: 0-{len(banks) - 1}")
         return
 
     # Parse offset
     try:
-        if offset.startswith('0x') or offset.startswith('0X'):
+        if offset.startswith("0x") or offset.startswith("0X"):
             off = int(offset, 16)
         else:
             off = int(offset)
@@ -389,11 +386,11 @@ def disasm(rom_file: Path, bank_num: int, offset: str, count: int):
         click.echo(f"Error: Offset 0x{off:04X} beyond bank size 0x{len(bank):04X}")
         return
 
-    data = bank[off:off + count]
+    data = bank[off : off + count]
     click.echo(f"Bank {bank_num}, offset 0x{off:04X}:")
     click.echo(f"  Hex:   {format_hex_bytes(data, count)}")
     click.echo(f"  ASCII: {format_ascii(data)}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     cli()

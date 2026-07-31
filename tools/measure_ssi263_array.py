@@ -195,9 +195,7 @@ def main() -> None:
             formatted_phases = " ".join(f"{phase}:{score:.4f}" for phase, score in phases)
             print(f"{name}_phase:mean_edge {formatted_phases}")
         positions = strongest_positions(profile, args.count)
-        formatted_positions = " ".join(
-            f"{position}:{score:.4f}" for position, score in positions
-        )
+        formatted_positions = " ".join(f"{position}:{score:.4f}" for position, score in positions)
         print(f"{name}_position:edge {formatted_positions}")
         fit_range = args.fit_x if name == "x" else args.fit_y
         if fit_range:

@@ -26,9 +26,7 @@ def main() -> None:
     callbacks = [row for row in rows if row["event"] == "callback"]
     non_pause = [(wall, frames) for wall, frames in enqueues if frames > 1]
     audio_callback_indexes = [
-        index
-        for index, row in enumerate(callbacks)
-        if int(row["audio_frames"]) > 0
+        index for index, row in enumerate(callbacks) if int(row["audio_frames"]) > 0
     ]
 
     gaps = [
@@ -48,8 +46,7 @@ def main() -> None:
     first_audio_wall = float(callbacks[first_audio_index]["wall_seconds"])
     last_audio_wall = float(callbacks[last_audio_index]["wall_seconds"])
     internal_silent_callbacks = sum(
-        int(row["audio_frames"]) == 0
-        for row in callbacks[first_audio_index:last_audio_index + 1]
+        int(row["audio_frames"]) == 0 for row in callbacks[first_audio_index : last_audio_index + 1]
     )
 
     print(f"enqueues: {len(enqueues)}")

@@ -77,9 +77,7 @@ def main() -> None:
 
     backend = BACKENDS[args.backend](audio_enabled=False)
     pieces = [render_row(backend, row, args.backend) for row in rows]
-    samples = (
-        np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
-    )
+    samples = np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
 
     peak = float(np.max(np.abs(samples))) if len(samples) else 0.0
     if peak > 1.0:

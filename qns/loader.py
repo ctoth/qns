@@ -13,6 +13,7 @@ from pathlib import Path
 
 _PRE_EXTRACTED_SIZES = (0x10000, 0x40000)
 
+
 @dataclass(frozen=True)
 class _Insn:
     """One Z180 instruction shape: literal opcode, wildcarded operands."""
@@ -70,10 +71,7 @@ _ENGLISH_SIGNATURES = (
     # NFB99 Braille Lite: display test first
     _MFULL3_PROLOGUE + _DISPLAY_TEST + _SPEECH_ENABLE_TEST + (_CALL, _CALL),
     # 2003 Braille Lite: speech-enable test first
-    _MFULL3_PROLOGUE
-    + _SPEECH_ENABLE_TEST
-    + _DISPLAY_TEST
-    + (_CALL, _CALL, _CALL),
+    _MFULL3_PROLOGUE + _SPEECH_ENABLE_TEST + _DISPLAY_TEST + (_CALL, _CALL, _CALL),
 )
 
 
@@ -146,9 +144,7 @@ def find_english_boundary(firmware: bytes) -> EnglishBoundary | None:
     """
     bank = firmware[:0x10000]
     matches = [
-        offset
-        for signature in _ENGLISH_SIGNATURES
-        for offset in _find_signature(bank, signature)
+        offset for signature in _ENGLISH_SIGNATURES for offset in _find_signature(bank, signature)
     ]
     if len(matches) != 1:
         return None
@@ -287,29 +283,21 @@ def find_input_boundary(firmware: bytes) -> InputBoundary | None:
     accept = _find_signature(bank, _CHORD_ACCEPT_SIGNATURE)
     key_queue = _find_signature(bank, _KEY_QUEUE_SIGNATURE)
     reset_complete = _find_signature(bank, _RESET_COMPLETE_SIGNATURE)
-    if (
-        len(starta) != 1
-        or len(accept) != 1
-        or len(key_queue) != 1
-        or len(reset_complete) != 1
-    ):
+    if len(starta) != 1 or len(accept) != 1 or len(key_queue) != 1 or len(reset_complete) != 1:
         return None
 
-    timer_operand = starta[0] + _sequence_offset(
-        _STARTA_SIGNATURE, _LD_HL_IMMEDIATE
-    ) + 1
+    timer_operand = starta[0] + _sequence_offset(_STARTA_SIGNATURE, _LD_HL_IMMEDIATE) + 1
     timer_logical = bank[timer_operand] | (bank[timer_operand + 1] << 8)
-    buffer_operand = accept[0] + _sequence_offset(
-        _CHORD_ACCEPT_SIGNATURE, _LD_MEMORY_A
-    ) + 1
+    buffer_operand = accept[0] + _sequence_offset(_CHORD_ACCEPT_SIGNATURE, _LD_MEMORY_A) + 1
     buffer_logical = bank[buffer_operand] | (bank[buffer_operand + 1] << 8)
-    queue_operand = key_queue[0] + _sequence_offset(
-        _KEY_QUEUE_SIGNATURE, _LD_HL_IMMEDIATE
-    ) + 1
+    queue_operand = key_queue[0] + _sequence_offset(_KEY_QUEUE_SIGNATURE, _LD_HL_IMMEDIATE) + 1
     queue_logical = bank[queue_operand] | (bank[queue_operand + 1] << 8)
-    reset_operand = reset_complete[0] + _sequence_offset(
-        _RESET_COMPLETE_SIGNATURE, _LD_A_64
-    ) + len(_LD_A_64.tokens()) + 1
+    reset_operand = (
+        reset_complete[0]
+        + _sequence_offset(_RESET_COMPLETE_SIGNATURE, _LD_A_64)
+        + len(_LD_A_64.tokens())
+        + 1
+    )
     reset_logical = bank[reset_operand] | (bank[reset_operand + 1] << 8)
     key_waits = [
         offset
@@ -326,9 +314,7 @@ def find_input_boundary(firmware: bytes) -> InputBoundary | None:
         keyboard_queue_count=common_base + queue_logical,
         keyboard_wait_pc=key_waits[0] + len(_LD_HL_IMMEDIATE.tokens()),
         command_loop_timer=common_base + timer_logical,
-        command_loop_timer_pc=starta[0] + _sequence_offset(
-            _STARTA_SIGNATURE, _LD_HL_INDIRECT_ZERO
-        ),
+        command_loop_timer_pc=starta[0] + _sequence_offset(_STARTA_SIGNATURE, _LD_HL_INDIRECT_ZERO),
         reset_complete=common_base + reset_logical,
     )
 
@@ -398,14 +384,51 @@ RETAINED_SPEECH_DEFAULTS = {
 # calculates INFL +/- 1Bh, then consults _VIFLAG before writing the new value.
 # Source initialization stores 1 in that retained flag by default.
 _DOPITCH_SIGNATURE = (
-    0xFE, 0x3C, 0x28, None,
-    0xFE, 0x3D, 0x28, None,
-    0xFE, 0x3E, 0xC0,
-    0x3A, None, None, 0xC6, 0x1B, 0x18, None,
-    0x3A, None, None, 0xD6, 0x1B, 0x30, None,
-    0x3A, None, None, 0xF5,
-    0x3A, None, None, 0xCB, 0x47, 0x28, None,
-    0xF1, 0x32, None, None, 0x32, None, None, 0xED, 0x39,
+    0xFE,
+    0x3C,
+    0x28,
+    None,
+    0xFE,
+    0x3D,
+    0x28,
+    None,
+    0xFE,
+    0x3E,
+    0xC0,
+    0x3A,
+    None,
+    None,
+    0xC6,
+    0x1B,
+    0x18,
+    None,
+    0x3A,
+    None,
+    None,
+    0xD6,
+    0x1B,
+    0x30,
+    None,
+    0x3A,
+    None,
+    None,
+    0xF5,
+    0x3A,
+    None,
+    None,
+    0xCB,
+    0x47,
+    0x28,
+    None,
+    0xF1,
+    0x32,
+    None,
+    None,
+    0x32,
+    None,
+    None,
+    0xED,
+    0x39,
 )
 _DOPITCH_VIFLAG_OPERAND = 30
 
@@ -456,13 +479,13 @@ def find_speech_parameters(
         offset
         for offset in range(len(bank) - 3 - len(anchor))
         if bank[offset] == _LD_A_MEMORY.opcode[0]
-        and bank[offset + 3:offset + 3 + len(anchor)] == anchor
+        and bank[offset + 3 : offset + 3 + len(anchor)] == anchor
     ]
     if len(starts) != 1:
         return None
 
     start = starts[0]
-    window = bank[start:start + _ISSET_WINDOW]
+    window = bank[start : start + _ISSET_WINDOW]
     addresses = {"volume": _operand(window, 0)}
     for field, register in (
         ("rate", 2),
@@ -481,17 +504,15 @@ def find_speech_parameters(
             return None
         cells[field] += (shadow,)
 
-    if any(
-        address < _LOWEST_RAM_ADDRESS
-        for field in cells.values()
-        for address in field
-    ):
+    if any(address < _LOWEST_RAM_ADDRESS for field in cells.values() for address in field):
         return None
     common_base = _COMMON_AREA_CBR << 12
-    return SpeechParameters(**{
-        field: tuple(address + common_base for address in addresses)
-        for field, addresses in cells.items()
-    })
+    return SpeechParameters(
+        **{
+            field: tuple(address + common_base for address in addresses)
+            for field, addresses in cells.items()
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -516,7 +537,9 @@ class SpeechPowerTimeout:
 # mid-word.  The threshold's initialiser is not reached on our boot, so
 # take the value it would have stored.
 _TIMSTAT_SIGNATURE = (
-    _LD_A_MEMORY, _LD_HL_IMMEDIATE, _Insn("cp (hl)", (0xBE,)),
+    _LD_A_MEMORY,
+    _LD_HL_IMMEDIATE,
+    _Insn("cp (hl)", (0xBE,)),
     _Insn("call nc,nn", (0xD4,), operand_bytes=2),
 )
 
@@ -537,7 +560,7 @@ def find_speech_power_timeout(firmware: bytes) -> SpeechPowerTimeout | None:
     values = {
         bank[offset + 1]
         for offset in range(len(bank) - 5)
-        if bank[offset] == store[0] and bank[offset + 2:offset + 5] == tail
+        if bank[offset] == store[0] and bank[offset + 2 : offset + 5] == tail
     }
     if len(values) != 1:
         return None
@@ -560,15 +583,18 @@ def _retained_shadow(bank: bytes, working: int, volume: int) -> int | None:
     ISINIT both do - so they are required to agree rather than to be
     unique.
     """
-    pair = bytes((_LD_MEMORY_A.opcode[0],)) + _address_bytes(working) \
+    pair = (
+        bytes((_LD_MEMORY_A.opcode[0],))
+        + _address_bytes(working)
         + bytes((_LD_MEMORY_A.opcode[0],))
+    )
     volume_store = bytes((_LD_MEMORY_A.opcode[0],)) + _address_bytes(volume)
 
     shadows = set()
     offset = bank.find(pair)
     while offset >= 0:
         start = max(0, offset - _HANDLER_WINDOW)
-        if volume_store in bank[start:offset + _HANDLER_WINDOW]:
+        if volume_store in bank[start : offset + _HANDLER_WINDOW]:
             shadows.add(_operand(bank, offset + 3))
         offset = bank.find(pair, offset + 1)
 
@@ -622,13 +648,13 @@ def _find_image_offset(data: bytes) -> int:
     matches = []
     for image_offset in range(0x1000, len(data), 0x1000):
         image_length = int.from_bytes(
-            data[image_offset - 6:image_offset - 2],
+            data[image_offset - 6 : image_offset - 2],
             "little",
         )
         if image_length != len(data) - image_offset:
             continue
         expected_crc = int.from_bytes(
-            data[image_offset - 2:image_offset],
+            data[image_offset - 2 : image_offset],
             "little",
         )
         if _package_crc(data[image_offset:]) == expected_crc:

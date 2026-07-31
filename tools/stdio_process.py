@@ -177,9 +177,7 @@ class BNSStdioProcess:
             try:
                 event = self.next_event(remaining)
             except TimeoutError as error:
-                raise TimeoutError(
-                    f"timed out waiting for {description}: {error}"
-                ) from error
+                raise TimeoutError(f"timed out waiting for {description}: {error}") from error
             if predicate(event):
                 return event
         raise TimeoutError(f"BNS did not produce {description} within {timeout:.1f}s")
@@ -212,10 +210,10 @@ class BNSStdioProcess:
         """Wait until non-pause speech ends with an exact phoneme suffix."""
         if not suffix:
             raise ValueError("speech suffix must not be empty")
-        if tuple(self.speech_names[-len(suffix):]) == suffix:
+        if tuple(self.speech_names[-len(suffix) :]) == suffix:
             return
         self.wait_for(
-            lambda _event: tuple(self.speech_names[-len(suffix):]) == suffix,
+            lambda _event: tuple(self.speech_names[-len(suffix) :]) == suffix,
             description,
             timeout=timeout,
         )
@@ -275,10 +273,7 @@ class BNSStdioProcess:
         """Request orderly exit and require confirmation after post-run work."""
         self.send_event("system", action="stop")
         self.wait_for(
-            lambda event: (
-                event.get("device") == "system"
-                and event.get("state") == "exited"
-            ),
+            lambda event: (event.get("device") == "system" and event.get("state") == "exited"),
             "graceful system exit",
             timeout=timeout,
         )

@@ -25,11 +25,7 @@ def _transmit(device: PCDisk, data: bytes) -> bytes:
 def _packet(block: int, payload: bytes) -> bytes:
     marker = SOH if len(payload) == 128 else STX
     crc = binascii.crc_hqx(payload, 0)
-    return (
-        bytes((marker, block & 0xFF, 0xFF - (block & 0xFF)))
-        + payload
-        + crc.to_bytes(2, "big")
-    )
+    return bytes((marker, block & 0xFF, 0xFF - (block & 0xFF))) + payload + crc.to_bytes(2, "big")
 
 
 def _begin_command(device: PCDisk) -> None:
@@ -123,9 +119,7 @@ def test_pc_disk_sends_host_file_as_ymodem_batch(tmp_path):
     assert header_packet[0] == SOH
     assert header_packet[1:3] == b"\x00\xff"
     assert header_packet[3:12] == b"host.bns\0"
-    assert int.from_bytes(header_packet[-2:], "big") == binascii.crc_hqx(
-        header_packet[3:-2], 0
-    )
+    assert int.from_bytes(header_packet[-2:], "big") == binascii.crc_hqx(header_packet[3:-2], 0)
     assert data_packet[0] == STX
     assert data_packet[1:3] == b"\x01\xfe"
     assert data_packet[3 : 3 + len(content)] == content

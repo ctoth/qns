@@ -11,6 +11,7 @@ from collections.abc import Callable
 # Try to import the compiled CFFI module
 try:
     from ._z180_cffi import ffi, lib
+
     CFFI_AVAILABLE = True
 except ImportError:
     CFFI_AVAILABLE = False
@@ -295,38 +296,22 @@ class Z180:
             }
         return {
             "status": int(lib.qns_z180_get_asci_stat(self._cpu, channel)),
-            "rx_bits_remaining": int(
-                lib.qns_z180_get_asci_rx_bits_remaining(self._cpu, channel)
-            ),
+            "rx_bits_remaining": int(lib.qns_z180_get_asci_rx_bits_remaining(self._cpu, channel)),
             "rx_fifo_depth": int(lib.qns_z180_get_asci_rx_fifo_depth(self._cpu, channel)),
             "cntla": int(lib.qns_z180_get_asci_cntla(self._cpu, channel)),
-            "tx_bits_remaining": int(
-                lib.qns_z180_get_asci_tx_bits_remaining(self._cpu, channel)
-            ),
-            "tx_shift_register": int(
-                lib.qns_z180_get_asci_tx_shift_register(self._cpu, channel)
-            ),
-            "tx_data_register": int(
-                lib.qns_z180_get_asci_tx_data_register(self._cpu, channel)
-            ),
+            "tx_bits_remaining": int(lib.qns_z180_get_asci_tx_bits_remaining(self._cpu, channel)),
+            "tx_shift_register": int(lib.qns_z180_get_asci_tx_shift_register(self._cpu, channel)),
+            "tx_data_register": int(lib.qns_z180_get_asci_tx_data_register(self._cpu, channel)),
             "irq_pending": bool(lib.qns_z180_get_asci_irq_pending(self._cpu, channel)),
             "brg_divisor": int(lib.qns_z180_get_asci_brg_divisor(self._cpu, channel)),
             "frame_bits": int(lib.qns_z180_get_asci_frame_bits(self._cpu, channel)),
             "rie_set_count": int(lib.qns_z180_get_asci_rie_set_count(self._cpu, channel)),
-            "rie_clear_count": int(
-                lib.qns_z180_get_asci_rie_clear_count(self._cpu, channel)
-            ),
+            "rie_clear_count": int(lib.qns_z180_get_asci_rie_clear_count(self._cpu, channel)),
             "rie_last_pc": int(lib.qns_z180_get_asci_rie_last_pc(self._cpu, channel)),
             "rie_last_cycle": int(lib.qns_z180_get_asci_rie_last_cycle(self._cpu, channel)),
-            "stat_write_count": int(
-                lib.qns_z180_get_asci_stat_write_count(self._cpu, channel)
-            ),
-            "stat_last_write": int(
-                lib.qns_z180_get_asci_stat_last_write(self._cpu, channel)
-            ),
-            "stat_last_write_pc": int(
-                lib.qns_z180_get_asci_stat_last_write_pc(self._cpu, channel)
-            ),
+            "stat_write_count": int(lib.qns_z180_get_asci_stat_write_count(self._cpu, channel)),
+            "stat_last_write": int(lib.qns_z180_get_asci_stat_last_write(self._cpu, channel)),
+            "stat_last_write_pc": int(lib.qns_z180_get_asci_stat_last_write_pc(self._cpu, channel)),
             "stat_last_write_cycle": int(
                 lib.qns_z180_get_asci_stat_last_write_cycle(self._cpu, channel)
             ),
@@ -367,6 +352,6 @@ class Z180:
 
     def __del__(self) -> None:
         """Clean up the CPU."""
-        if CFFI_AVAILABLE and hasattr(self, '_cpu') and self._cpu:
+        if CFFI_AVAILABLE and hasattr(self, "_cpu") and self._cpu:
             lib.qns_z180_destroy(self._cpu)
             self._cpu = None

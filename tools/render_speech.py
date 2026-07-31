@@ -51,11 +51,7 @@ def load_events(path: Path) -> list[dict[str, int]]:
         rows = list(csv.DictReader(handle))
     events = []
     for row in rows:
-        events.append({
-            key: int(value)
-            for key, value in row.items()
-            if key != "name"
-        })
+        events.append({key: int(value) for key, value in row.items() if key != "name"})
     return events
 
 
@@ -80,11 +76,11 @@ def _periodicity(samples: np.ndarray, sample_rate: int) -> tuple[int, float]:
     phonemes, under ~0.3 for fricatives, which have no pitch at all.
     Looping a fricative at a "period" imposes an audible tone on noise.
     """
-    middle = samples[len(samples) // 4:3 * len(samples) // 4]
+    middle = samples[len(samples) // 4 : 3 * len(samples) // 4]
     if len(middle) < 8:
         return 0, 0.0
     centered = middle - middle.mean()
-    correlation = np.correlate(centered, centered, "full")[len(middle) - 1:]
+    correlation = np.correlate(centered, centered, "full")[len(middle) - 1 :]
     low = int(sample_rate / 400)
     high = min(int(sample_rate / 60), len(correlation) - 1)
     if high <= low or correlation[0] <= 0:
@@ -95,11 +91,11 @@ def _periodicity(samples: np.ndarray, sample_rate: int) -> tuple[int, float]:
 
 def _find_period(samples: np.ndarray, sample_rate: int) -> int:
     """Pitch period of a capture's steady portion, in samples."""
-    middle = samples[len(samples) // 4:3 * len(samples) // 4]
+    middle = samples[len(samples) // 4 : 3 * len(samples) // 4]
     if len(middle) < 8:
         return 0
     centered = middle - middle.mean()
-    correlation = np.correlate(centered, centered, "full")[len(middle) - 1:]
+    correlation = np.correlate(centered, centered, "full")[len(middle) - 1 :]
     low = int(sample_rate / 400)
     high = min(int(sample_rate / 60), len(correlation) - 1)
     if high <= low:
@@ -120,7 +116,7 @@ def _granular_sustain(
     """
     grain = max(8, int(0.020 * sample_rate))
     fade = max(2, grain // 4)
-    region = samples[len(samples) // 8:]
+    region = samples[len(samples) // 8 :]
     if len(region) <= grain:
         return samples[:target_samples]
 
@@ -130,10 +126,10 @@ def _granular_sustain(
     position = 0
     while position < target_samples:
         start = int(rng.integers(0, len(region) - grain))
-        piece = region[start:start + grain].copy()
+        piece = region[start : start + grain].copy()
         piece[:fade] *= ramp
         piece[-fade:] *= ramp[::-1]
-        output[position:position + grain] += piece
+        output[position : position + grain] += piece
         position += grain - fade
     return output[:target_samples]
 
@@ -174,7 +170,7 @@ def sustain_phoneme(
     if onset_end <= 0:
         onset_end = period
     loop_periods = max(1, min(4, (len(samples) // 2) // period))
-    loop = samples[onset_end:onset_end + period * loop_periods]
+    loop = samples[onset_end : onset_end + period * loop_periods]
     if len(loop) == 0:
         return samples[:target_samples]
 
@@ -221,9 +217,7 @@ def render(
         pieces = []
         transients: list[bool] = []
         for event in events:
-            amplitude = (
-                event["amplitude"] if force_amplitude is None else force_amplitude
-            )
+            amplitude = event["amplitude"] if force_amplitude is None else force_amplitude
             if formant is not None:
                 piece = formant.synthesize_phoneme(
                     phoneme=SC02_TO_SC01[event["code"] & 0x3F],
@@ -327,9 +321,7 @@ def render(
         if span <= 0:
             continue
 
-        amplitude = (
-            event["amplitude"] if force_amplitude is None else force_amplitude
-        )
+        amplitude = event["amplitude"] if force_amplitude is None else force_amplitude
 
         if formant is not None:
             samples = formant.synthesize_phoneme(
@@ -349,7 +341,7 @@ def render(
 
         length = min(len(samples), span, len(output) - start)
         if length > 0:
-            output[start:start + length] += samples[:length]
+            output[start : start + length] += samples[:length]
 
     return output
 

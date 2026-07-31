@@ -310,17 +310,19 @@ class AudioPlayer:
             if output_dac_time is not None and isinstance(audio_frames, int)
             else None
         )
-        self._log_queue.put((
-            f"{time.perf_counter() - self._log_start:.9f}",
-            event,
-            frames,
-            audio_frames,
-            silence_frames,
-            queued_frames,
-            buffered_frames,
-            priming,
-            f"{current_time:.9f}" if current_time is not None else "",
-            f"{output_dac_time:.9f}" if output_dac_time is not None else "",
-            f"{audio_end_time:.9f}" if audio_end_time is not None else "",
-            str(status) if status else "",
-        ))
+        self._log_queue.put(
+            (
+                f"{time.perf_counter() - self._log_start:.9f}",
+                event,
+                frames,
+                audio_frames,
+                silence_frames,
+                queued_frames,
+                buffered_frames,
+                priming,
+                f"{current_time:.9f}" if current_time is not None else "",
+                f"{output_dac_time:.9f}" if output_dac_time is not None else "",
+                f"{audio_end_time:.9f}" if audio_end_time is not None else "",
+                str(status) if status else "",
+            )
+        )

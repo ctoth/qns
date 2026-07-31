@@ -200,11 +200,7 @@ def crc16_xmodem(data: bytes) -> int:
     for byte in data:
         crc ^= byte << 8
         for _ in range(8):
-            crc = (
-                ((crc << 1) ^ 0x1021) & 0xFFFF
-                if crc & 0x8000
-                else (crc << 1) & 0xFFFF
-            )
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
     return crc
 
 
@@ -214,11 +210,7 @@ def ymodem_packet(block_number: int, payload: bytes, block_size: int) -> bytes:
         raise ValueError(f"payload is {len(payload)} bytes, expected {block_size}")
     marker = SOH if block_size == 128 else STX
     crc = crc16_xmodem(payload)
-    return (
-        bytes((marker, block_number, 0xFF - block_number))
-        + payload
-        + crc.to_bytes(2, "big")
-    )
+    return bytes((marker, block_number, 0xFF - block_number)) + payload + crc.to_bytes(2, "big")
 
 
 def send_stdio_chord(
@@ -258,10 +250,7 @@ def reach_stdio_editor_command_loop(process: BNSStdioProcess) -> None:
         def reached_startup_boundary(event: dict[str, object]) -> bool:
             nonlocal accepted, ready, command_loop, prompt_seen, watch_armed
             if event.get("device") == "keyboard":
-                if (
-                    event.get("state") == "accepted"
-                    and event.get("chord") == expected_chord
-                ):
+                if event.get("state") == "accepted" and event.get("chord") == expected_chord:
                     accepted = True
                 elif event.get("state") == "ready":
                     ready = True
@@ -273,8 +262,7 @@ def reach_stdio_editor_command_loop(process: BNSStdioProcess) -> None:
 
             names = process.speech_names
             prompt_seen = len(names) > speech_start and any(
-                tuple(names[-len(prompt):]) == prompt
-                for prompt in initialization_prompts
+                tuple(names[-len(prompt) :]) == prompt for prompt in initialization_prompts
             )
             return watch_armed and accepted and ready and (command_loop or prompt_seen)
 
@@ -323,7 +311,7 @@ def transfer_stdio_ymodem(
             names = process.speech_names
             prompt_seen = (
                 len(names) > post_import_speech_start
-                and tuple(names[-len(FILE_COMMAND_PROMPT):]) == FILE_COMMAND_PROMPT
+                and tuple(names[-len(FILE_COMMAND_PROMPT) :]) == FILE_COMMAND_PROMPT
             )
             return serial_seen and post_import_ready and prompt_seen
 
@@ -331,10 +319,7 @@ def transfer_stdio_ymodem(
         return len(process.serial[0])
 
     header = (
-        file_path.name.encode("ascii")
-        + b"\0"
-        + str(len(file_data)).encode("ascii")
-        + b"\0"
+        file_path.name.encode("ascii") + b"\0" + str(len(file_data)).encode("ascii") + b"\0"
     ).ljust(128, b"\0")
 
     cursor = wait_for_transfer_boundary(
@@ -402,9 +387,7 @@ def receive_stdio_file(process: BNSStdioProcess, file_path: Path) -> None:
     process.send_serial(1, bytes((NAK,)))
 
     process.wait_for(
-        lambda _event: bytes(process.serial[0][serial0_cursor:]).endswith(
-            bytes((0x05,))
-        ),
+        lambda _event: bytes(process.serial[0][serial0_cursor:]).endswith(bytes((0x05,))),
         "ASCI0 disk-drive ENQ",
         timeout=60,
     )

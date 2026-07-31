@@ -114,9 +114,7 @@ class ParallelBrailleDisplay:
         frame = self._shifted_bytes[-physical_cells:]
         if self.cells == 18:
             frame = [
-                value
-                for index, value in enumerate(frame)
-                if index not in (6, 7, 14, 15, 22, 23)
+                value for index, value in enumerate(frame) if index not in (6, 7, 14, 15, 22, 23)
             ]
         self.buffer[:] = bytes(reversed(frame))
         self._shifted_bytes.clear()

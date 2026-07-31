@@ -126,10 +126,7 @@ def reach_editor_command_loop(harness: BS2Harness) -> None:
     if bns._command_loop_write_count > 0 and bns.cpu.reg(Reg.PC) == 0xD657:
         return
 
-    names = [
-        phoneme.name
-        for phoneme in bns.ssi263.get_phonemes(include_pauses=False)
-    ]
+    names = [phoneme.name for phoneme in bns.ssi263.get_phonemes(include_pauses=False)]
     file_initialization = is_file_initialization_prompt(names)
     flash_initialization = is_flash_initialization_prompt(names)
     folder_initialization = is_folder_initialization_prompt(names)
@@ -194,10 +191,7 @@ def reach_editor_command_loop(harness: BS2Harness) -> None:
     harness.chord(bs2_stdio_harness.FLASH_INITIALIZATION_Y_KEY)
     if wipeout:
         harness.run_until(
-            lambda: (
-                bns._command_loop_write_count > 0
-                and bns.cpu.reg(Reg.PC) == 0xD657
-            ),
+            lambda: (bns._command_loop_write_count > 0 and bns.cpu.reg(Reg.PC) == 0xD657),
             "BS2 editor command loop after file-area initialization",
         )
     else:
@@ -256,9 +250,7 @@ def transfer_ymodem(harness: BS2Harness, cursor: int, program: Path) -> None:
             1_024,
             bytes((bs2_stdio_harness.CPM_EOF,)),
         )
-        harness.queue_serial(
-            bs2_stdio_harness.ymodem_packet(block_number & 0xFF, payload, 1_024)
-        )
+        harness.queue_serial(bs2_stdio_harness.ymodem_packet(block_number & 0xFF, payload, 1_024))
         cursor = harness.wait_for_serial(
             0,
             cursor,
@@ -290,9 +282,7 @@ def require_persisted_resources(state: Path, resources: tuple[Path, ...]) -> Non
     for resource in resources:
         payload = resource.read_bytes()
         if not payload or not any(payload in region for region in regions):
-            raise RuntimeError(
-                f"persisted BS2 state lacks exact payload for {resource.name}"
-            )
+            raise RuntimeError(f"persisted BS2 state lacks exact payload for {resource.name}")
 
 
 def _program_speech_marker(program: Path) -> tuple[str, ...] | None:
@@ -351,10 +341,7 @@ def verify_through_stdio(
 
     for file_path in (*resources, program):
         print(f"imported: {file_path.name} ({file_path.stat().st_size} bytes)")
-    print(
-        f"entry: cycle={entry['cycle']} pc={entry['pc']:04X} "
-        f"cbar={entry['cbar']:02X}"
-    )
+    print(f"entry: cycle={entry['cycle']} pc={entry['pc']:04X} cbar={entry['cbar']:02X}")
     if require_return_key:
         print("return-key: E-chord accepted and firmware ready")
     print("serial: ASCI1 ENQ/NAK; ASCI0 ENQ/NAK; YMODEM complete")
@@ -389,10 +376,7 @@ def verify_persisted_stdio_program(rom: Path, state: Path, program: Path) -> Non
         process.request_stop(timeout=60)
 
     print(f"reloaded: {program.name} from persisted flash")
-    print(
-        f"reentry: cycle={entry['cycle']} pc={entry['pc']:04X} "
-        f"cbar={entry['cbar']:02X}"
-    )
+    print(f"reentry: cycle={entry['cycle']} pc={entry['pc']:04X} cbar={entry['cbar']:02X}")
     print("reloaded phonemes:", " ".join(phonemes))
 
 
@@ -549,19 +533,14 @@ def main() -> None:
         chord_phases.append(f"E=[{serial_output.format_events(serial_event_cursor)}]")
         transfer_ymodem(harness, serial_cursor, args.program)
         harness.run_until(
-            lambda: (
-                bns._command_loop_write_count > 0
-                and bns.cpu.reg(Reg.PC) == 0xD657
-            ),
+            lambda: (bns._command_loop_write_count > 0 and bns.cpu.reg(Reg.PC) == 0xD657),
             "BS2 editor command loop after YMODEM import",
         )
 
         for phase, chord in (("O-after-import", O_CHORD), ("f-after-import", F_KEY)):
             harness.chord(chord)
             harness.wait_for_key()
-            chord_phases.append(
-                f"{phase}=[{serial_output.format_events(serial_event_cursor)}]"
-            )
+            chord_phases.append(f"{phase}=[{serial_output.format_events(serial_event_cursor)}]")
             serial_event_cursor = len(serial_output.events)
 
         harness.chord(DOT5_CHORD)

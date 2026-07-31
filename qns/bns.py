@@ -34,7 +34,6 @@ from .keysource import (
     win32_input_mode,
     windows_console_key_events,
 )
-from .sixkey import VK_F4, VK_F5, SixKeyAssembler, TimedChordAssembler
 from .loader import (
     RETAINED_SPEECH_DEFAULTS,
     EnglishBoundary,
@@ -50,6 +49,7 @@ from .loader import (
 from .memory import Memory
 from .pc_disk import PCDisk
 from .profiles import PROFILES
+from .sixkey import VK_F4, VK_F5, SixKeyAssembler, TimedChordAssembler
 from .ssi263 import SSI263
 from .stdio import (
     JSONLOutput,
@@ -132,8 +132,7 @@ def _six_key_control(event) -> str | None:
     return None
 
 
-def _six_key_reader(layout: str, emit, control=lambda action: None,
-                    read_events=None) -> None:
+def _six_key_reader(layout: str, emit, control=lambda action: None, read_events=None) -> None:
     """Assemble six-key chords from host key transitions until stdin ends.
 
     Prefers real key transitions - `ReadConsoleInput` on a Windows
@@ -315,26 +314,31 @@ class BNS:
     # ITC register port (Z180 internal I/O)
     PORT_ITC = 0x34
 
-    def __init__(self, clock: int = 12_288_000, audio: bool = False,
-                 synth_backend: str = "pcm",
-                 audio_log: Path | str | None = None,
-                 model: str = "bsp",
-                 core: str = "direct",
-                 trace_io: bool = False, trace_writes: int | None = None,
-                 trace_writes_range: tuple[int, int] | None = None,
-                 trace_first_writes: int | None = None,
-                 dump_writes_file: str | None = None,
-                 trace_interrupts: bool = False,
-                 stdin_device: str | None = None,
-                 reset: str | None = None,
-                 serial_output: BinaryIO | None = None,
-                 serial_output_channel: int | None = None,
-                 pc_disk_dir: Path | str | None = None,
-                 stdio_output: JSONLOutput | None = None,
-                 stdio_watch_pc: int | None = None,
-                 speech_settings: dict[str, int] | None = None,
-                 realtime: bool = False,
-                 english_callback: Callable[[str], None] | None = None):
+    def __init__(
+        self,
+        clock: int = 12_288_000,
+        audio: bool = False,
+        synth_backend: str = "pcm",
+        audio_log: Path | str | None = None,
+        model: str = "bsp",
+        core: str = "direct",
+        trace_io: bool = False,
+        trace_writes: int | None = None,
+        trace_writes_range: tuple[int, int] | None = None,
+        trace_first_writes: int | None = None,
+        dump_writes_file: str | None = None,
+        trace_interrupts: bool = False,
+        stdin_device: str | None = None,
+        reset: str | None = None,
+        serial_output: BinaryIO | None = None,
+        serial_output_channel: int | None = None,
+        pc_disk_dir: Path | str | None = None,
+        stdio_output: JSONLOutput | None = None,
+        stdio_watch_pc: int | None = None,
+        speech_settings: dict[str, int] | None = None,
+        realtime: bool = False,
+        english_callback: Callable[[str], None] | None = None,
+    ):
         """Initialize the BNS emulator.
 
         Args:
@@ -404,11 +408,7 @@ class BNS:
         # The shortest real English utterance writes SPBUF 424 cycles before
         # its exact capture boundary.  Drain native write events within that
         # interval so the observer can switch to exact instruction stepping.
-        self._chunk_cycles = (
-            256
-            if english_callback is not None
-            else (12_288 if realtime else 1000)
-        )
+        self._chunk_cycles = 256 if english_callback is not None else (12_288 if realtime else 1000)
         self._english_capture_cycle: int | None = None
         self._english_capture_armed = False
         self._serial_input_queue: queue.Queue[int] = queue.Queue()
@@ -454,9 +454,9 @@ class BNS:
 
         # Statistics
         self.stats = {
-            'cycles': 0,
-            'writes': 0,
-            'phonemes': 0,
+            "cycles": 0,
+            "writes": 0,
+            "phonemes": 0,
         }
 
         # Peripherals
@@ -504,18 +504,14 @@ class BNS:
             self.ssi263.set_synth(self.synth)
 
         self._setup_io()
-        self._csio_device = (
-            self.display if profile.display == "csio" else self.clock_pic
-        )
+        self._csio_device = self.display if profile.display == "csio" else self.clock_pic
 
         if core == "direct":
             regions = [
                 {"base": 0x00000, "size": profile.ram_size, "kind": "ram"},
             ]
             if profile.flash_size:
-                regions.append(
-                    {"base": 0x80000, "size": 0x80000, "kind": "external"}
-                )
+                regions.append({"base": 0x80000, "size": 0x80000, "kind": "external"})
             self.cpu = Machine(
                 config_dict={
                     "clock_hz": clock,
@@ -545,16 +541,8 @@ class BNS:
                 io_write=self._io_write,
                 serial_rx=self._serial_receive,
                 serial_tx=self._serial_transmit,
-                csio_rx=(
-                    self._csio_device.receive
-                    if self._csio_device is not None
-                    else None
-                ),
-                csio_tx=(
-                    self._csio_device.transmit
-                    if self._csio_device is not None
-                    else None
-                ),
+                csio_rx=(self._csio_device.receive if self._csio_device is not None else None),
+                csio_tx=(self._csio_device.transmit if self._csio_device is not None else None),
             )
         if stdio_watch_pc is not None:
             self._arm_pc_watch(stdio_watch_pc)
@@ -572,25 +560,24 @@ class BNS:
             line: IRQ line number (0, 1, or 2)
             source: Name of the interrupt source (for logging)
         """
+
         def callback(state: int) -> None:
             if self.trace_interrupts:
                 state_str = "ASSERT" if state else "CLEAR"
-                cycles = self.stats.get('cycles', 0)
+                cycles = self.stats.get("cycles", 0)
                 print(f"[IRQ] INT{line} {state_str} from {source} (cycle ~{cycles})")
             if self.core == "direct":
                 self._pending_irq_states[line] = bool(state)
             else:
                 self.cpu.set_irq(line, state)
+
         return callback
 
     def _mem_read(self, addr: int) -> int:
         """Read memory and preserve compatibility-path read observers."""
         if self.core == "compat":
             input_boundary = self._input_boundary
-            if (
-                input_boundary is not None
-                and addr == input_boundary.keyboard_wait_pc
-            ):
+            if input_boundary is not None and addr == input_boundary.keyboard_wait_pc:
                 if self.memory.read(input_boundary.keyboard_queue_count) == 0:
                     self._keyboard_ready_epoch += 1
                 else:
@@ -618,10 +605,14 @@ class BNS:
                         for offset in range(0x100):
                             value = self.memory.read(physical + offset)
                             if value == 0:
-                                text = bytes(message).decode(
-                                    "ascii",
-                                    errors="replace",
-                                ).strip()
+                                text = (
+                                    bytes(message)
+                                    .decode(
+                                        "ascii",
+                                        errors="replace",
+                                    )
+                                    .strip()
+                                )
                                 if text:
                                     self._english_callback(text)
                                 break
@@ -646,10 +637,7 @@ class BNS:
     def _observe_input_boundary(self, physical_pc: int) -> None:
         """Update firmware input epochs at one physical instruction address."""
         input_boundary = self._input_boundary
-        if (
-            input_boundary is not None
-            and physical_pc == input_boundary.keyboard_wait_pc
-        ):
+        if input_boundary is not None and physical_pc == input_boundary.keyboard_wait_pc:
             if self.memory.read(input_boundary.keyboard_queue_count) == 0:
                 self._keyboard_ready_epoch += 1
             else:
@@ -666,9 +654,7 @@ class BNS:
         cbr = self.cpu.io_reg_peek(self.PORT_CBR)
         common_page = self.cpu.io_reg_peek(self.PORT_CBAR) >> 4
         if not (
-            source == boundary.spbuf
-            and source >> 12 >= common_page
-            and 0 < segment_length <= 0xFF
+            source == boundary.spbuf and source >> 12 >= common_page and 0 < segment_length <= 0xFF
         ):
             return
         physical = (source + (cbr << 12)) & 0xFFFFF
@@ -700,15 +686,13 @@ class BNS:
 
     def _observe_write(self, addr: int, value: int, *, pc: int, cycle: int) -> None:
         """Apply QNS write observers after z-core has stored internal RAM."""
-        self.stats['writes'] += 1
+        self.stats["writes"] += 1
 
         boundary = self._english_boundary
         if self._english_callback is not None and boundary is not None:
             common_page = self.memory.cbar >> 4
             if boundary.spbuf >> 12 >= common_page:
-                physical_spbuf = (
-                    boundary.spbuf + (self.memory.cbr << 12)
-                ) & 0xFFFFF
+                physical_spbuf = (boundary.spbuf + (self.memory.cbr << 12)) & 0xFFFFF
                 if addr == physical_spbuf:
                     self._english_capture_armed = True
 
@@ -797,7 +781,7 @@ class BNS:
         int0 = "EN" if value & 0x01 else "DIS"
         int1 = "EN" if value & 0x02 else "DIS"
         int2 = "EN" if value & 0x04 else "DIS"
-        cycles = self.stats.get('cycles', 0)
+        cycles = self.stats.get("cycles", 0)
         print(f"[ITC] {op} 0x{value:02X} INT0={int0} INT1={int1} INT2={int2} (cycle ~{cycles})")
 
     def _setup_io(self) -> None:
@@ -809,9 +793,7 @@ class BNS:
         family = self.profile.family
 
         # Keyboard and key-clear ports are profile-owned.
-        keyboard_read = (
-            self._read_bl4_dots if family == "bl4" else self.keyboard.read
-        )
+        keyboard_read = self._read_bl4_dots if family == "bl4" else self.keyboard.read
         self.io.register(self.keyboard.port, keyboard_read, self.keyboard.write)
         if isinstance(self.keyboard, BrailleKeyboard):
             self.io.register(
@@ -872,12 +854,15 @@ class BNS:
             self.io.register(self.PORT_RS232_POWER, write_handler=self._write_rs232_power)
 
         # MMU registers
-        self.io.register(self.PORT_CBR, lambda p: self.memory.cbr,
-                        lambda p, v: self.memory.set_mmu(cbr=v))
-        self.io.register(self.PORT_BBR, lambda p: self.memory.bbr,
-                        lambda p, v: self.memory.set_mmu(bbr=v))
-        self.io.register(self.PORT_CBAR, lambda p: self.memory.cbar,
-                        lambda p, v: self.memory.set_mmu(cbar=v))
+        self.io.register(
+            self.PORT_CBR, lambda p: self.memory.cbr, lambda p, v: self.memory.set_mmu(cbr=v)
+        )
+        self.io.register(
+            self.PORT_BBR, lambda p: self.memory.bbr, lambda p, v: self.memory.set_mmu(bbr=v)
+        )
+        self.io.register(
+            self.PORT_CBAR, lambda p: self.memory.cbar, lambda p, v: self.memory.set_mmu(cbar=v)
+        )
 
     def _write_speech_power(self, port: int, value: int) -> None:
         """Apply the BSPLUS speech-power latch's bit-zero state."""
@@ -1031,10 +1016,7 @@ class BNS:
                 received = self._csio_device.receive()
                 if received >= 0:
                     self._pending_csio_rx = received & 0xFF
-            if (
-                self._pending_csio_rx is not None
-                and self.cpu.csio_rx_push(self._pending_csio_rx)
-            ):
+            if self._pending_csio_rx is not None and self.cpu.csio_rx_push(self._pending_csio_rx):
                 self._pending_csio_rx = None
 
     def _drain_serial_outputs(self) -> None:
@@ -1090,18 +1072,17 @@ class BNS:
         letting the core run a whole budget and is the difference between
         keeping up with real-time speech and falling behind it.
         """
-        return any((
-            self._english_capture_armed,
+        return any(
             (
-                self.gas_gauge is not None
-                and self.gas_gauge.cycle_timing_active
-            ),
-            self.trace_interrupts,
-            self._keyboard_needs_steps(),
-            self.stdin_device not in (None, *CHORD_STDIN_DEVICES),
-            self.reset_mode is not None,
-            self._pc_watch_address is not None,
-        ))
+                self._english_capture_armed,
+                (self.gas_gauge is not None and self.gas_gauge.cycle_timing_active),
+                self.trace_interrupts,
+                self._keyboard_needs_steps(),
+                self.stdin_device not in (None, *CHORD_STDIN_DEVICES),
+                self.reset_mode is not None,
+                self._pc_watch_address is not None,
+            )
+        )
 
     def _request_control(self, action: str) -> None:
         """Act on an emulator control pressed at the host keyboard.
@@ -1186,11 +1167,7 @@ class BNS:
 
     def _realtime_sleep_duration(self, ahead: float) -> float:
         """Keep low audio buffered by spending bounded emulator run-ahead."""
-        audio_lead = (
-            self.synth.realtime_lead_seconds()
-            if self.synth is not None
-            else 0.0
-        )
+        audio_lead = self.synth.realtime_lead_seconds() if self.synth is not None else 0.0
         return max(0.0, ahead - audio_lead)
 
     def load_rom(self, path: Path | str) -> None:
@@ -1201,10 +1178,7 @@ class BNS:
         if image.kind == "pre-extracted":
             print(f"Loading pre-extracted firmware: {path.name}")
         elif image.kind == "package":
-            print(
-                "Extracted firmware from update package at offset "
-                f"0x{image.image_offset:X}"
-            )
+            print(f"Extracted firmware from update package at offset 0x{image.image_offset:X}")
             print(
                 f"  Package size: {image.package_size} bytes, "
                 f"Firmware size: {len(image.data)} bytes"
@@ -1249,18 +1223,12 @@ class BNS:
         timeout = find_speech_power_timeout(firmware)
         if timeout is not None:
             self.memory.write(timeout.address, timeout.value)
-            print(
-                f"Speech power timeout: {timeout.value} @ "
-                f"0x{timeout.address:05X}"
-            )
+            print(f"Speech power timeout: {timeout.value} @ 0x{timeout.address:05X}")
 
         voice_inflection_flag = find_voice_inflection_flag(firmware)
         if voice_inflection_flag is not None:
             self.memory.write(voice_inflection_flag, 1)
-            print(
-                "Voice inflection enabled @ "
-                f"0x{voice_inflection_flag:05X}"
-            )
+            print(f"Voice inflection enabled @ 0x{voice_inflection_flag:05X}")
 
         self._speech_parameters = find_speech_parameters(
             firmware,
@@ -1276,8 +1244,7 @@ class BNS:
             + ", ".join(
                 f"{field} {self._speech_settings[field]} @ "
                 + "/".join(
-                    f"0x{address:05X}"
-                    for address in getattr(self._speech_parameters, field)
+                    f"0x{address:05X}" for address in getattr(self._speech_parameters, field)
                 )
                 for field in RETAINED_SPEECH_DEFAULTS
             )
@@ -1307,9 +1274,7 @@ class BNS:
         self.memory.set_mmu(cbr=0, bbr=0, cbar=0xF0)
         print("BNS reset complete")
 
-    def _start_input(
-        self, terminal: contextlib.ExitStack
-    ) -> ChordInputDriver | None:
+    def _start_input(self, terminal: contextlib.ExitStack) -> ChordInputDriver | None:
         """Connect standard input to the machine, and return its driver.
 
         `terminal` is the run loop's cleanup stack, so every terminal
@@ -1322,10 +1287,7 @@ class BNS:
         if self.stdin_device is None and self.reset_mode is None:
             return None
 
-        if (
-            self.stdin_device in (*CHORD_STDIN_DEVICES, "jsonl")
-            or self.reset_mode is not None
-        ):
+        if self.stdin_device in (*CHORD_STDIN_DEVICES, "jsonl") or self.reset_mode is not None:
             if self._input_boundary is None:
                 if self.reset_mode is not None:
                     raise RuntimeError(
@@ -1398,9 +1360,7 @@ class BNS:
                 # the user's shell records instead of characters.
                 if sys.platform == "win32":
                     with contextlib.suppress(OSError):
-                        console_reader = terminal.enter_context(
-                            windows_console_key_events()
-                        )
+                        console_reader = terminal.enter_context(windows_console_key_events())
                 if console_reader is None:
                     terminal.enter_context(win32_input_mode(_terminal_fd()))
             stdin_thread = threading.Thread(
@@ -1422,8 +1382,7 @@ class BNS:
         print("Starting BNS emulation...")
         print(f"Memory: {len(self.memory.rom)} ROM, {len(self.memory.ram)} RAM")
         print(
-            f"MMU: CBR={self.memory.cbr:02X} BBR={self.memory.bbr:02X} "
-            f"CBAR={self.memory.cbar:02X}"
+            f"MMU: CBR={self.memory.cbr:02X} BBR={self.memory.bbr:02X} CBAR={self.memory.cbar:02X}"
         )
         if self.synth:
             print("Audio: ENABLED")
@@ -1468,11 +1427,7 @@ class BNS:
                         )
 
                 chunk_size = self._chunk_cycles
-                chunk = (
-                    chunk_size
-                    if max_cycles == 0
-                    else min(chunk_size, max_cycles - cycles_run)
-                )
+                chunk = chunk_size if max_cycles == 0 else min(chunk_size, max_cycles - cycles_run)
                 actual = self._execute_budget(chunk)
                 cycles_run += actual
 
@@ -1495,7 +1450,7 @@ class BNS:
                         # rather than stopping: asleep is not dead.
                         cycles_run += chunk
 
-                self.stats['cycles'] = cycles_run
+                self.stats["cycles"] = cycles_run
 
                 if self.realtime:
                     # Hold emulated time to wall-clock time.  The chip already
@@ -1509,9 +1464,7 @@ class BNS:
                         time.sleep(sleep_duration)
 
                 watch_hits = (
-                    self.cpu.pc_watch_hits()
-                    if self.core == "direct"
-                    else self.cpu.pc_watch_count
+                    self.cpu.pc_watch_hits() if self.core == "direct" else self.cpu.pc_watch_count
                 )
                 if (
                     self.stdio_output is not None
@@ -1538,7 +1491,7 @@ class BNS:
                 if input_driver is not None:
                     input_driver.tick()
 
-                self.stats['phonemes'] = len(self.ssi263.phoneme_log)
+                self.stats["phonemes"] = len(self.ssi263.phoneme_log)
 
                 # Print I/O log if tracing (periodically to avoid flooding)
                 if self.io.logging and self.io._log:
@@ -1554,13 +1507,9 @@ class BNS:
             if self.synth:
                 self.synth.stop()
 
-        self.stats['cycles'] = cycles_run
+        self.stats["cycles"] = cycles_run
         print(f"Executed {cycles_run:,} cycles")
-        final_pc = (
-            self.cpu.reg(Reg.PC)
-            if self.core == "direct"
-            else self.cpu.pc
-        )
+        final_pc = self.cpu.reg(Reg.PC) if self.core == "direct" else self.cpu.pc
         print(f"Final PC: {final_pc:04X}")
 
     def step(self) -> int:
@@ -1617,10 +1566,7 @@ class BNS:
         print(f"Phonemes output: {self.stats['phonemes']}")
         print(f"Final PC:        0x{pc:04X}")
         print(f"CPU halted:      {halted}")
-        print(
-            f"MMU state:       CBR=0x{cbr:02X} BBR=0x{bbr:02X} "
-            f"CBAR=0x{cbar:02X}"
-        )
+        print(f"MMU state:       CBR=0x{cbr:02X} BBR=0x{bbr:02X} CBAR=0x{cbar:02X}")
 
     def dump_trace_data(self) -> None:
         """Dump traced data to files."""
@@ -1633,7 +1579,7 @@ class BNS:
         # Dump all writes to CSV
         if self.dump_writes_file is not None and self.write_counts:
             path = Path(self.dump_writes_file)
-            with path.open('w') as f:
+            with path.open("w") as f:
                 f.write("address,count\n")
                 for addr in sorted(self.write_counts.keys()):
                     count = self.write_counts[addr]
@@ -1654,24 +1600,16 @@ class BNS:
         # Show first few bytes after header
         entry = 2 + self.memory.rom[1]  # After JR offset
         print(f"Entry point: 0x{entry:04X}")
-        print(f"First bytes: {' '.join(f'{b:02X}' for b in self.memory.rom[entry:entry+16])}")
+        print(f"First bytes: {' '.join(f'{b:02X}' for b in self.memory.rom[entry : entry + 16])}")
 
         # Try stepping through first instructions
         self.reset()
         print("\n=== First 10 instructions ===")
         for i in range(10):
-            pc_before = (
-                self.cpu.reg(Reg.PC)
-                if self.core == "direct"
-                else self.cpu.pc
-            )
+            pc_before = self.cpu.reg(Reg.PC) if self.core == "direct" else self.cpu.pc
             cycles = self.step()
-            pc_after = (
-                self.cpu.reg(Reg.PC)
-                if self.core == "direct"
-                else self.cpu.pc
-            )
-            print(f"{i+1}. PC: {pc_before:04X} -> {pc_after:04X} ({cycles} cycles)")
+            pc_after = self.cpu.reg(Reg.PC) if self.core == "direct" else self.cpu.pc
+            print(f"{i + 1}. PC: {pc_before:04X} -> {pc_after:04X} ({cycles} cycles)")
 
 
 if __name__ == "__main__":

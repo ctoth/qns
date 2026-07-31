@@ -51,25 +51,20 @@ def _run_to_input_acceptance(
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 pytest.fail(
-                    f"{model} {core} did not accept warm-reset input; "
-                    f"stderr=[{process.stderr()}]"
+                    f"{model} {core} did not accept warm-reset input; stderr=[{process.stderr()}]"
                 )
             try:
                 event = process.next_event(min(30, remaining))
             except TimeoutError:
                 if process.process.poll() is not None:
                     pytest.fail(
-                        f"{model} {core} exited before accepting input; "
-                        f"stderr=[{process.stderr()}]"
+                        f"{model} {core} exited before accepting input; stderr=[{process.stderr()}]"
                     )
                 continue
             events.append(event)
             if event.get("device") != "keyboard":
                 continue
-            if (
-                event.get("state") == "accepted"
-                and event.get("chord") == expected_chord
-            ):
+            if event.get("state") == "accepted" and event.get("chord") == expected_chord:
                 accepted = True
 
     return events

@@ -3,6 +3,7 @@
 import contextlib
 import io
 import os
+from pathlib import Path
 
 from qns.bns import _six_key_reader
 from qns.keysource import KeyEvent, Win32InputDecoder
@@ -62,8 +63,13 @@ def test_assembler_commits_captured_chord_on_full_release():
 
 
 def press(char="", vk=0, *, down=True, control_state=0):
-    return KeyEvent(vk=vk or (ord(char.upper()) if char else 0),
-                    scan=0, char=char, down=down, control_state=control_state)
+    return KeyEvent(
+        vk=vk or (ord(char.upper()) if char else 0),
+        scan=0,
+        char=char,
+        down=down,
+        control_state=control_state,
+    )
 
 
 def test_dvorak_layout_spells_the_same_cell_from_different_keys():
@@ -73,8 +79,12 @@ def test_dvorak_layout_spells_the_same_cell_from_different_keys():
 
     def spell(assembler, first, second):
         chords = []
-        for event in (press(first), press(second),
-                      press(first, down=False), press(second, down=False)):
+        for event in (
+            press(first),
+            press(second),
+            press(first, down=False),
+            press(second, down=False),
+        ):
             chords.extend(assembler.feed(event))
         return chords
 
@@ -93,9 +103,7 @@ def test_named_keys_emit_once_and_respect_ctrl():
     assert list(assembler.feed(press(vk=VK_ESCAPE, down=False))) == []
     # Home alone is not a BNS chord - only Ctrl+Home is.
     assert list(assembler.feed(press(vk=VK_HOME))) == []
-    assert list(
-        assembler.feed(press(vk=VK_HOME, control_state=LEFT_CTRL_PRESSED))
-    ) == [0x47]
+    assert list(assembler.feed(press(vk=VK_HOME, control_state=LEFT_CTRL_PRESSED))) == [0x47]
 
 
 def test_decoder_buffers_a_record_split_across_reads():
@@ -123,9 +131,9 @@ def test_timed_fallback_ends_a_chord_on_a_quiet_interval():
 
     assert list(assembler.feed_char("f", now=0.000)) == []
     assert list(assembler.feed_char("d", now=0.005)) == []
-    assert list(assembler.poll(now=0.030)) == []   # still within the chord
+    assert list(assembler.poll(now=0.030)) == []  # still within the chord
     assert list(assembler.poll(now=0.050)) == [0x03]
-    assert list(assembler.poll(now=0.060)) == []   # committed only once
+    assert list(assembler.poll(now=0.060)) == []  # committed only once
 
 
 def test_timed_fallback_treats_a_repeated_key_as_a_new_cell():
@@ -177,7 +185,7 @@ def test_ctrl_arrows_take_precedence_over_the_plain_arrows():
     ctrl = LEFT_CTRL_PRESSED
 
     assert list(assembler.feed(press(vk=VK_RIGHT))) == [0x60]  # space+6
-    assert list(assembler.feed(press(vk=VK_LEFT))) == [0x44]   # space+3
+    assert list(assembler.feed(press(vk=VK_LEFT))) == [0x44]  # space+3
     # Held with Ctrl the same keys are the dot-5 and dot-2 chords.
     assert list(assembler.feed(press(vk=VK_RIGHT, control_state=ctrl))) == [0x50]
     assert list(assembler.feed(press(vk=VK_LEFT, control_state=ctrl))) == [0x42]
@@ -356,8 +364,7 @@ def test_a_control_pressed_before_the_run_loop_waits_for_it(monkeypatch):
     import qns.bns
 
     interrupted = []
-    monkeypatch.setattr(qns.bns, "_interrupt_emulation",
-                        lambda: interrupted.append(True))
+    monkeypatch.setattr(qns.bns, "_interrupt_emulation", lambda: interrupted.append(True))
 
     machine = _bare_machine(armed=False)
     machine._request_control("restart")
@@ -384,8 +391,7 @@ def test_control_requests_unwind_the_run_loop(monkeypatch):
     import qns.bns
 
     interrupted = []
-    monkeypatch.setattr(qns.bns, "_interrupt_emulation",
-                        lambda: interrupted.append(True))
+    monkeypatch.setattr(qns.bns, "_interrupt_emulation", lambda: interrupted.append(True))
 
     machine = _bare_machine(armed=True)
 
@@ -430,8 +436,7 @@ def test_f4_exits_and_f5_restarts(monkeypatch):
     assert (chords, actions) == ([], ["restart"])
 
     # Releasing them asks for nothing, and neither is a chord.
-    chords, actions = _control_actions(f"\x1b[{VK_F4};0;0;0;0;1_".encode(),
-                                       monkeypatch)
+    chords, actions = _control_actions(f"\x1b[{VK_F4};0;0;0;0;1_".encode(), monkeypatch)
     assert (chords, actions) == ([], [])
 
 
@@ -581,18 +586,19 @@ def test_restart_reexecs_the_original_command_line(monkeypatch):
         sys, "orig_argv", ["/usr/bin/python3", "-m", "qns.bns", "--audio", "rom.bns"]
     )
     execs = []
-    monkeypatch.setattr(qns.cli.os, "execv",
-                        lambda path, argv: execs.append((path, argv)))
+    monkeypatch.setattr(qns.cli.os, "execv", lambda path, argv: execs.append((path, argv)))
 
     qns.cli._restart_with_same_settings()
 
     # argv[0] is sys.executable, not sys.orig_argv[0]: under `uv run` on
     # Windows those differ, and only sys.executable is guaranteed to have
     # this project's venv (and so its dependencies) importable.
-    assert execs == [(
-        "/venv/bin/python3",
-        ["/venv/bin/python3", "-m", "qns.bns", "--audio", "rom.bns"],
-    )]
+    assert execs == [
+        (
+            "/venv/bin/python3",
+            ["/venv/bin/python3", "-m", "qns.bns", "--audio", "rom.bns"],
+        )
+    ]
 
 
 def test_windows_restart_waits_for_the_replacement(monkeypatch):
@@ -607,8 +613,7 @@ def test_windows_restart_waits_for_the_replacement(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(sys, "executable", r"C:\venv\Scripts\python.exe")
     monkeypatch.setattr(sys, "orig_argv", ["python.exe", "-m", "qns.bns", "rom.bns"])
-    monkeypatch.setattr(qns.cli.os, "execv",
-                        lambda path, argv: pytest.fail("execv on Windows"))
+    monkeypatch.setattr(qns.cli.os, "execv", lambda path, argv: pytest.fail("execv on Windows"))
     waited = []
 
     def run_child(argv):
@@ -654,7 +659,13 @@ def test_restart_saves_nonvolatile_state_before_execing(tmp_path, monkeypatch):
     """
     import sys
 
+    import pytest
+
     import qns.cli
+
+    rom = Path("roms/bspeng.bns")
+    if not rom.is_file():
+        pytest.skip(f"local proprietary ROM is unavailable: {rom}")
 
     state = tmp_path / "state.bin"
     original_run = qns.cli.BNS.run
@@ -667,13 +678,21 @@ def test_restart_saves_nonvolatile_state_before_execing(tmp_path, monkeypatch):
     saved_when_execed = []
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(qns.cli.BNS, "run", run_then_ask_for_restart)
-    monkeypatch.setattr(qns.cli.os, "execv",
-                        lambda path, argv: saved_when_execed.append(state.exists()))
+    monkeypatch.setattr(
+        qns.cli.os, "execv", lambda path, argv: saved_when_execed.append(state.exists())
+    )
 
-    qns.cli.main([
-        "--cycles", "1000", "--input", "none",
-        "--state", str(state), "roms/bspeng.bns",
-    ])
+    qns.cli.main(
+        [
+            "--cycles",
+            "1000",
+            "--input",
+            "none",
+            "--state",
+            str(state),
+            str(rom),
+        ]
+    )
 
     assert saved_when_execed == [True]
     assert state.stat().st_size > 0

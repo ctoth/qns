@@ -61,12 +61,10 @@ def main() -> None:
         physical = bns.cpu.mmu_translate(pc)
         stack_physical = bns.cpu.mmu_translate(sp)
         fetched = tuple(
-            bns.memory.read(bns.cpu.mmu_translate((pc + offset) & 0xFFFF))
-            for offset in range(8)
+            bns.memory.read(bns.cpu.mmu_translate((pc + offset) & 0xFFFF)) for offset in range(8)
         )
         stack_bytes = tuple(
-            bns.memory.read(bns.cpu.mmu_translate((sp + offset) & 0xFFFF))
-            for offset in range(16)
+            bns.memory.read(bns.cpu.mmu_translate((sp + offset) & 0xFFFF)) for offset in range(16)
         )
 
         recent.append(

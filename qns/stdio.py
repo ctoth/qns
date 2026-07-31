@@ -76,11 +76,7 @@ def parse_input_event(
 
     if device == "cpu":
         address = event.get("watch_pc")
-        if (
-            isinstance(address, bool)
-            or not isinstance(address, int)
-            or not 0 <= address <= 0xFFFF
-        ):
+        if isinstance(address, bool) or not isinstance(address, int) or not 0 <= address <= 0xFFFF:
             raise ValueError("CPU watch_pc must be a logical address from 0 through 65535")
         return WatchPCInput(address)
 
@@ -89,9 +85,7 @@ def parse_input_event(
             raise ValueError("system action must be stop")
         return StopInput()
 
-    raise ValueError(
-        "input event device must be keyboard, serial0, serial1, cpu, or system"
-    )
+    raise ValueError("input event device must be keyboard, serial0, serial1, cpu, or system")
 
 
 class JSONLOutput:

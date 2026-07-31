@@ -20,9 +20,9 @@ def _dominant_voiced_frequency(samples: np.ndarray) -> float:
 
 def _autocorrelation_voiced_frequency(samples: np.ndarray) -> float:
     """Return the fundamental implied by the strongest voiced period."""
-    middle = samples[len(samples) // 4:3 * len(samples) // 4]
+    middle = samples[len(samples) // 4 : 3 * len(samples) // 4]
     centered = middle - middle.mean()
-    correlation = np.correlate(centered, centered, "full")[len(middle) - 1:]
+    correlation = np.correlate(centered, centered, "full")[len(middle) - 1 :]
     low = int(22050 / 400)
     high = min(int(22050 / 60), len(correlation) - 1)
     period = low + int(np.argmax(correlation[low:high]))
@@ -31,11 +31,11 @@ def _autocorrelation_voiced_frequency(samples: np.ndarray) -> float:
 
 def _lpc_spectral_envelope(samples: np.ndarray) -> np.ndarray:
     """Return a normalized formant envelope independent of pitch harmonics."""
-    middle = samples[len(samples) // 4:3 * len(samples) // 4]
+    middle = samples[len(samples) // 4 : 3 * len(samples) // 4]
     centered = middle - middle.mean()
     windowed = centered * np.hanning(len(centered))
     full = np.correlate(windowed, windowed, "full")
-    autocorrelation = full[len(windowed) - 1:len(windowed) + ORDER]
+    autocorrelation = full[len(windowed) - 1 : len(windowed) + ORDER]
     reflection, _ = levinson(autocorrelation, ORDER)
     coefficients = reflection_to_lpc(reflection)
 
@@ -97,9 +97,8 @@ def test_pcm_pitch_shift_preserves_formant_envelope_and_length() -> None:
     shifted = synth._pitch_shift_psola(captured, 1.15)
 
     assert len(shifted) == len(captured)
-    pitch_ratio = (
-        _autocorrelation_voiced_frequency(shifted)
-        / _autocorrelation_voiced_frequency(captured)
+    pitch_ratio = _autocorrelation_voiced_frequency(shifted) / _autocorrelation_voiced_frequency(
+        captured
     )
     assert 1.10 < pitch_ratio < 1.20
     envelope_similarity = np.corrcoef(
@@ -144,10 +143,9 @@ def test_pcm_transition_changes_pitch_without_moving_formants() -> None:
     transitioned = played[-1]
     assert synth._current_inflection_level == 19.0
     assert len(transitioned) == len(normal)
-    pitch_ratio = (
-        _autocorrelation_voiced_frequency(transitioned)
-        / _autocorrelation_voiced_frequency(normal)
-    )
+    pitch_ratio = _autocorrelation_voiced_frequency(
+        transitioned
+    ) / _autocorrelation_voiced_frequency(normal)
     assert 1.0 < pitch_ratio < (1024 / 808)
     envelope_similarity = np.corrcoef(
         _lpc_spectral_envelope(normal),

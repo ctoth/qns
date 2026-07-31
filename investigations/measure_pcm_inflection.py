@@ -13,6 +13,7 @@ ROM = Path("roms/bns2000/BS2ENG.BNS")
 MAX_CYCLES = 100_000_000
 COMMON_CBR = 0x34
 
+
 def trace_with_flag(flag: int, physical_flag: int) -> tuple[SSI263State, ...]:
     """Run the fresh startup with one explicit _VIFLAG value."""
     states: list[SSI263State] = []
@@ -48,13 +49,8 @@ def main() -> None:
     for flag in (0, 1):
         states = trace_with_flag(flag, physical_flag)
         initialized = [state for state in states if state.amplitude > 0]
-        inflections = dict(sorted(Counter(
-            state.inflection for state in initialized
-        ).items()))
-        print(
-            f"flag={flag},events={len(states)},"
-            f"inflections={inflections}"
-        )
+        inflections = dict(sorted(Counter(state.inflection for state in initialized).items()))
+        print(f"flag={flag},events={len(states)},inflections={inflections}")
 
 
 if __name__ == "__main__":

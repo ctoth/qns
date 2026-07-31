@@ -54,7 +54,7 @@ def play_phoneme(synth: SSI263Synth, code: int, wait: bool = True):
     print(f"Playing 0x{code:02X} {name} ({example}) -> {data_info}")
 
     # Reset to known good standalone settings
-    synth.amplitude = 15     # Full volume
+    synth.amplitude = 15  # Full volume
     synth.inflection = 2048  # Neutral pitch
 
     synth.speak_phoneme(code)
@@ -85,7 +85,7 @@ def play_raw_sample(synth: SSI263Synth, index: int):
     from qns.synth.phonemes import PHONEME_INFO, get_phoneme_samples
 
     if index < 0 or index >= len(PHONEME_INFO):
-        print(f"Invalid index {index}. Must be 0-{len(PHONEME_INFO)-1}")
+        print(f"Invalid index {index}. Must be 0-{len(PHONEME_INFO) - 1}")
         return
 
     print(f"Playing raw data[{index}]...")
@@ -103,15 +103,15 @@ def play_word(synth: SSI263Synth, word: str):
     # Simple word-to-phoneme mapping for testing
     WORDS = {
         "hello": [0x2C, 0x01, 0x20, 0x14],  # HF, E, L, O
-        "test": [0x28, 0x06, 0x30, 0x28],   # T, EH, S, T
-        "one": [0x23, 0x16, 0x38],          # W, O2, N
-        "two": [0x28, 0x18],                # T, U
-        "three": [0x36, 0x1D, 0x01],        # TH, R, E
-        "yes": [0x03, 0x06, 0x30],          # Y, EH, S
-        "no": [0x38, 0x14],                 # N, O
-        "bee": [0x24, 0x01],                # B, E
-        "cat": [0x29, 0x0C, 0x28],          # K, A2, T
-        "dog": [0x25, 0x0D, 0x26],          # D, AW, G (using KV)
+        "test": [0x28, 0x06, 0x30, 0x28],  # T, EH, S, T
+        "one": [0x23, 0x16, 0x38],  # W, O2, N
+        "two": [0x28, 0x18],  # T, U
+        "three": [0x36, 0x1D, 0x01],  # TH, R, E
+        "yes": [0x03, 0x06, 0x30],  # Y, EH, S
+        "no": [0x38, 0x14],  # N, O
+        "bee": [0x24, 0x01],  # B, E
+        "cat": [0x29, 0x0C, 0x28],  # K, A2, T
+        "dog": [0x25, 0x0D, 0x26],  # D, AW, G (using KV)
     }
 
     word_lower = word.lower()
@@ -144,20 +144,20 @@ def dump_phoneme(synth: SSI263Synth, code: int, output_path: str | None = None):
     samples_int16 = (samples * 32767).astype(np.int16)
 
     # Write WAV
-    with wave.open(output_path, 'wb') as wav:
+    with wave.open(output_path, "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)  # 16-bit
         wav.setframerate(synth.sample_rate)
         wav.writeframes(samples_int16.tobytes())
 
     print(f"Dumped 0x{code:02X} {name} ({example}) to {output_path}")
-    print(f"  Samples: {len(samples)}, Duration: {len(samples)/synth.sample_rate:.3f}s")
+    print(f"  Samples: {len(samples)}, Duration: {len(samples) / synth.sample_rate:.3f}s")
 
 
 def parse_phoneme_code(value: str) -> int:
     """Parse phoneme code from hex or decimal string."""
     try:
-        if value.startswith('0x') or value.startswith('0X'):
+        if value.startswith("0x") or value.startswith("0X"):
             return int(value, 16)
         return int(value)
     except ValueError:
@@ -168,27 +168,31 @@ def main():
     parser = argparse.ArgumentParser(
         description="SSI-263 phoneme diagnostic tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
+        epilog=__doc__,
     )
 
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--list", action="store_true",
-                       help="List all phonemes")
-    group.add_argument("--play", type=parse_phoneme_code, metavar="CODE",
-                       help="Play a single phoneme (hex, e.g., 0x01)")
-    group.add_argument("--play-all", action="store_true",
-                       help="Play all phonemes in sequence")
-    group.add_argument("--word", type=str, metavar="WORD",
-                       help="Try to speak a word")
-    group.add_argument("--dump", type=parse_phoneme_code, metavar="CODE",
-                       help="Dump phoneme to WAV file")
-    group.add_argument("--dump-all", action="store_true",
-                       help="Dump all phonemes to WAV files")
-    group.add_argument("--raw", type=int, metavar="INDEX",
-                       help="Play raw sample data by index (0-61) to identify sample order")
+    group.add_argument("--list", action="store_true", help="List all phonemes")
+    group.add_argument(
+        "--play",
+        type=parse_phoneme_code,
+        metavar="CODE",
+        help="Play a single phoneme (hex, e.g., 0x01)",
+    )
+    group.add_argument("--play-all", action="store_true", help="Play all phonemes in sequence")
+    group.add_argument("--word", type=str, metavar="WORD", help="Try to speak a word")
+    group.add_argument(
+        "--dump", type=parse_phoneme_code, metavar="CODE", help="Dump phoneme to WAV file"
+    )
+    group.add_argument("--dump-all", action="store_true", help="Dump all phonemes to WAV files")
+    group.add_argument(
+        "--raw",
+        type=int,
+        metavar="INDEX",
+        help="Play raw sample data by index (0-61) to identify sample order",
+    )
 
-    parser.add_argument("--output", "-o", type=str, metavar="FILE",
-                        help="Output file for --dump")
+    parser.add_argument("--output", "-o", type=str, metavar="FILE", help="Output file for --dump")
 
     args = parser.parse_args()
 

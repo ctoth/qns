@@ -89,9 +89,7 @@ def test_help_workflow_imports_renames_reads_persists_and_restarts(
     class Process:
         def __init__(self, launched_rom, **kwargs):
             self.number = len(processes)
-            self.speech_names = (
-                list(HELP_OPEN_MARKER) if self.number == 1 else []
-            )
+            self.speech_names = list(HELP_OPEN_MARKER) if self.number == 1 else []
             self.sent = []
             launches.append((launched_rom, kwargs))
             processes.append(self)

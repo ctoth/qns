@@ -38,7 +38,6 @@ SC02_TO_SC01: tuple[int, ...] = (
     0x2F,  # 0x0D AE1 (AFTER) -> AE1 (After)
     0x24,  # 0x0E AH (GOT) -> AH (mOp)
     0x15,  # 0x0F AH1 (FATHER) -> AH1 (fAther)
-
     # 0x10-0x1F: O/U vowels, ER, R
     0x13,  # 0x10 AW (OFFICE) -> AW1 (lAWful)
     0x26,  # 0x11 O (STORE) -> O (cOld)
@@ -56,7 +55,6 @@ SC02_TO_SC01: tuple[int, ...] = (
     0x2B,  # 0x1D R (ROOF) -> R (Red)
     0x2B,  # 0x1E R1 (RUG) -> R (Red)
     0x2B,  # 0x1F R2 (MUTTER) -> R (Red)
-
     # 0x20-0x2F: L, W, consonants B/D/K/P/T, H variants, Z
     0x18,  # 0x20 L (LIFT) -> L (Land)
     0x18,  # 0x21 L1 (PLAY) -> L (Land)
@@ -74,7 +72,6 @@ SC02_TO_SC01: tuple[int, ...] = (
     0x03,  # 0x2D HFC (hold fric closure) -> PA0 (silence)
     0x03,  # 0x2E HN (hold nasal) -> PA0 (silence)
     0x12,  # 0x2F Z (ZERO) -> Z (Zoo)
-
     # 0x30-0x3F: S, J, fricatives, nasals, foreign vowels
     0x1F,  # 0x30 S (SAME) -> S (paSS)
     0x07,  # 0x31 J (MEASURE) -> ZH (aZure) - voiced palatal fricative

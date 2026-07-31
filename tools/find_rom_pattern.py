@@ -36,8 +36,10 @@ def find_pattern(data: bytes, pattern: tuple[int | None, ...]) -> list[int]:
     return [
         offset
         for offset in range(max(0, limit))
-        if all(expected is None or data[offset + index] == expected
-               for index, expected in enumerate(pattern))
+        if all(
+            expected is None or data[offset + index] == expected
+            for index, expected in enumerate(pattern)
+        )
     ]
 
 
@@ -62,7 +64,7 @@ def main() -> None:
     matches = find_pattern(firmware, pattern)
     for offset in matches:
         bank, address = divmod(offset, BANK_SIZE)
-        matched = firmware[offset:offset + len(pattern)].hex(" ").upper()
+        matched = firmware[offset : offset + len(pattern)].hex(" ").upper()
         print(
             f"file=0x{file_base + offset:06X} firmware=0x{offset:06X} "
             f"bank={bank} address=0x{address:04X} bytes={matched}"

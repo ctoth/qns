@@ -36,8 +36,6 @@ class HardwareProfile:
     parallel_port_base: int
 
 
-
-
 PROFILES: dict[str, HardwareProfile] = {
     profile.name: profile
     for profile in (
