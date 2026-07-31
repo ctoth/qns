@@ -292,6 +292,122 @@ def test_audio_player_produces_sound():
 # =============================================================================
 
 
+@pytest.mark.parametrize(
+    "backend_type",
+    [
+        pytest.param("pcm", id="pcm"),
+        pytest.param("lpc", id="lpc"),
+        pytest.param("formant", id="formant"),
+    ],
+)
+@pytest.mark.parametrize("phoneme", range(64))
+@pytest.mark.parametrize("duration", range(4))
+@pytest.mark.parametrize("rate", [0, 4, 8, 12, 15])
+def test_synth_backends_match_the_chip_duration_contract(
+    backend_type,
+    phoneme,
+    duration,
+    rate,
+):
+    """Every backend must fill exactly the time scheduled by the chip."""
+    from qns.ssi263 import playback_length_samples
+    from qns.synth import SSI263LPCSynth, SSI263PCMSynth, SSI263Synth
+
+    backend_class = {
+        "pcm": SSI263PCMSynth,
+        "lpc": SSI263LPCSynth,
+        "formant": SSI263Synth,
+    }[backend_type]
+    synth = backend_class(audio_enabled=False)
+
+    samples = synth.get_phoneme_audio(
+        phoneme,
+        amplitude=15,
+        duration=duration,
+        rate=rate,
+    )
+
+    assert len(samples) == playback_length_samples(phoneme, duration, rate)
+
+
+def test_formant_duration_conformance_preserves_rms_and_pitch():
+    """Lengthening formant audio must preserve both its energy and pitch."""
+    from qns.synth import SSI263Synth
+
+    phoneme = 0x30
+    raw = np.sin(np.linspace(0.0, 20 * np.pi, 1_400)).astype(np.float32)
+    synth = SSI263Synth(audio_enabled=False)
+    synth._formant.synthesize_phoneme = lambda **_kwargs: raw.copy()
+    conformed = synth.get_phoneme_audio(
+        phoneme,
+        duration=0,
+        rate=8,
+    )
+
+    assert len(conformed) > len(raw)
+    raw_rms = float(np.sqrt(np.mean(raw.astype(np.float64) ** 2)))
+    conformed_rms = float(np.sqrt(np.mean(conformed.astype(np.float64) ** 2)))
+    assert 0.8 <= conformed_rms / raw_rms <= 1.2
+
+    def dominant_frequency(samples):
+        windowed = samples * np.hanning(len(samples))
+        spectrum = np.abs(np.fft.rfft(windowed))
+        frequencies = np.fft.rfftfreq(len(samples), 1 / synth.sample_rate)
+        return float(frequencies[1:][np.argmax(spectrum[1:])])
+
+    pitch_ratio = dominant_frequency(conformed) / dominant_frequency(raw)
+    assert 0.95 <= pitch_ratio <= 1.05
+
+
+def test_formant_duration_conformance_bounds_actual_waveform_seams():
+    """Stretched actual formants preserve level without click discontinuities."""
+    from qns.ssi263 import playback_length_samples
+    from qns.synth import SSI263Synth
+    from qns.synth.sc02_to_sc01 import SC02_TO_SC01
+    from qns.synth.timing import conform_audio_to_length
+
+    stretched_cases = 0
+    for phoneme in range(1, 64):
+        raw = SSI263Synth(audio_enabled=False)._formant.synthesize_phoneme(SC02_TO_SC01[phoneme])
+        native_steps = np.abs(np.diff(raw.astype(np.float64)))
+        native_max = float(native_steps.max()) if len(native_steps) else 0.0
+
+        for duration in range(4):
+            for rate in (0, 4, 8, 12, 15):
+                target = playback_length_samples(phoneme, duration, rate)
+                if target <= len(raw):
+                    continue
+
+                stretched_cases += 1
+                conformed = conform_audio_to_length(raw, target)
+                conformed_steps = np.abs(np.diff(conformed.astype(np.float64)))
+                assert float(conformed_steps.max()) <= native_max, (
+                    f"phoneme={phoneme}, duration={duration}, rate={rate}"
+                )
+                assert np.isfinite(conformed).all()
+
+                raw_rms = float(np.sqrt(np.mean(raw.astype(np.float64) ** 2)))
+                conformed_rms = float(np.sqrt(np.mean(conformed.astype(np.float64) ** 2)))
+                if raw_rms == 0.0:
+                    assert conformed_rms == 0.0
+                    continue
+                assert 0.8 <= conformed_rms / raw_rms <= 1.2, (
+                    f"phoneme={phoneme}, duration={duration}, rate={rate}"
+                )
+    assert stretched_cases == 508
+
+
+def test_audio_conformance_crossfades_short_tails_without_new_jumps():
+    from qns.synth.timing import conform_audio_to_length
+
+    raw = np.arange(9, dtype=np.float32)
+    conformed = conform_audio_to_length(raw, 25)
+
+    assert len(conformed) == 25
+    assert np.isfinite(conformed).all()
+    assert float(np.abs(np.diff(conformed)).max()) <= 1.0
+
+
 def test_synth_get_phoneme_audio():
     """get_phoneme_audio returns synthesized samples."""
     from qns.synth import SSI263Synth

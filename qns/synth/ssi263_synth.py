@@ -14,7 +14,7 @@ from ..ssi263 import SSI263State, playback_length_samples
 from .formant import FormantSynth
 from .player import AudioPlayer
 from .sc02_to_sc01 import SC02_TO_SC01
-from .timing import fit_audio_to_elapsed
+from .timing import conform_audio_to_length, fit_audio_to_elapsed
 
 
 def _sc01_inflection(inflection: int) -> int:
@@ -83,21 +83,13 @@ class SSI263Synth:
         """Stage audio for one decoded phoneme event from the chip."""
         if self._phoneme_callback is not None:
             self._phoneme_callback(state.phoneme)
-        if state.phoneme & 0x3F == 0:
-            self._pending_audio = np.zeros(
-                playback_length_samples(
-                    state.phoneme,
-                    state.playback_duration,
-                    state.rate,
-                ),
-                dtype=np.float32,
-            )
-        else:
-            self._pending_audio = self.get_phoneme_audio(
-                state.phoneme,
-                state.amplitude,
-                state.inflection,
-            )
+        self._pending_audio = self.get_phoneme_audio(
+            state.phoneme,
+            amplitude=state.amplitude,
+            duration=state.playback_duration,
+            rate=state.rate,
+            inflection=state.inflection,
+        )
 
     def end_phoneme(self, elapsed_samples: int) -> None:
         """Queue a span equal to elapsed chip time."""
@@ -145,6 +137,8 @@ class SSI263Synth:
         self,
         phoneme: int,
         amplitude: int = 15,
+        duration: int = 0,
+        rate: int = 8,
         inflection: int = 2048,
     ) -> np.ndarray:
         """Return formant-synthesized float32 samples for a phoneme.
@@ -152,9 +146,18 @@ class SSI263Synth:
         SSI-263 phoneme codes are translated to SC-01 codes and rendered
         with the SC-01 formant model.
         """
-        samples = self._formant.synthesize_phoneme(
-            phoneme=SC02_TO_SC01[phoneme & 0x3F],
-            inflection=_sc01_inflection(inflection),
+        code = phoneme & 0x3F
+        target_length = playback_length_samples(code, duration, rate)
+        if code == 0:
+            samples = np.zeros(target_length, dtype=np.float32)
+        else:
+            samples = self._formant.synthesize_phoneme(
+                phoneme=SC02_TO_SC01[code],
+                inflection=_sc01_inflection(inflection),
+            )
+        samples = conform_audio_to_length(
+            samples,
+            target_length,
         )
         gain = max(0, min(15, amplitude)) / 15.0
         if gain < 1.0:
@@ -165,4 +168,10 @@ class SSI263Synth:
         if self._phoneme_callback is not None:
             self._phoneme_callback(phoneme)
         if self._player is not None:
-            self._player.play(self.get_phoneme_audio(phoneme, amplitude, inflection))
+            self._player.play(
+                self.get_phoneme_audio(
+                    phoneme,
+                    amplitude=amplitude,
+                    inflection=inflection,
+                )
+            )

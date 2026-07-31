@@ -8,7 +8,7 @@ import numpy as np
 from ..ssi263 import SSI263State, playback_length_samples
 from .phonemes import PHONEME_INFO, SAMPLE_RATE, get_phoneme_samples
 from .player import AudioPlayer
-from .timing import fit_audio_to_elapsed
+from .timing import conform_audio_to_length, fit_audio_to_elapsed
 
 _NORMAL_INFLECTION = 3072
 _NORMAL_INFLECTION_TARGET = 16
@@ -334,6 +334,10 @@ class SSI263PCMSynth:
                 max(1, 4 - duration),
             )
 
+        samples = conform_audio_to_length(
+            samples,
+            playback_length_samples(phoneme, duration, rate),
+        )
         gain = max(0, min(15, amplitude)) / 15.0
         return samples * (gain / 32768.0)
 

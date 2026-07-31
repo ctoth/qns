@@ -48,16 +48,21 @@ def _rate(row: dict) -> int:
 def render_row(backend, row: dict, name: str) -> np.ndarray:
     """Render one traced phoneme event through the backend.
 
-    The three backends take their third argument from different registers -
-    the capture-based ones are governed by the duration mode, the formant
-    model by inflection - so each is handed what it actually uses.
+    Every backend receives the chip's duration and rate model.  The formant
+    backend additionally uses inflection to select its pitch.
     """
     code = int(row["code"]) & 0x3F
     amplitude = int(row["amplitude"])
     duration = _duration(row)
     rate = _rate(row)
     if name == "formant":
-        audio = backend.get_phoneme_audio(code, amplitude, int(row["inflection"]))
+        audio = backend.get_phoneme_audio(
+            code,
+            amplitude,
+            duration,
+            rate,
+            int(row["inflection"]),
+        )
     else:
         audio = backend.get_phoneme_audio(code, amplitude, duration, rate)
 
