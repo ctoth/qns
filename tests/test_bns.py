@@ -586,6 +586,108 @@ def test_keyboard_stdin_waits_for_firmware_key_phases(monkeypatch, model):
     assert not bns.keyboard.latched
 
 
+def test_missing_input_boundary_disables_keyboard_reader_without_crashing(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    rom_path = tmp_path / "no-input-boundary.rom"
+    rom_path.write_bytes(bytes((0x18, 0xFE)))
+    monkeypatch.setattr("qns.bns.find_input_boundary", lambda _firmware: None)
+    characters = iter(("a", ""))
+    monkeypatch.setattr(
+        "qns.bns._read_stdin_character",
+        lambda: next(characters),
+    )
+    started = []
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            started.append(True)
+            self.target()
+
+    monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
+    bns = BNS(model="bsp", stdin_device="keyboard")
+    bns.load_rom(rom_path)
+    bns._execute_budget = Mock(return_value=1_000)
+
+    bns.run(max_cycles=1_000)
+
+    assert started == []
+    assert bns._input_driver is None
+    assert (
+        capsys.readouterr().out.count(
+            "[Input] chord-acceptance addresses not discovered "
+            "in this firmware; keyboard input disabled"
+        )
+        == 1
+    )
+
+
+def test_missing_input_boundary_jsonl_ignores_keyboard_but_keeps_other_routes(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    rom_path = tmp_path / "no-input-boundary.rom"
+    rom_path.write_bytes(bytes((0x18, 0xFE)))
+    monkeypatch.setattr("qns.bns.find_input_boundary", lambda _firmware: None)
+    events = "\n".join(
+        (
+            json.dumps({"device": "keyboard", "text": "a"}),
+            json.dumps({"device": "keyboard", "chord": 0x03}),
+            json.dumps({"device": "serial0", "data": "qg=="}),
+            json.dumps({"device": "cpu", "watch_pc": 0x1234}),
+            json.dumps({"device": "system", "action": "stop"}),
+            "",
+        )
+    )
+    monkeypatch.setattr(sys, "stdin", StringIO(events))
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
+    output_stream = StringIO()
+    bns = BNS(
+        model="bsp",
+        stdin_device="jsonl",
+        stdio_output=JSONLOutput(output_stream),
+    )
+    bns.load_rom(rom_path)
+    bns._execute_budget = Mock(return_value=1_000)
+
+    bns.run()
+
+    assert bns._serial_receive(0) == 0xAA
+    assert bns._stdio_watch_queue.get_nowait() == 0x1234
+    assert bns._stdio_stop_requested.is_set()
+    bns._execute_budget.assert_not_called()
+    assert output_stream.getvalue() == ""
+    assert (
+        capsys.readouterr().out.count(
+            "[Input] chord-acceptance addresses not discovered "
+            "in this firmware; keyboard input disabled"
+        )
+        == 1
+    )
+
+
+def test_missing_input_boundary_keyboard_does_not_require_instruction_steps():
+    bns = BNS(model="bsp", stdin_device="keyboard")
+
+    assert bns._input_boundary is None
+    assert bns._input_driver is None
+    assert not bns._requires_instruction_steps()
+
+
 def _ready_classic_input_driver(
     *,
     output_stream: StringIO | None = None,
