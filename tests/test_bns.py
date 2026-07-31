@@ -1,6 +1,7 @@
 """Tests for BNS firmware-facing behavior."""
 
 import base64
+import contextlib
 import json
 import os
 import subprocess
@@ -680,6 +681,72 @@ def test_missing_input_boundary_jsonl_ignores_keyboard_but_keeps_other_routes(
     )
 
 
+def test_jsonl_malformed_event_reports_error_and_keeps_reading(monkeypatch):
+    events = "\n".join(
+        (
+            "{not JSON}",
+            json.dumps({"device": "keyboard", "chord": 0x03}),
+            json.dumps({"device": "system", "action": "stop"}),
+            "",
+        )
+    )
+    monkeypatch.setattr(sys, "stdin", StringIO(events))
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
+    output_stream = StringIO()
+    bns = BNS(
+        model="bsp",
+        stdin_device="jsonl",
+        stdio_output=JSONLOutput(output_stream),
+    )
+    bns._input_boundary = INPUT_BOUNDARIES["bsp"]
+
+    with contextlib.ExitStack() as terminal:
+        input_driver = bns._start_input(terminal)
+
+    assert input_driver is not None
+    assert input_driver.queue.get_nowait() == 0x03
+    assert bns._stdio_stop_requested.is_set()
+    assert [json.loads(line) for line in output_stream.getvalue().splitlines()] == [
+        {
+            "device": "system",
+            "state": "input-error",
+            "error": "invalid JSON input event: Expecting property name enclosed in double quotes",
+        }
+    ]
+
+
+def test_redirected_keyboard_ctrl_c_requests_exit(monkeypatch):
+    characters = iter(("\x03", ""))
+    monkeypatch.setattr("qns.bns._read_stdin_character", lambda: next(characters))
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr("qns.bns.threading.Thread", ImmediateThread)
+    bns = BNS(model="bsp", stdin_device="keyboard")
+    bns._input_boundary = INPUT_BOUNDARIES["bsp"]
+    bns._request_control = Mock()
+
+    with contextlib.ExitStack() as terminal:
+        input_driver = bns._start_input(terminal)
+
+    assert input_driver is not None
+    bns._request_control.assert_called_once_with("exit")
+    assert input_driver.queue.empty()
+
+
 def test_missing_input_boundary_keyboard_does_not_require_instruction_steps():
     bns = BNS(model="bsp", stdin_device="keyboard")
 
@@ -814,6 +881,7 @@ def test_consumed_chord_wins_at_queued_deadline_boundary():
 def test_jsonl_stdin_routes_keyboard_and_both_serial_channels(monkeypatch):
     events = "\n".join(
         (
+            "   ",
             json.dumps({"device": "keyboard", "text": "a"}),
             json.dumps({"device": "serial0", "data": "AA=="}),
             json.dumps({"device": "serial1", "data": "/w=="}),

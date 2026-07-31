@@ -155,13 +155,21 @@ def _six_key_reader(layout: str, emit, control=lambda action: None, read_events=
                 events = read_events()
             except OSError:
                 return  # the run loop cancelled us, or the console ended
-            for event in events:
-                action = _six_key_control(event)
-                if action is not None:
-                    control(action)
-                    return
-                for chord in assembler.feed(event):
-                    emit(chord)
+            try:
+                for event in events:
+                    action = _six_key_control(event)
+                    if action is not None:
+                        control(action)
+                        return
+                    for chord in assembler.feed(event):
+                        emit(chord)
+            except Exception:
+                # The console owns every host control while this loop is
+                # active. If assembly or delivery fails, hand control back
+                # to the run loop before the reader's uncaught exception is
+                # reported by threading.excepthook.
+                control("exit")
+                raise
 
     try:
         fd = sys.stdin.fileno()
@@ -417,7 +425,6 @@ class BNS:
         self._stdio_serial_input_queues = (queue.Queue(), queue.Queue())
         self._stdio_watch_queue: queue.Queue[int] = queue.Queue()
         self._stdio_stop_requested = threading.Event()
-        self._stdin_error_queue: queue.Queue[ValueError] = queue.Queue()
         self._pending_irq_states = {0: False, 1: False, 2: False}
         self._applied_irq_states: dict[int, bool | None] = {0: None, 1: None, 2: None}
         self._callback_cycle = 0
@@ -1107,7 +1114,10 @@ class BNS:
             if not self._controls_armed:
                 self._pending_control = action
                 return
-        _interrupt_emulation()
+            # Disarming takes this same lock. Keep it until the interrupt
+            # has been posted so cleanup cannot finish first and leave the
+            # interrupt to land in post-run state handling.
+            _interrupt_emulation()
 
     def _arm_controls(self) -> None:
         """Accept host controls, now that leaving the run loop cleans up.
@@ -1326,6 +1336,9 @@ class BNS:
                 if input_driver is None:
                     return
                 while character := _read_stdin_character():
+                    if character == "\x03":
+                        self._request_control("exit")
+                        return
                     input_driver.queue.put(character)
             elif self.stdin_device in ("6-key", "6-key-dvorak"):
                 if input_driver is None:
@@ -1340,11 +1353,20 @@ class BNS:
                 )
             elif self.stdin_device == "jsonl":
                 for line in sys.stdin:
+                    if not line.strip():
+                        continue
                     try:
                         event = parse_input_event(line)
                     except ValueError as error:
-                        self._stdin_error_queue.put(error)
-                        return
+                        if self.stdio_output is not None:
+                            self.stdio_output.emit(
+                                "system",
+                                state="input-error",
+                                error=str(error),
+                            )
+                        else:
+                            print(f"[Input] invalid JSONL stdin event: {error}", file=sys.stderr)
+                        continue
                     if isinstance(event, KeyboardInput):
                         if input_driver is None:
                             continue
@@ -1424,13 +1446,6 @@ class BNS:
             self._arm_controls()
             start_wall = time.perf_counter()
             while max_cycles == 0 or cycles_run < max_cycles:
-                try:
-                    stdin_error = self._stdin_error_queue.get_nowait()
-                except queue.Empty:
-                    pass
-                else:
-                    raise RuntimeError(f"invalid JSONL stdin event: {stdin_error}")
-
                 if self._stdio_stop_requested.is_set():
                     break
 

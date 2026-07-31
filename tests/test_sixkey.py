@@ -404,6 +404,47 @@ def test_control_requests_unwind_the_run_loop(monkeypatch):
     assert machine.restart_requested is True
 
 
+def test_disarm_cannot_return_before_in_flight_control_interrupt(monkeypatch):
+    import threading
+
+    import qns.bns
+
+    interrupt_entered = threading.Barrier(2)
+    allow_interrupt = threading.Event()
+    disarm_returned = threading.Event()
+    interrupt_after_disarm = []
+
+    def interrupt():
+        interrupt_entered.wait()
+        assert allow_interrupt.wait(2.0)
+        interrupt_after_disarm.append(disarm_returned.is_set())
+
+    monkeypatch.setattr(qns.bns, "_interrupt_emulation", interrupt)
+    machine = _bare_machine(armed=True)
+
+    request_thread = threading.Thread(target=machine._request_control, args=("exit",))
+    request_thread.start()
+    interrupt_entered.wait()
+
+    def disarm():
+        machine._disarm_controls()
+        disarm_returned.set()
+
+    disarm_thread = threading.Thread(target=disarm)
+    disarm_thread.start()
+    returned_before_interrupt = disarm_returned.wait(0.2)
+
+    allow_interrupt.set()
+    request_thread.join(2.0)
+    disarm_thread.join(2.0)
+
+    assert not request_thread.is_alive()
+    assert not disarm_thread.is_alive()
+    assert not returned_before_interrupt
+    assert disarm_returned.is_set()
+    assert interrupt_after_disarm == [False]
+
+
 def _control_actions(data: bytes, monkeypatch):
     """Run the reader over `data`, returning (chords, control actions)."""
     import sys
@@ -465,6 +506,24 @@ def test_reader_uses_the_console_the_run_loop_opened():
     _six_key_reader("6-key", chords.append, actions.append, read_events)
 
     assert chords == [0x03]  # f=dot 1, d=dot 2
+    assert actions == ["exit"]
+
+
+def test_native_console_reader_requests_exit_and_reraises_emit_failure():
+    import pytest
+
+    batches = [[press("f"), press("f", down=False)]]
+
+    def read_events():
+        return batches.pop(0)
+
+    def emit(_chord):
+        raise RuntimeError("injected emit failure")
+
+    actions = []
+    with pytest.raises(RuntimeError, match="injected emit failure"):
+        _six_key_reader("6-key", emit, actions.append, read_events)
+
     assert actions == ["exit"]
 
 
