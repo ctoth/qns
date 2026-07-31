@@ -383,9 +383,7 @@ been validated against anything.
 running the same set in a detached worktree at `HEAD`:
 
 - `tests/test_bns_external.py` (13) - needs the external toolchain/downloads
-- `tests/test_cpu.py` (7) - legacy CFFI extension is not built on Linux
-
-Everything else passes: 274 passed, 9 skipped, with all 33 SSI-263 and synth
+Everything else passes: 274 passed, 2 skipped, with all 33 SSI-263 and synth
 tests green.
 
 ## External references used

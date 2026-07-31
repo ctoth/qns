@@ -18,9 +18,9 @@ QNS (Q's Note Speak) is an emulator for the Blazie Engineering BNS (Braille 'N S
 ### Working
 
 1. **Z180 CPU** - Boots and runs firmware
-   - `qns/cpu.py` - CFFI bindings to z180emu
+   - The installed `z180` package supplies the production Python binding
    - CPU executes ~41K memory writes during boot
-   - MMU translation handled internally by z180emu
+   - MMU translation is handled internally by z-core
 
 2. **SSI-263 Speech Synthesizer** - Complete standalone module
    - `qns/synth/` - Real PCM audio from AppleWin phoneme samples
@@ -29,7 +29,7 @@ QNS (Q's Note Speak) is an emulator for the Blazie Engineering BNS (Braille 'N S
 
 3. **Memory Subsystem** - `qns/memory.py`
    - Physical layout: ROM at 0x00000-0x0FFFF (64KB), RAM at 0x10000+ (512KB)
-   - z180emu handles MMU translation internally
+   - z-core handles MMU translation internally
 
 4. **I/O Bus** - `qns/io.py`
    - Keyboard with INT2, keyclr, display, watchdog
@@ -77,12 +77,10 @@ qns/
 ├── qns/
 │   ├── synth/           # SSI-263 audio synthesis (working)
 │   ├── ssi263.py        # SSI-263 register emulation
-│   ├── cpu.py           # Z180 CFFI wrapper
 │   ├── memory.py        # Physical memory (ROM 0-64KB, RAM 64KB+)
 │   ├── io.py            # I/O bus, keyboard, display
 │   └── bns.py           # Main emulator with CLI
 ├── tools/
-│   ├── build_ffi.py     # CFFI build script
 │   └── extract_phonemes.py
 ├── tests/
 │   └── test_synth.py    # 20 tests
@@ -94,7 +92,7 @@ qns/
 
 ## External Resources
 
-- **z180emu**: `C:\Users\Q\src\z180emu\` - Z180 CPU emulator (C)
+- **z-core**: `https://github.com/ctoth/z-core` - production Z180 core and binding
 - **BNS source**: `C:\Users\Q\src\bns\bsp\BS.ASM` - Original firmware source
 - **Technical report**: `C:\Users\Q\src\bns\EMULATION_REPORT.md`
 
@@ -110,8 +108,7 @@ qns/
    - Compare code between banks
 
 3. **Trace early MMU state**
-   - z180emu handles MMU internally; we can't easily see its state
-   - May need to modify z180emu to log MMU changes
+   - z-core handles MMU internally; use its public state and watch APIs
 
 4. **Add logical address tracing**
    - Current `--trace-writes` traces physical addresses
@@ -121,9 +118,6 @@ qns/
 
 ```bash
 cd C:\Users\Q\code\qns
-
-# Build CFFI extension (after z180emu changes)
-uv run python tools/build_ffi.py
 
 # Run emulator with stats
 uv run python -m qns.bns --cycles 1000000 --stats roms/NFB99/BSPENG/bspeng.bns

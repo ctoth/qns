@@ -9,8 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_TRACKED_SUFFIXES = {".bin", ".exe", ".ima", ".zip"}
 MAX_TRACKED_FILE_SIZE = 512 * 1024
-# Issue #27 removes this exception when the generated Python data is split out.
-LARGE_FILE_ALLOWLIST = {Path("qns/synth/phonemes.py")}
+LARGE_FILE_ALLOWLIST: set[Path] = set()
 REPRESENTATIVE_LOCAL_ARTIFACTS = {
     Path("aicom/disk.ima"),
     Path("audio-captures/capture.wav"),
@@ -69,7 +68,28 @@ def test_tracked_files_stay_below_the_repository_size_limit() -> None:
         path: (REPO_ROOT / path).stat().st_size
         for path in _git_paths("ls-files")
         if path not in LARGE_FILE_ALLOWLIST
+        and (REPO_ROOT / path).is_file()
         and (REPO_ROOT / path).stat().st_size > MAX_TRACKED_FILE_SIZE
     }
 
     assert not oversized, f"tracked files exceed {MAX_TRACKED_FILE_SIZE} bytes: {oversized}"
+
+
+def test_retired_cffi_benchmark_surfaces_are_deleted() -> None:
+    retired = {
+        Path("qns/cpu.py"),
+        Path("tests/test_cpu.py"),
+        Path("tools/build_ffi.py"),
+    }
+
+    assert not {path for path in retired if (REPO_ROOT / path).exists()}
+
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    lockfile = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    project_guide = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "cffi" not in pyproject.casefold()
+    assert "setuptools" not in pyproject.casefold()
+    assert 'name = "setuptools"' not in lockfile
+    assert "build_ffi.py" not in project_guide
+    assert "_z180_cffi" not in project_guide
+    assert "legacy CFFI benchmark" not in project_guide

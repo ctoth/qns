@@ -36,10 +36,8 @@ select = ["E", "F", "I", "UP"]
 
 [dependency-groups]
 dev = [
-    "cffi>=1.16.0",
     "hypothesis>=6.156.9",
     "pytest>=9.0.2",
     "pytest-timeout>=2.4.0",
     "ruff>=0.1.0",
-    "setuptools>=70.0.0",
 ]

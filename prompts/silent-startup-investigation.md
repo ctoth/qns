@@ -19,7 +19,7 @@ B-R-EH2-E-L-A-N-S-P-E-K-R-A-D-E1-E
 
 ### All Fixes Applied
 1. **Shadow RAM** - Writes go to RAM even at ROM addresses (memory.py)
-2. **MMU State Exposure** - CBR/BBR/CBAR visible via CFFI (build_ffi.py, cpu.py)
+2. **MMU State Exposure** - CBR/BBR/CBAR exposed by the production z-core binding
 3. **INT1 Timing Fix** - Removed immediate INT1 trigger that broke boot (ssi263.py)
 4. **Phoneme Duration** - Calculated from registers, INT1 fires after duration (ssi263.py)
 5. **256KB ROM Loading** - All 4 banks loaded instead of just bank 0 (memory.py, bns.py)
