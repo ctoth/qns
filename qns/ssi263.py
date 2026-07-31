@@ -183,6 +183,18 @@ class SSI263State:
     transitioned_inflection: bool = False
 
 
+@dataclass(frozen=True)
+class _DeferredWriteTiming:
+    """One CPU-originated write awaiting z-core's exact I/O event cycle."""
+
+    port: int
+    value: int
+    phoneme_generation: int | None
+    duration_cycles: int
+    code: int
+    name: str
+
+
 class SpeechBackend(Protocol):
     """Audio backend receiving decoded phoneme events from the chip."""
 
@@ -259,6 +271,11 @@ class SSI263:
         self._current_cycle: int = 0  # Current cycle count (set via set_cycle_count)
         self._phoneme_start_cycle: int | None = None
         self._phoneme_modeled_samples = 0
+        self._phoneme_generation = 0
+        self._active_phoneme_generation: int | None = None
+        self._defer_next_write = False
+        self._defer_current_write = False
+        self._deferred_write_timings: list[_DeferredWriteTiming] = []
 
         # Callbacks
         self._on_phoneme: Callable[[int, str], None] | None = None
@@ -332,13 +349,38 @@ class SSI263:
         """Update the current cycle count for timing calculations."""
         self._current_cycle = cycles
 
+    def defer_next_write_cycle(self) -> None:
+        """Wait for z-core's exact I/O event before publishing write timing."""
+        self._defer_next_write = True
+
+    def confirm_write_cycle(self, port: int, value: int, cycle: int) -> None:
+        """Apply the exact native cycle for one deferred CPU I/O write."""
+        if not self._deferred_write_timings:
+            raise RuntimeError("missing deferred SSI-263 write timing")
+        timing = self._deferred_write_timings.pop(0)
+        if (timing.port, timing.value) != (port, value):
+            raise RuntimeError(
+                "SSI-263 write event order diverged: "
+                f"expected {(timing.port, timing.value)}, got {(port, value)}"
+            )
+
+        self._current_cycle = cycle
+        generation = timing.phoneme_generation
+        if generation is None:
+            return
+        if self._active_phoneme_generation == generation:
+            self._phoneme_start_cycle = cycle
+            self._pending_irq_cycle = cycle + timing.duration_cycles
+        if self._on_phoneme:
+            self._on_phoneme(timing.code, timing.name)
+
     @property
     def current_cycle(self) -> int:
-        """Cycle count last pushed in by the run loop.
+        """Latest exact executed-cycle timestamp published to the chip.
 
         Observers run inside the emulator's mutable borrow of the CPU and
-        cannot read the cycle count back off it, so they read it here.
-        The run loop refreshes this every chunk.
+        cannot read the cycle count back off it. Native I/O events therefore
+        publish exact write cycles, while the run loop publishes chunk ends.
         """
         return self._current_cycle
 
@@ -406,49 +448,77 @@ class SSI263:
     def write(self, port: int, value: int) -> None:
         """Decode one register write and trigger phoneme events."""
         reg = port - self.base_port
+        deferred = self._defer_next_write
+        self._defer_next_write = False
+        self._defer_current_write = deferred
+        generation_before = self._phoneme_generation
 
-        # Writes to registers 0-2 complete the handshake: they de-assert the
-        # interrupt and clear A/!R.
-        if reg <= self.REG_RATEINF:
-            self._d7 = False
-            if self._irq_callback:
-                self._irq_callback(0)
-
-        if reg == self.REG_DURPHON:
-            self.duration = (value >> 6) & 0x03
-            self.phoneme = value & 0x3F
-            # If CTL=0 (not in standby), play the phoneme
-            if not self.control:
-                self._speak_phoneme()
-
-        elif reg == self.REG_INFLECT:
-            # Bits I10:I3 of the 12-bit inflection value
-            self.inflection = (self.inflection & 0x807) | ((value & 0xFF) << 3)
-
-        elif reg == self.REG_RATEINF:
-            self.rate = (value >> 4) & 0x0F
-            # Bit 3 = I11, bits 2:0 = I2:I0
-            self.inflection = ((value & 0x08) << 8) | (self.inflection & 0x7F8) | (value & 0x07)
-
-        elif reg == self.REG_CTRLAMP:
-            was_standby = self.control
-            self.control = bool(value & 0x80)
-            self.articulation = (value >> 4) & 0x07
-            self.amplitude = value & 0x0F
-            if was_standby and not self.control:
-                # CTL transition 1->0: latch the mode, then play the phoneme
-                self._latch_mode_and_ints()
-                self._speak_phoneme()
-            elif not was_standby and self.control:
-                # CTL transition 0->1: standby de-asserts the interrupt too
-                self._end_active_phoneme(self._current_cycle)
-                self.speaking = False
+        try:
+            # Writes to registers 0-2 complete the handshake: they de-assert the
+            # interrupt and clear A/!R.
+            if reg <= self.REG_RATEINF:
                 self._d7 = False
                 if self._irq_callback:
                     self._irq_callback(0)
 
-        elif reg == self.REG_FILTER:
-            self.filter_freq = value & 0xFF
+            if reg == self.REG_DURPHON:
+                self.duration = (value >> 6) & 0x03
+                self.phoneme = value & 0x3F
+                # If CTL=0 (not in standby), play the phoneme
+                if not self.control:
+                    self._speak_phoneme()
+
+            elif reg == self.REG_INFLECT:
+                # Bits I10:I3 of the 12-bit inflection value
+                self.inflection = (self.inflection & 0x807) | ((value & 0xFF) << 3)
+
+            elif reg == self.REG_RATEINF:
+                self.rate = (value >> 4) & 0x0F
+                # Bit 3 = I11, bits 2:0 = I2:I0
+                self.inflection = ((value & 0x08) << 8) | (self.inflection & 0x7F8) | (value & 0x07)
+
+            elif reg == self.REG_CTRLAMP:
+                was_standby = self.control
+                self.control = bool(value & 0x80)
+                self.articulation = (value >> 4) & 0x07
+                self.amplitude = value & 0x0F
+                if was_standby and not self.control:
+                    # CTL transition 1->0: latch the mode, then play the phoneme
+                    self._latch_mode_and_ints()
+                    self._speak_phoneme()
+                elif not was_standby and self.control:
+                    # CTL transition 0->1: standby de-asserts the interrupt too
+                    self._end_active_phoneme(self._current_cycle)
+                    self.speaking = False
+                    self._d7 = False
+                    if self._irq_callback:
+                        self._irq_callback(0)
+
+            elif reg == self.REG_FILTER:
+                self.filter_freq = value & 0xFF
+        finally:
+            self._defer_current_write = False
+
+        if deferred:
+            generation = (
+                self._phoneme_generation if self._phoneme_generation != generation_before else None
+            )
+            duration_cycles = (
+                self._pending_irq_cycle - self._current_cycle
+                if generation is not None and self._pending_irq_cycle is not None
+                else 0
+            )
+            name = PHONEMES.get(self.phoneme, ("?", "unknown", ""))[0]
+            self._deferred_write_timings.append(
+                _DeferredWriteTiming(
+                    port=port,
+                    value=value,
+                    phoneme_generation=generation,
+                    duration_cycles=duration_cycles,
+                    code=self.phoneme,
+                    name=name,
+                )
+            )
 
     def state(self) -> SSI263State:
         """Return a snapshot of the decoded register state."""
@@ -468,8 +538,10 @@ class SSI263:
         """Capture one phoneme event, notify observers, and schedule INT1."""
         self._end_active_phoneme(self._current_cycle)
         self.phoneme_log.append(self.phoneme)
+        self._phoneme_generation += 1
+        self._active_phoneme_generation = self._phoneme_generation
 
-        if self._on_phoneme:
+        if self._on_phoneme and not self._defer_current_write:
             name = PHONEMES.get(self.phoneme, ("?", "unknown", ""))[0]
             self._on_phoneme(self.phoneme, name)
 
@@ -507,6 +579,7 @@ class SSI263:
             self._synth.end_phoneme(elapsed_samples)
         self._phoneme_start_cycle = None
         self._phoneme_modeled_samples = 0
+        self._active_phoneme_generation = None
 
     def get_io_handlers(self) -> list[tuple[int, Callable[[int], int], Callable[[int, int], None]]]:
         """Return (port, read_handler, write_handler) for all ports."""

@@ -536,9 +536,10 @@ class BNS:
                 io_write=self._io_write,
             )
             self.memory.ram = self.cpu.ram(0x00000)
-            self._ram_write_watch = self.cpu.add_mem_watch(
+            self.cpu.set_io_trace(True)
+            self._write_watch = self.cpu.add_mem_watch(
                 0x00000,
-                profile.ram_size,
+                1 << 20,
                 WatchKind.Write,
             )
         else:
@@ -573,7 +574,7 @@ class BNS:
         def callback(state: int) -> None:
             if self.trace_interrupts:
                 state_str = "ASSERT" if state else "CLEAR"
-                cycles = self.stats.get("cycles", 0)
+                cycles = self._executed_cycles()
                 print(f"[IRQ] INT{line} {state_str} from {source} (cycle ~{cycles})")
             if self.core == "direct":
                 self._pending_irq_states[line] = bool(state)
@@ -682,15 +683,12 @@ class BNS:
         if self.core == "compat":
             pc = self.cpu.instruction_pc
             cycle = self.cpu.cycle_count
-        else:
-            pc = self._callback_pc
-            cycle = self._callback_cycle
-        self._observe_write(
-            addr,
-            value,
-            pc=pc,
-            cycle=cycle,
-        )
+            self._observe_write(
+                addr,
+                value,
+                pc=pc,
+                cycle=cycle,
+            )
         self.memory.write(addr, value)
 
     def _observe_write(self, addr: int, value: int, *, pc: int, cycle: int) -> None:
@@ -757,7 +755,7 @@ class BNS:
             self.write_counts[addr] = self.write_counts.get(addr, 0) + 1
 
     def _process_memory_events(self) -> None:
-        """Drain native RAM-write events before their bounded queue can overflow."""
+        """Drain native exact-cycle events before their bounded queue can overflow."""
         for event in self.cpu.drain_events():
             if event["kind"] == "mem_write":
                 self._observe_write(
@@ -766,6 +764,10 @@ class BNS:
                     pc=event["pc"],
                     cycle=event["cycle"],
                 )
+            elif event["kind"] == "io_write":
+                port = event["port"] & 0xFF
+                if self.ssi263.base_port <= port < self.ssi263.base_port + 5:
+                    self.ssi263.confirm_write_cycle(port, event["value"], event["cycle"])
         if self.cpu.events_lost():
             raise RuntimeError("z-core memory events were lost; QNS observers are invalid")
 
@@ -782,6 +784,9 @@ class BNS:
         # Trace ITC register writes
         if self.trace_interrupts and (port & 0xFF) == self.PORT_ITC:
             self._log_itc("WRITE", value)
+        low_port = port & 0xFF
+        if self.core == "direct" and self.ssi263.base_port <= low_port < self.ssi263.base_port + 5:
+            self.ssi263.defer_next_write_cycle()
         self.io.write(port, value)
 
     def _log_itc(self, op: str, value: int) -> None:
@@ -790,7 +795,7 @@ class BNS:
         int0 = "EN" if value & 0x01 else "DIS"
         int1 = "EN" if value & 0x02 else "DIS"
         int2 = "EN" if value & 0x04 else "DIS"
-        cycles = self.stats.get("cycles", 0)
+        cycles = self._executed_cycles()
         print(f"[ITC] {op} 0x{value:02X} INT0={int0} INT1={int1} INT2={int2} (cycle ~{cycles})")
 
     def _setup_io(self) -> None:
@@ -1054,6 +1059,7 @@ class BNS:
             self._pump_serial_inputs()
         self._observe_instruction_boundary()
         self._callback_cycle = self.cpu.cycle_count()
+        self.ssi263.set_cycle_count(self._callback_cycle)
         self._callback_pc = self.cpu.reg(Reg.PC)
         if self._pc_watch_address == self._callback_pc:
             self._pc_watch_cycle = self._callback_cycle
@@ -1172,10 +1178,17 @@ class BNS:
         self._apply_pending_irqs()
         self._pump_serial_inputs()
         self._callback_cycle = self.cpu.cycle_count()
+        self.ssi263.set_cycle_count(self._callback_cycle)
         self._callback_pc = self.cpu.reg(Reg.PC)
         actual = self.cpu.run(cycles)
         self._finish_execution()
         return actual
+
+    def _executed_cycles(self) -> int:
+        """Return the CPU-owned executed-cycle clock on either API path."""
+        if self.core == "direct":
+            return self.cpu.cycle_count()
+        return self.cpu.cycle_count
 
     def _realtime_sleep_duration(self, ahead: float) -> float:
         """Keep low audio buffered by spending bounded emulator run-ahead."""
@@ -1436,7 +1449,8 @@ class BNS:
         input_driver: ChordInputDriver | None = None
         pc_watch_reported = False
         terminal = contextlib.ExitStack()
-        cycles_run = 0
+        budget_cycles = 0
+        start_cycle = self._executed_cycles()
         start_wall = time.perf_counter()
         try:
             # Under the cleanup handler, not before it: a control key
@@ -1445,7 +1459,7 @@ class BNS:
             input_driver = self._start_input(terminal)
             self._arm_controls()
             start_wall = time.perf_counter()
-            while max_cycles == 0 or cycles_run < max_cycles:
+            while max_cycles == 0 or budget_cycles < max_cycles:
                 if self._stdio_stop_requested.is_set():
                     break
 
@@ -1465,30 +1479,13 @@ class BNS:
                         )
 
                 chunk_size = self._chunk_cycles
-                chunk = chunk_size if max_cycles == 0 else min(chunk_size, max_cycles - cycles_run)
+                chunk = (
+                    chunk_size if max_cycles == 0 else min(chunk_size, max_cycles - budget_cycles)
+                )
                 actual = self._execute_budget(chunk)
-                cycles_run += actual
-
-                if actual == 0:
-                    # The Z180 executed SLP and is waiting for an interrupt
-                    # (the firmware calls a RAM-resident `SLP; RET` stub at
-                    # the end of every phoneme).  A sleeping core advances no
-                    # cycles, so nothing would ever reach the phoneme's
-                    # scheduled completion and the loop would spin forever -
-                    # which is exactly what made a 6M-cycle greeting appear
-                    # to take 40 minutes.  Jump emulated time to the next
-                    # scheduled device event instead; sleeping then costs
-                    # one iteration rather than a million.
-                    wake = self.ssi263.pending_irq_cycle
-                    if wake is not None and wake > cycles_run:
-                        cycles_run = wake if max_cycles == 0 else min(wake, max_cycles)
-                    else:
-                        # Nothing scheduled here, but the Z180's own timers
-                        # still wake the background task, so let time pass
-                        # rather than stopping: asleep is not dead.
-                        cycles_run += chunk
-
-                self.stats["cycles"] = cycles_run
+                budget_cycles += actual
+                executed_cycles = self._executed_cycles()
+                self.stats["cycles"] = executed_cycles
 
                 if self.realtime:
                     # Hold emulated time to wall-clock time.  The chip already
@@ -1496,7 +1493,8 @@ class BNS:
                     # two clocks agree, a phoneme that lasts 120 ms of emulated
                     # time also lasts 120 ms of real time - and the audio the
                     # backend queues per phoneme plays continuously.
-                    ahead = start_wall + cycles_run / self.clock - time.perf_counter()
+                    elapsed_cycles = executed_cycles - start_cycle
+                    ahead = start_wall + elapsed_cycles / self.clock - time.perf_counter()
                     sleep_duration = self._realtime_sleep_duration(ahead)
                     if sleep_duration > 0:
                         time.sleep(sleep_duration)
@@ -1523,8 +1521,8 @@ class BNS:
                     pc_watch_reported = True
 
                 # Update SSI-263 cycle count and check for pending phoneme completion IRQ
-                self.ssi263.set_cycle_count(cycles_run)
-                self.ssi263.check_pending_irq(cycles_run)
+                self.ssi263.set_cycle_count(executed_cycles)
+                self.ssi263.check_pending_irq(executed_cycles)
 
                 if input_driver is not None:
                     input_driver.tick()
@@ -1545,8 +1543,9 @@ class BNS:
             if self.synth:
                 self.synth.stop()
 
-        self.stats["cycles"] = cycles_run
-        print(f"Executed {cycles_run:,} cycles")
+        executed_cycles = self._executed_cycles()
+        self.stats["cycles"] = executed_cycles
+        print(f"Executed {executed_cycles:,} cycles")
         final_pc = self.cpu.reg(Reg.PC) if self.core == "direct" else self.cpu.pc
         print(f"Final PC: {final_pc:04X}")
 
