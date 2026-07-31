@@ -343,12 +343,13 @@ unexecuted byte is data. Error paths, optional peripherals, locale/update code,
 rare interrupts, and undiscovered menu operations still require static
 cross-reference work, source/revision matching, and additional scenarios.
 
-This is not available inside QNS today. QNS still wraps the older CFFI core and
-has selected watches rather than the full z-core trace. The controlling z-core
-plan puts the Python binding and QNS migration in Phase 8; P8.1 is currently
-blocked on the exact Python representation of `set_ext_mapper`. Once that
-decision and migration land, no new CPU decoder or trace engine should be
-invented for this ROM project.
+The complete discovery loop is not available inside QNS today. QNS now uses
+the production z-core Python binding and already exposes selected PC and memory
+watches plus structured runtime events. It does not yet export the complete
+physical-PC execution, MMU-change, and edge stream required by this plan.
+Extend the existing z-core trace/watch boundary deliberately when that evidence
+is needed; do not invent a second CPU decoder or trace engine for this ROM
+project.
 
 ### Difficulty and effort bands
 
@@ -356,8 +357,8 @@ The task has one easy layer and two hard layers:
 
 | Deliverable | Difficulty | Evidence-based single-engineer band |
 |---|---|---:|
-| Hash-pinned extraction, four-bank byte source, strict reassembly, package rebuild, and QNS verification | Moderate | 3-7 working days; plausibly 2-5 after z-core/QNS migration |
-| Bank/MMU-aware structural disassembly for both targets, with reset/vectors, confirmed code/data boundaries, useful labels, HTML/ASM generation, continuous zero-diff gate, and scripted execution maps | Hard | about 1-3 weeks after z-core/QNS migration; 3-6 weeks without it |
+| Hash-pinned extraction, four-bank byte source, strict reassembly, package rebuild, and QNS verification | Moderate | 3-7 working days; plausibly 2-5 with the current z-core runtime |
+| Bank/MMU-aware structural disassembly for both targets, with reset/vectors, confirmed code/data boundaries, useful labels, HTML/ASM generation, continuous zero-diff gate, and scripted execution maps | Hard | about 1-3 weeks if current QNS/z-core tracing is sufficient; 3-6 weeks if trace gaps must be filled first |
 | Broad source-assisted and scenario-assisted annotation of major firmware subsystems and data, sufficient for productive modification | Very hard | about 1-3 months |
 | Near-exhaustive semantic annotation or maintainable C-like reconstruction of most firmware | Research project | 4-9+ months |
 
@@ -366,9 +367,9 @@ about 20-26% long-block similarity across nearby revisions; a 245,638-code-line
 multi-product source corpus; no objects/maps/exact compiler or custom libraries;
 and a bank-0 Ghidra trial that auto-defined only 9,980 instruction bytes plus
 1,211 data bytes out of 65,536, despite finding 167 functions. The improved
-bands assume z-core is migrated into QNS and manual-derived deterministic
-scenarios are recorded. The estimates remain broad because scenario coverage
-has not yet been measured against either complete ROM.
+bands assume the current z-core integration remains stable and manual-derived
+deterministic scenarios are recorded. The estimates remain broad because
+scenario coverage has not yet been measured against either complete ROM.
 
 The practical first milestone is therefore **mechanically exact, structurally
 honest, partially annotated**, not “fully decompiled.” That milestone is quite

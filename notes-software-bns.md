@@ -4400,3 +4400,5 @@ Next action:
 - Next action: report the required `--model bs2 --state <path>` correction and
   clearly distinguish implemented flash support from the behavior of the
   supplied command.
+
+<!-- issue-27-historical-legacy-boundary -->
