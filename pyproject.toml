@@ -21,6 +21,7 @@ packages = ["qns"]
 z180 = { git = "https://github.com/ctoth/z-core", rev = "9142185ef8d9d9a93d909e422d3a9a287f1d4f02", subdirectory = "crates/z180-py" }
 
 [tool.pytest.ini_options]
+addopts = '-m "not manual"'
 markers = [
     "manual: marks tests as requiring manual verification (deselect with '-m \"not manual\"')",
 ]
