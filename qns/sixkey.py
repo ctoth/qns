@@ -367,9 +367,7 @@ class SixKeyInputDecoder:
 
     def _set_record_deadline(self, now: float) -> None:
         self._record_deadline = (
-            now + self.timeout
-            if self.timeout is not None and self._win32.stale_flushable
-            else None
+            now + self.timeout if self.timeout is not None and self._win32.stale_flushable else None
         )
 
     def _consume_win32(

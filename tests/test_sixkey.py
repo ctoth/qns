@@ -54,9 +54,7 @@ def test_decoder_reads_captured_win32_records():
 def test_assembler_commits_captured_chord_on_full_release():
     """The capture is Alt alone, then Alt held with 'd' and 'f' together."""
     events = [
-        item
-        for item in Win32InputDecoder().feed(PROBE_CAPTURE)
-        if isinstance(item, KeyEvent)
+        item for item in Win32InputDecoder().feed(PROBE_CAPTURE) if isinstance(item, KeyEvent)
     ]
     assembler = SixKeyAssembler(layout="6-key")
 
@@ -201,9 +199,7 @@ def test_partial_win32_record_survives_stall_and_completes():
     assert list(decoder.poll(now=0.050)) == []
     completed = list(decoder.feed(b"_", now=0.060))
 
-    assert [(event.vk, event.char, event.down) for event in completed] == [
-        (0x46, "f", False)
-    ]
+    assert [(event.vk, event.char, event.down) for event in completed] == [(0x46, "f", False)]
 
 
 def test_non_record_prefix_is_surrendered_intact_and_in_order():
