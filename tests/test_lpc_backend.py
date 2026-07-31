@@ -140,14 +140,14 @@ def test_lpc_pause_matches_the_pcm_backend():
     assert len(lpc) == len(pcm)
 
 
-def test_lpc_output_level_tracks_amplitude():
-    """Amplitude is a real register; silence at 0 was the old blocker."""
+def test_lpc_amplitude_zero_mutes_the_phoneme():
+    """A commanded amplitude of zero is a mute, not a filter ring-out."""
     backend = SSI263LPCSynth(audio_enabled=False)
     loud = backend.get_phoneme_audio(0x2D, 15, 0)
-    backend._stream.reset()
-    quiet = backend.get_phoneme_audio(0x2D, 4, 0)
+    muted = backend.get_phoneme_audio(0x2D, 0, 0)
 
-    assert float(np.abs(quiet).max()) < float(np.abs(loud).max())
+    assert float(np.abs(loud).max()) > 1e-4
+    assert float(np.abs(muted).max()) < 1e-4
 
 
 def test_lpc_produces_audio_at_the_capture_sample_rate():

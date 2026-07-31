@@ -235,7 +235,9 @@ class LPCStream:
             return np.zeros(0, dtype=np.float32)
 
         gain_scale = max(0, min(15, amplitude)) / 15.0
-        if code & 0x3F == 0 or gain_scale == 0.0:
+        if gain_scale == 0.0:
+            return np.zeros(samples, dtype=np.float32)
+        if code & 0x3F == 0:
             return self._render_silence(samples)
 
         target = phoneme_params(code)
