@@ -34,6 +34,7 @@ from qns.loader import (
     find_voice_inflection_flag,
     load_firmware,
 )
+from qns.memory import Memory
 from qns.profiles import PROFILES
 from qns.ssi263 import SSI263State
 from qns.stdio import JSONLOutput
@@ -2178,6 +2179,125 @@ def test_cli_jsonl_emits_complete_speech_and_display_events(
     assert "Loaded ROM" in captured.err
 
 
+def test_cli_setup_failure_closes_speech_trace_opened_before_display_validation(
+    monkeypatch,
+    tmp_path,
+):
+    """Unsupported display setup must not leak an already-open speech trace."""
+    idle_rom = tmp_path / "idle.rom"
+    idle_rom.write_bytes(bytes((0x18, 0xFE)))
+    speech_trace = tmp_path / "speech.csv"
+    trace_handles = []
+
+    def open_trace(path, *args, **kwargs):
+        handle = Path(path).open(*args, **kwargs)
+        trace_handles.append(handle)
+        return handle
+
+    monkeypatch.setattr("qns.cli.open", open_trace, raising=False)
+
+    with pytest.raises(RuntimeError, match="bsp has no built-in Braille display"):
+        bns_main(
+            [
+                str(idle_rom),
+                "--input",
+                "none",
+                "--trace-speech",
+                str(speech_trace),
+                "--display",
+                "codes",
+            ]
+        )
+
+    assert len(trace_handles) == 1
+    assert trace_handles[0].closed
+    assert speech_trace.read_text(encoding="ascii").startswith("cycle,code,name")
+
+
+def test_cli_trace_header_failure_closes_partially_initialized_trace(monkeypatch, tmp_path):
+    """A failure after open but during trace setup must still close the handle."""
+    idle_rom = tmp_path / "idle.rom"
+    idle_rom.write_bytes(bytes((0x18, 0xFE)))
+
+    class FailingTrace(StringIO):
+        def write(self, _text):
+            raise RuntimeError("injected trace header failure")
+
+    trace_handle = FailingTrace()
+    monkeypatch.setattr("qns.cli.open", Mock(return_value=trace_handle), raising=False)
+
+    with pytest.raises(RuntimeError, match="injected trace header failure"):
+        bns_main([str(idle_rom), "--input", "none", "--trace-speech", str(tmp_path / "x.csv")])
+
+    assert trace_handle.closed
+
+
+def test_cli_run_failure_still_closes_traces_and_persists_outputs(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    """A fatal native observer error must not skip the session teardown."""
+    idle_rom = tmp_path / "idle.rom"
+    idle_rom.write_bytes(bytes((0x18, 0xFE)))
+    state_path = tmp_path / "failure.state"
+    ram_dump = tmp_path / "failure.ram"
+    speech_trace = tmp_path / "speech.csv"
+    write_trace = tmp_path / "writes.csv"
+    trace_handles = []
+
+    def open_trace(path, *args, **kwargs):
+        handle = Path(path).open(*args, **kwargs)
+        trace_handles.append(handle)
+        return handle
+
+    def lose_native_events(bns: BNS) -> None:
+        bns.memory.write(0xF000, 0x5A)
+        bns.write_counts[0xF000] = 1
+        raise RuntimeError("z-core memory events were lost; QNS observers are invalid")
+
+    monkeypatch.setattr("qns.cli.open", open_trace, raising=False)
+    monkeypatch.setattr(BNS, "_process_memory_events", lose_native_events)
+    monkeypatch.setattr(sys, "stdin", StringIO(""))
+
+    with pytest.raises(RuntimeError, match="z-core memory events were lost"):
+        bns_main(
+            [
+                str(idle_rom),
+                "--cycles",
+                "1000",
+                "--stdio",
+                "jsonl",
+                "--state",
+                str(state_path),
+                "--dump-ram",
+                str(ram_dump),
+                "--trace-speech",
+                str(speech_trace),
+                "--dump-writes",
+                str(write_trace),
+            ]
+        )
+
+    assert len(trace_handles) == 1
+    assert trace_handles[0].closed
+    assert speech_trace.read_text(encoding="ascii").startswith("cycle,code,name")
+    assert ram_dump.read_bytes()[0xF000] == 0x5A
+    restored = Memory()
+    restored.load_state(state_path)
+    assert restored.read(0xF000) == 0x5A
+    assert write_trace.read_text() == "address,count\n0x0F000,1\n"
+
+    captured = capsys.readouterr()
+    assert [json.loads(line) for line in captured.out.splitlines()] == [
+        {
+            "device": "system",
+            "state": "exited",
+            "reason": "z-core memory events were lost; QNS observers are invalid",
+        }
+    ]
+
+
 def test_cli_state_round_trip_preserves_v3_effective_ram(tmp_path):
     """A later process running the same ROM must see the saved effective RAM."""
     state_path = tmp_path / "bsp.state"
@@ -2421,6 +2541,39 @@ def test_audio_flag_does_not_swallow_the_rom_file():
     assert args.rom_file == "roms/bspeng.bns"
     assert args.audio == "pcm"
     assert args.stats is True
+
+
+@pytest.mark.parametrize("name", tuple(SYNTH_BACKENDS))
+def test_audio_flag_treats_existing_backend_named_file_as_rom(name, tmp_path, monkeypatch):
+    """An existing pcm/lpc/formant path wins over the optional backend token."""
+    monkeypatch.chdir(tmp_path)
+    Path(name).write_bytes(b"\x18\xfe")
+
+    args = build_parser().parse_args(settle_audio_backend(["--audio", name]))
+
+    assert args.rom_file == name
+    assert args.audio == "pcm"
+
+
+@pytest.mark.parametrize("name", tuple(SYNTH_BACKENDS))
+def test_audio_flag_keeps_backend_token_when_no_named_path_exists(name, tmp_path, monkeypatch):
+    """Without a colliding path, pcm/lpc/formant still selects the backend."""
+    monkeypatch.chdir(tmp_path)
+
+    args = build_parser().parse_args(settle_audio_backend(["--audio", name, "rom.bns"]))
+
+    assert args.rom_file == "rom.bns"
+    assert args.audio == name
+
+
+def test_explicit_audio_and_legacy_synth_reject_conflicting_backends(tmp_path, monkeypatch):
+    """An explicit modern backend must not be silently replaced by --synth."""
+    rom = tmp_path / "idle.rom"
+    rom.write_bytes(b"\x18\xfe")
+    monkeypatch.setattr("qns.cli.BNS", Mock(side_effect=AssertionError("BNS was constructed")))
+
+    with pytest.raises(SystemExit):
+        bns_main([str(rom), "--audio", "pcm", "--synth", "lpc"])
 
 
 def test_audio_omitted_leaves_audio_disabled():

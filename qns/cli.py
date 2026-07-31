@@ -17,6 +17,13 @@ _SPEECH_STYLES = ("codes", "names", "ipa", "examples", "english")
 DEFAULT_SYNTH_BACKEND = "pcm"
 
 
+class _DefaultAudioBackend(str):
+    """Identity-bearing value for a bare ``--audio`` default."""
+
+
+_DEFAULT_AUDIO_SENTINEL = _DefaultAudioBackend(DEFAULT_SYNTH_BACKEND)
+
+
 def settle_audio_backend(argv: list[str]) -> list[str]:
     """Let ``--audio`` stay a bare flag even though it now takes a backend.
 
@@ -27,17 +34,28 @@ def settle_audio_backend(argv: list[str]) -> list[str]:
         uv run -m qns.bns --audio roms/bspeng.bns
 
     which would otherwise be read as a backend named ``roms/bspeng.bns``.
-    Supplying the default explicitly when the next token is plainly not a
-    backend keeps both that form and ``--audio lpc`` working.
+    Moving a bare flag after the positional ROM lets argparse use the
+    identity-bearing const value.  A backend-looking token is still the ROM
+    when an existing file has that name.
     """
     settled = []
+    move_audio_after: set[int] = set()
     for position, token in enumerate(argv):
-        settled.append(token)
+        if position in move_audio_after:
+            settled.extend((token, "--audio"))
+            continue
         if token != "--audio":
+            settled.append(token)
             continue
         following = argv[position + 1] if position + 1 < len(argv) else None
-        if following not in SYNTH_BACKENDS:
-            settled.append(DEFAULT_SYNTH_BACKEND)
+        if (
+            following is not None
+            and not following.startswith("-")
+            and (following not in SYNTH_BACKENDS or Path(following).is_file())
+        ):
+            move_audio_after.add(position + 1)
+            continue
+        settled.append(token)
     return settled
 
 
@@ -82,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--audio",
         nargs="?",
         choices=tuple(SYNTH_BACKENDS),
-        const=DEFAULT_SYNTH_BACKEND,
+        const=_DEFAULT_AUDIO_SENTINEL,
         default=None,
         metavar="BACKEND",
         help=(
@@ -355,12 +373,18 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(settle_audio_backend(sys.argv[1:] if argv is None else argv))
 
-    # --synth predates --audio taking a backend.  It still selects one, but
-    # only where --audio did not say so itself.
-    if args.synth is not None and args.audio == DEFAULT_SYNTH_BACKEND:
+    # --synth predates --audio taking a backend.  A bare --audio intentionally
+    # leaves the backend to --synth, but an explicit contradictory backend is
+    # an error rather than a silent override.
+    audio_defaulted = args.audio is _DEFAULT_AUDIO_SENTINEL
+    if args.synth is not None:
+        if args.audio is None:
+            parser.error("--synth selects a backend for --audio; pass --audio too")
+        if not audio_defaulted and args.audio != args.synth:
+            parser.error(f"--audio {args.audio} conflicts with --synth {args.synth}")
         args.audio = args.synth
-    if args.synth is not None and args.audio is None:
-        parser.error("--synth selects a backend for --audio; pass --audio too")
+    elif audio_defaulted:
+        args.audio = DEFAULT_SYNTH_BACKEND
 
     if args.stdio and (
         args.input is not None
@@ -466,140 +490,172 @@ def main(argv: list[str] | None = None) -> None:
             stdio_watch_pc=args.watch_pc,
             english_callback=english_callback,
         )
-        speech_observers: list[Callable[[int, str], None]] = []
+        failure: BaseException | None = None
+        cleanup_error: BaseException | None = None
+        execution_started = False
+        speech_trace_file = None
         speech_trace: list[tuple[int, ...]] = []
+        try:
+            speech_observers: list[Callable[[int, str], None]] = []
 
-        if stdio_output is not None:
+            if stdio_output is not None:
 
-            def emit_stdio_speech(_code: int, _name: str) -> None:
-                phoneme = bns.ssi263.get_phonemes(start=-1)[0]
-                stdio_output.emit(
-                    "speech",
-                    code=phoneme.code,
-                    name=phoneme.name,
-                    ipa=phoneme.ipa,
-                    example=phoneme.example,
-                )
+                def emit_stdio_speech(_code: int, _name: str) -> None:
+                    phoneme = bns.ssi263.get_phonemes(start=-1)[0]
+                    stdio_output.emit(
+                        "speech",
+                        code=phoneme.code,
+                        name=phoneme.name,
+                        ipa=phoneme.ipa,
+                        example=phoneme.example,
+                    )
 
-            speech_observers.append(emit_stdio_speech)
-            if bns.display is not None:
-                bns.display.set_frame_callback(
-                    lambda frame: stdio_output.emit("display", cells=list(frame))
-                )
+                speech_observers.append(emit_stdio_speech)
+                if bns.display is not None:
+                    bns.display.set_frame_callback(
+                        lambda frame: stdio_output.emit("display", cells=list(frame))
+                    )
 
-        elif args.speech_stream and args.speech_stream != "english":
+            elif args.speech_stream and args.speech_stream != "english":
 
-            def emit_speech_phoneme(code: int, _name: str) -> None:
-                if code == 0:
-                    return
-                phoneme = bns.ssi263.get_phonemes(start=-1)[0]
-                speech = _format_phoneme(phoneme, args.speech_stream)
-                print(f"Speech {args.speech_stream}: {speech}", flush=True)
+                def emit_speech_phoneme(code: int, _name: str) -> None:
+                    if code == 0:
+                        return
+                    phoneme = bns.ssi263.get_phonemes(start=-1)[0]
+                    speech = _format_phoneme(phoneme, args.speech_stream)
+                    print(f"Speech {args.speech_stream}: {speech}", flush=True)
 
-            speech_observers.append(emit_speech_phoneme)
+                speech_observers.append(emit_speech_phoneme)
 
-        if args.trace_speech:
-            # Written and flushed per event: a boot long enough to reach
-            # speech runs for minutes, and a trace only readable after the
-            # run finishes is a trace nobody can work with.
-            speech_trace_file = open(args.trace_speech, "w", encoding="ascii")
-            speech_trace_file.write(
-                "cycle,code,name,duration_mode,rate,inflection,"
-                "articulation,amplitude,filter_freq,playback_duration\n"
-            )
-            speech_trace_file.flush()
-
-            def record_speech_registers(code: int, name: str) -> None:
-                state = bns.ssi263.state()
-                speech_trace.append(())
+            if args.trace_speech:
+                # Written and flushed per event: a boot long enough to reach
+                # speech runs for minutes, and a trace only readable after the
+                # run finishes is a trace nobody can work with.
+                speech_trace_file = open(args.trace_speech, "w", encoding="ascii")
                 speech_trace_file.write(
-                    f"{bns.ssi263.current_cycle},{code},{name},{state.duration},"
-                    f"{state.rate},{state.inflection},{state.articulation},"
-                    f"{state.amplitude},{state.filter_freq},"
-                    f"{state.playback_duration}\n"
+                    "cycle,code,name,duration_mode,rate,inflection,"
+                    "articulation,amplitude,filter_freq,playback_duration\n"
                 )
                 speech_trace_file.flush()
 
-            speech_observers.append(record_speech_registers)
+                def record_speech_registers(code: int, name: str) -> None:
+                    state = bns.ssi263.state()
+                    speech_trace.append(())
+                    speech_trace_file.write(
+                        f"{bns.ssi263.current_cycle},{code},{name},{state.duration},"
+                        f"{state.rate},{state.inflection},{state.articulation},"
+                        f"{state.amplitude},{state.filter_freq},"
+                        f"{state.playback_duration}\n"
+                    )
+                    speech_trace_file.flush()
 
-        if speech_observers:
+                speech_observers.append(record_speech_registers)
 
-            def dispatch_speech(code: int, name: str) -> None:
-                for observe in speech_observers:
-                    observe(code, name)
+            if speech_observers:
 
-            bns.ssi263.set_phoneme_callback(dispatch_speech)
+                def dispatch_speech(code: int, name: str) -> None:
+                    for observe in speech_observers:
+                        observe(code, name)
 
-        if args.display:
-            if bns.display is None:
-                raise RuntimeError(f"{args.model} has no built-in Braille display")
+                bns.ssi263.set_phoneme_callback(dispatch_speech)
 
-            def emit_display_frame(frame: bytes) -> None:
-                nonlocal display_frame_emitted
-                display_frame_emitted = True
-                if args.display == "codes":
-                    display = " ".join(f"{cell:02X}" for cell in frame)
+            if args.display:
+                if bns.display is None:
+                    raise RuntimeError(f"{args.model} has no built-in Braille display")
+
+                def emit_display_frame(frame: bytes) -> None:
+                    nonlocal display_frame_emitted
+                    display_frame_emitted = True
+                    if args.display == "codes":
+                        display = " ".join(f"{cell:02X}" for cell in frame)
+                    else:
+                        display = "".join(chr(0x2800 | cell) for cell in frame)
+                    print(f"Display {args.display}: {display}", flush=True)
+
+                bns.display.set_frame_callback(emit_display_frame)
+
+            bns.load_rom(args.rom_file)
+            if args.state:
+                state_path = Path(args.state)
+                if state_path.exists():
+                    bns.load_state(state_path)
                 else:
-                    display = "".join(chr(0x2800 | cell) for cell in frame)
-                print(f"Display {args.display}: {display}", flush=True)
+                    print(f"Initializing nonvolatile RAM state: {state_path}")
+            elif args.state_dir:
+                state_dir = Path(args.state_dir)
+                if state_dir.exists() and not state_dir.is_dir():
+                    parser.error(f"--state-dir is not a directory: {state_dir}")
+                if state_dir.exists() and any(state_dir.iterdir()):
+                    bns.load_state_dir(state_dir)
+                else:
+                    print(f"Initializing nonvolatile state directory: {state_dir}")
 
-            bns.display.set_frame_callback(emit_display_frame)
-
-        bns.load_rom(args.rom_file)
-        if args.state:
-            state_path = Path(args.state)
-            if state_path.exists():
-                bns.load_state(state_path)
+            execution_started = True
+            if args.trace:
+                bns.trace_boot()
             else:
-                print(f"Initializing nonvolatile RAM state: {state_path}")
-        elif args.state_dir:
-            state_dir = Path(args.state_dir)
-            if state_dir.exists() and not state_dir.is_dir():
-                parser.error(f"--state-dir is not a directory: {state_dir}")
-            if state_dir.exists() and any(state_dir.iterdir()):
-                bns.load_state_dir(state_dir)
-            else:
-                print(f"Initializing nonvolatile state directory: {state_dir}")
+                bns.run(max_cycles=args.cycles)
 
-        if args.trace:
-            bns.trace_boot()
-        else:
-            bns.run(max_cycles=args.cycles)
+            if args.speech:
+                if args.speech == "english":
+                    speech = " ".join(english_chunks)
+                else:
+                    speech = " ".join(
+                        _format_phoneme(phoneme, args.speech)
+                        for phoneme in bns.ssi263.get_phonemes(include_pauses=False)
+                    )
+                print(f"Speech {args.speech}: {speech}")
 
-        if args.speech:
-            if args.speech == "english":
-                speech = " ".join(english_chunks)
-            else:
-                speech = " ".join(
-                    _format_phoneme(phoneme, args.speech)
-                    for phoneme in bns.ssi263.get_phonemes(include_pauses=False)
-                )
-            print(f"Speech {args.speech}: {speech}")
+            if args.display and not display_frame_emitted:
+                emit_display_frame(bytes(bns.display.buffer))
+        except BaseException as error:
+            failure = error
+            raise
+        finally:
 
-        if args.display and not display_frame_emitted:
-            emit_display_frame(bytes(bns.display.buffer))
+            def cleanup(description: str, action: Callable[[], None]) -> None:
+                nonlocal cleanup_error
+                try:
+                    action()
+                except BaseException as error:
+                    if cleanup_error is None:
+                        cleanup_error = error
+                        if failure is not None:
+                            print(f"{description} failed during teardown: {error}", file=sys.stderr)
+                    else:
+                        print(f"{description} also failed: {error}", file=sys.stderr)
 
-        if args.trace_speech:
-            speech_trace_file.close()
-            print(f"Wrote {len(speech_trace)} speech events to {args.trace_speech}")
+            if speech_trace_file is not None:
 
-        # Post-run actions
-        if args.dump_ram:
-            bns.dump_ram(args.dump_ram)
+                def close_speech_trace() -> None:
+                    speech_trace_file.close()
+                    print(f"Wrote {len(speech_trace)} speech events to {args.trace_speech}")
 
-        if args.state:
-            bns.save_state(args.state)
-        elif args.state_dir:
-            bns.save_state_dir(args.state_dir)
+                cleanup("speech trace close", close_speech_trace)
 
-        # Dump trace data if any tracing was enabled
-        bns.dump_trace_data()
+            if execution_started:
+                if args.dump_ram:
+                    cleanup("RAM dump", lambda: bns.dump_ram(args.dump_ram))
 
-        if args.stats:
-            bns.print_stats()
+                if args.state:
+                    cleanup("state save", lambda: bns.save_state(args.state))
+                elif args.state_dir:
+                    cleanup("state directory save", lambda: bns.save_state_dir(args.state_dir))
 
-        if stdio_output is not None:
-            stdio_output.emit("system", state="exited")
+                cleanup("trace dump", bns.dump_trace_data)
+
+                if args.stats:
+                    cleanup("statistics", bns.print_stats)
+
+            exit_error = failure or cleanup_error
+            if stdio_output is not None:
+                payload = {"state": "exited"}
+                if exit_error is not None:
+                    payload["reason"] = str(exit_error) or type(exit_error).__name__
+                cleanup("JSONL exit event", lambda: stdio_output.emit("system", **payload))
+
+            if failure is None and cleanup_error is not None:
+                raise cleanup_error
 
         # Last, so that a restart saves and closes everything a normal exit
         # would.  Restarting before the nonvolatile state was written would
