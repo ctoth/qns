@@ -8,7 +8,7 @@ from pathlib import Path
 from qns.bns import _six_key_reader
 from qns.keysource import KeyEvent, Win32InputDecoder
 from qns.loader import InputBoundary
-from qns.sixkey import SixKeyAssembler, TimedChordAssembler
+from qns.sixkey import SixKeyAssembler, SixKeyInputDecoder, TimedKeyDecoder
 
 # The linked NFB99 English chord-acceptance addresses, as tests/test_bns.py
 # installs them: enough for a run loop to accept a keyboard at all.
@@ -32,7 +32,9 @@ PROBE_CAPTURE = (
 
 
 def test_decoder_reads_captured_win32_records():
-    events, text = Win32InputDecoder().feed(PROBE_CAPTURE)
+    items = Win32InputDecoder().feed(PROBE_CAPTURE)
+    events = [item for item in items if isinstance(item, KeyEvent)]
+    text = "".join(item for item in items if isinstance(item, str))
 
     assert text == ""
     assert [(event.vk, event.char, event.down) for event in events] == [
@@ -51,7 +53,9 @@ def test_decoder_reads_captured_win32_records():
 
 def test_assembler_commits_captured_chord_on_full_release():
     """The capture is Alt alone, then Alt held with 'd' and 'f' together."""
-    events, _ = Win32InputDecoder().feed(PROBE_CAPTURE)
+    events = [
+        item for item in Win32InputDecoder().feed(PROBE_CAPTURE) if isinstance(item, KeyEvent)
+    ]
     assembler = SixKeyAssembler(layout="6-key")
 
     chords = [chord for event in events for chord in assembler.feed(event)]
@@ -62,13 +66,14 @@ def test_assembler_commits_captured_chord_on_full_release():
     assert chords == [0x40, 0x43]
 
 
-def press(char="", vk=0, *, down=True, control_state=0):
+def press(char="", vk=0, *, down=True, control_state=0, repeat=1):
     return KeyEvent(
         vk=vk or (ord(char.upper()) if char else 0),
         scan=0,
         char=char,
         down=down,
         control_state=control_state,
+        repeat=repeat,
     )
 
 
@@ -92,6 +97,62 @@ def test_dvorak_layout_spells_the_same_cell_from_different_keys():
     assert spell(dvorak, "u", "h") == [0x09]
 
 
+def test_release_identity_uses_vk_when_its_character_changes():
+    """Ctrl can change a release character without changing the physical key."""
+    assembler = SixKeyAssembler(layout="6-key")
+
+    assert list(assembler.feed(press("f", vk=0x46))) == []
+    assert list(assembler.feed(press("\x06", vk=0x46, down=False))) == [0x01]
+
+
+def test_horizon_abandons_a_missed_release_and_recovers():
+    now = [0.0]
+    warnings = []
+    assembler = SixKeyAssembler(
+        layout="6-key",
+        horizon=2.0,
+        clock=lambda: now[0],
+        warn=warnings.append,
+    )
+
+    assert list(assembler.feed(press("f"))) == []
+    now[0] = 2.1
+    assert list(assembler.poll()) == []  # never guess the stranded partial chord
+
+    assert list(assembler.feed(press("j"))) == []
+    assert list(assembler.feed(press("j", down=False))) == [0x08]
+    assert warnings == ["abandoned six-key chord after a stuck-key horizon"]
+
+
+def test_physical_space_and_alt_remain_distinct_while_sharing_a_bit():
+    from qns.sixkey import VK_MENU, VK_SPACE
+
+    assembler = SixKeyAssembler(layout="6-key")
+
+    assert list(assembler.feed(press(vk=VK_SPACE))) == []
+    assert list(assembler.feed(press(vk=VK_MENU))) == []
+    assert list(assembler.feed(press(vk=VK_SPACE, down=False))) == []
+    assert list(assembler.feed(press(vk=VK_MENU, down=False))) == [0x40]
+
+
+def test_auto_repeat_is_ignored_but_a_fresh_duplicate_down_resets():
+    warnings = []
+    assembler = SixKeyAssembler(layout="6-key", warn=warnings.append)
+
+    assert list(assembler.feed(press("f"))) == []
+    assert list(assembler.feed(press("f", repeat=4))) == []
+    assert list(assembler.feed(press("f", down=False))) == [0x01]
+
+    assert list(assembler.feed(press("f"))) == []
+    assert list(assembler.feed(press("d"))) == []
+    # A new down record with repeat=1 is focus-loss-like evidence: the
+    # releases for the old chord may have gone to another window.
+    assert list(assembler.feed(press("f"))) == []
+    assert list(assembler.feed(press("f", down=False))) == [0x01]
+    assert list(assembler.feed(press("d", down=False))) == []
+    assert warnings == ["abandoned six-key chord after repeated key-down"]
+
+
 def test_named_keys_emit_once_and_respect_ctrl():
     from qns.keysource import LEFT_CTRL_PRESSED
     from qns.sixkey import VK_ESCAPE, VK_HOME
@@ -111,38 +172,86 @@ def test_decoder_buffers_a_record_split_across_reads():
     record = b"\x1b[70;33;102;1;34;1_"
 
     for cut in (1, 3, 8, len(record) - 1):
-        events, text = decoder.feed(record[:cut])
-        assert events == [] and text == "", f"emitted early at cut {cut}"
-        events, text = decoder.feed(record[cut:])
-        assert text == ""
+        items = decoder.feed(record[:cut])
+        assert items == [], f"emitted early at cut {cut}"
+        items = decoder.feed(record[cut:])
+        events = [item for item in items if isinstance(item, KeyEvent)]
+        assert not [item for item in items if isinstance(item, str)]
         assert [(event.char, event.down) for event in events] == [("f", True)]
 
 
 def test_decoder_passes_plain_characters_through_untouched():
     """A terminal that ignores the mode keeps sending characters."""
-    events, text = Win32InputDecoder().feed(b"fdffdfd\x1bf")
+    items = Win32InputDecoder().feed(b"fdffdfd\x1bf")
 
-    assert events == []
-    assert text == "fdffdfd\x1bf"
+    assert items == ["fdffdfd\x1bf"]
+
+
+def test_partial_win32_record_survives_stall_and_completes():
+    undecided = Win32InputDecoder()
+    assert undecided.feed(b"\x1b[") == []
+    assert undecided.flush_stale() == []
+
+    decoder = SixKeyInputDecoder(layout="6-key", timeout=0.04)
+    prefix = b"\x1b[70;33;102;0;0;1"
+
+    assert list(decoder.feed(prefix, now=0.000)) == []
+    assert list(decoder.poll(now=0.050)) == []
+    completed = list(decoder.feed(b"_", now=0.060))
+
+    assert [(event.vk, event.char, event.down) for event in completed] == [(0x46, "f", False)]
+
+
+def test_non_record_prefix_is_surrendered_intact_and_in_order():
+    decoder = Win32InputDecoder()
+    invalid = b"\x1b[70;xplain"
+
+    assert decoder.feed(invalid) == [invalid.decode("latin-1")]
+
+
+def test_one_pipeline_preserves_mixed_record_and_plain_character_order():
+    decoder = SixKeyInputDecoder(
+        layout="6-key",
+        timeout=None,
+        newline_is_return=False,
+    )
+    assembler = SixKeyAssembler(layout="6-key")
+    j_down = b"\x1b[74;36;106;1;0;1_"
+    j_up = b"\x1b[74;36;106;0;0;1_"
+
+    events = list(decoder.feed(b"f" + j_down + j_up + b"d\n", now=0.0))
+    events.extend(decoder.flush(now=0.0))
+
+    assert all(isinstance(event, KeyEvent) for event in events)
+    chords = [chord for event in events for chord in assembler.feed(event)]
+    assert chords == [0x01, 0x08, 0x02]
 
 
 def test_timed_fallback_ends_a_chord_on_a_quiet_interval():
-    assembler = TimedChordAssembler(layout="6-key", timeout=0.04)
+    decoder = TimedKeyDecoder(layout="6-key", timeout=0.04)
+    assembler = SixKeyAssembler(layout="6-key")
 
-    assert list(assembler.feed_char("f", now=0.000)) == []
-    assert list(assembler.feed_char("d", now=0.005)) == []
-    assert list(assembler.poll(now=0.030)) == []  # still within the chord
-    assert list(assembler.poll(now=0.050)) == [0x03]
-    assert list(assembler.poll(now=0.060)) == []  # committed only once
+    def chords(events):
+        return [chord for event in events for chord in assembler.feed(event)]
+
+    assert chords(decoder.feed_char("f", now=0.000)) == []
+    assert chords(decoder.feed_char("d", now=0.005)) == []
+    assert chords(decoder.poll(now=0.030)) == []  # still within the chord
+    assert chords(decoder.poll(now=0.050)) == [0x03]
+    assert chords(decoder.poll(now=0.060)) == []  # committed only once
 
 
 def test_timed_fallback_treats_a_repeated_key_as_a_new_cell():
     """One finger cannot press the same key twice inside one chord."""
-    assembler = TimedChordAssembler(layout="6-key", timeout=0.04)
+    decoder = TimedKeyDecoder(layout="6-key", timeout=0.04)
+    assembler = SixKeyAssembler(layout="6-key")
 
-    assert list(assembler.feed_char("f", now=0.000)) == []
-    assert list(assembler.feed_char("f", now=0.010)) == [0x01]
-    assert list(assembler.poll(now=0.060)) == [0x01]
+    def chords(events):
+        return [chord for event in events for chord in assembler.feed(event)]
+
+    assert chords(decoder.feed_char("f", now=0.000)) == []
+    assert chords(decoder.feed_char("f", now=0.010)) == [0x01]
+    assert chords(decoder.poll(now=0.060)) == [0x01]
 
 
 class _PipeStdin:
@@ -196,12 +305,13 @@ CTRL_C_RECORD = b"\x1b[67;46;3;1;8;1_"
 
 def test_ctrl_c_is_recognised_in_a_key_record():
     """win32-input-mode reports Ctrl-C instead of sending 0x03."""
-    events, text = Win32InputDecoder().feed(CTRL_C_RECORD)
+    items = Win32InputDecoder().feed(CTRL_C_RECORD)
+    events = [item for item in items if isinstance(item, KeyEvent)]
 
-    assert text == ""
+    assert not [item for item in items if isinstance(item, str)]
     assert events[0].interrupt is True
     # The release must not count, or the run would stop twice.
-    release, _ = Win32InputDecoder().feed(b"\x1b[67;46;3;0;8;1_")
+    release = Win32InputDecoder().feed(b"\x1b[67;46;3;0;8;1_")
     assert release[0].interrupt is False
 
 
@@ -326,6 +436,11 @@ def test_a_lone_escape_settles_as_the_escape_key(monkeypatch):
     piped = VTKeyDecoder(timeout=None)
     assert list(piped.feed("\x1b", now=0.0)) == []
     assert [event.vk for event in piped.flush()] == [VK_ESCAPE]
+
+    pipeline = SixKeyInputDecoder(layout="6-key", timeout=0.04)
+    assert list(pipeline.feed(b"\x1b", now=0.000)) == []
+    assert list(pipeline.poll(now=0.020)) == []
+    assert [event.vk for event in pipeline.poll(now=0.050)] == [VK_ESCAPE]
 
 
 def test_escape_and_enter_spell_their_chords_over_a_pipe(monkeypatch):

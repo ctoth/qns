@@ -108,7 +108,7 @@ class KeyEvent:
 
 
 class Win32InputDecoder:
-    """Split a terminal byte stream into key transitions and plain text.
+    """Split a terminal byte stream into ordered transitions and plain text.
 
     Records may straddle reads, so an incomplete sequence stays buffered
     until the rest of it arrives rather than being mistaken for text.
@@ -117,29 +117,36 @@ class Win32InputDecoder:
     def __init__(self) -> None:
         self._buffer = bytearray()
 
-    def feed(self, data: bytes) -> tuple[list[KeyEvent], str]:
-        """Consume bytes, returning decoded transitions and leftover text."""
+    def feed(self, data: bytes) -> list[KeyEvent | str]:
+        """Consume bytes, preserving record/text order in one result."""
         self._buffer.extend(data)
-        events: list[KeyEvent] = []
-        text: list[str] = []
+        items: list[KeyEvent | str] = []
         index = 0
         buffer = self._buffer
+
+        def append_text(text: str) -> None:
+            if not text:
+                return
+            if items and isinstance(items[-1], str):
+                items[-1] += text
+            else:
+                items.append(text)
 
         while index < len(buffer):
             escape = buffer.find(0x1B, index)
             if escape == -1:
-                text.append(buffer[index:].decode("latin-1"))
+                append_text(buffer[index:].decode("latin-1"))
                 index = len(buffer)
                 break
 
             if escape > index:
-                text.append(buffer[index:escape].decode("latin-1"))
+                append_text(buffer[index:escape].decode("latin-1"))
                 index = escape
 
             if escape + 1 >= len(buffer):
                 break  # bare ESC so far; the rest may still arrive
             if buffer[escape + 1] != 0x5B:  # '['
-                text.append("\x1b")
+                append_text("\x1b")
                 index = escape + 1
                 continue
 
@@ -149,32 +156,59 @@ class Win32InputDecoder:
             if buffer[final] == 0x5F:  # '_'
                 event = _parse_record(bytes(buffer[escape + 2 : final]))
                 if event is not None:
-                    events.append(event)
+                    items.append(event)
+                else:
+                    append_text(buffer[escape : final + 1].decode("latin-1"))
             else:
                 # Some other CSI sequence - a status reply, or an ordinary
                 # key from a terminal that ignored the mode.  Hand it back
                 # as text so the caller's fallback can make sense of it.
-                text.append(buffer[escape : final + 1].decode("latin-1"))
+                append_text(buffer[escape : final + 1].decode("latin-1"))
             index = final + 1
 
         del buffer[:index]
-        return events, "".join(text)
+        return items
 
     @property
     def pending(self) -> bool:
         """Whether an unfinished sequence is being held for its rest."""
         return bool(self._buffer)
 
-    def flush(self) -> str:
+    @property
+    def stale_flushable(self) -> bool:
+        """Whether quiet can prove the pending bytes are not a record.
+
+        A lone Escape must eventually become the Escape key.  Once a CSI
+        contains the numeric/semicolon parameter prefix of a Win32 input
+        record, however, elapsed wall time proves nothing: a terminal write
+        may simply have stalled between bytes.
+        """
+        return bool(self._buffer) and not self._viable_record_prefix()
+
+    def flush_stale(self) -> list[str]:
+        """Surrender pending bytes only when they cannot be a record."""
+        if not self.stale_flushable:
+            return []
+        return self.flush()
+
+    def flush(self) -> list[str]:
         """Give up on an unfinished sequence and hand back its bytes.
 
         A record split across reads is worth waiting for; a bare ESC that
         stays bare is the Escape key, and would otherwise be held here
-        forever.  The caller decides which by how long it has waited.
+        forever.  End-of-input is the only reason to surrender a viable
+        record prefix.
         """
         text = self._buffer.decode("latin-1")
         self._buffer.clear()
-        return text
+        return [text] if text else []
+
+    def _viable_record_prefix(self) -> bool:
+        """Whether the held bytes can still become a Win32 input record."""
+        if not self._buffer.startswith(b"\x1b["):
+            return False
+        payload = self._buffer[2:]
+        return all(byte == ord(";") or ord("0") <= byte <= ord("9") for byte in payload)
 
 
 # Final bytes that name a key: CSI arrows and Home/End, and the SS3
