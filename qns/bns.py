@@ -1140,7 +1140,7 @@ class BNS:
         if self.stdin_device not in CHORD_STDIN_DEVICES:
             return False
         driver = self._input_driver
-        return driver is None or driver.busy
+        return driver is not None and driver.busy
 
     def _execute_budget(self, cycles: int) -> int:
         """Execute at least the requested cycle budget with correct device ordering."""
@@ -1309,9 +1309,13 @@ class BNS:
         def read_stdin() -> None:
             stdin_started.set()
             if self.stdin_device == "keyboard":
+                if input_driver is None:
+                    return
                 while character := _read_stdin_character():
                     input_driver.queue.put(character)
             elif self.stdin_device in ("6-key", "6-key-dvorak"):
+                if input_driver is None:
+                    return
                 # Chords arrive already assembled, as dot bitmasks;
                 # ChordInputDriver's queue takes those directly.
                 _six_key_reader(
@@ -1328,6 +1332,8 @@ class BNS:
                         self._stdin_error_queue.put(error)
                         return
                     if isinstance(event, KeyboardInput):
+                        if input_driver is None:
+                            continue
                         if isinstance(event.value, str):
                             for character in event.value:
                                 input_driver.queue.put(character)
@@ -1344,7 +1350,10 @@ class BNS:
                 while data := sys.stdin.buffer.read(1):
                     self._serial_input_queue.put(data[0])
 
-        if self.stdin_device is not None:
+        stdin_reader_available = self.stdin_device is not None and (
+            self.stdin_device not in CHORD_STDIN_DEVICES or input_driver is not None
+        )
+        if stdin_reader_available:
             # Enter cbreak before the reader starts, and leave it from
             # this thread: the reader is a daemon and would be killed
             # without unwinding, stranding the user's terminal.
