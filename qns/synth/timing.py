@@ -1,0 +1,18 @@
+"""Shared audio fitting for the SSI-263 phoneme-end lifecycle."""
+
+from __future__ import annotations
+
+import numpy as np
+
+
+def fit_audio_to_elapsed(samples: np.ndarray, elapsed_samples: int) -> np.ndarray:
+    """Return exactly the audio span for elapsed emulated speech time.
+
+    Superseded phonemes lose their unplayed tail.  A phoneme held longer
+    than the available modeled content retains that content and fills the
+    remaining emulated time with silence.
+    """
+    elapsed_samples = max(0, elapsed_samples)
+    if elapsed_samples <= len(samples):
+        return samples[:elapsed_samples]
+    return np.pad(samples, (0, elapsed_samples - len(samples)))

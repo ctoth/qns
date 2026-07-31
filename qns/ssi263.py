@@ -193,7 +193,10 @@ class SpeechBackend(Protocol):
         """Close the host audio output."""
 
     def play(self, state: SSI263State) -> None:
-        """Produce audio for one decoded phoneme event."""
+        """Begin one decoded phoneme event."""
+
+    def end_phoneme(self, elapsed_samples: int) -> None:
+        """Commit audio equal to the phoneme's elapsed emulated time."""
 
     def realtime_lead_seconds(self) -> float:
         """Return bounded run-ahead needed to keep host audio continuous."""
@@ -254,6 +257,8 @@ class SSI263:
         # Timing for INT1 (phoneme completion interrupt)
         self._pending_irq_cycle: int | None = None  # Cycle when INT1 should fire
         self._current_cycle: int = 0  # Current cycle count (set via set_cycle_count)
+        self._phoneme_start_cycle: int | None = None
+        self._phoneme_modeled_samples = 0
 
         # Callbacks
         self._on_phoneme: Callable[[int, str], None] | None = None
@@ -369,6 +374,7 @@ class SSI263:
         mode enables them.
         """
         if self._pending_irq_cycle is not None and current_cycle >= self._pending_irq_cycle:
+            self._end_active_phoneme(self._pending_irq_cycle)
             self._pending_irq_cycle = None
             self.speaking = False  # Phoneme finished
             if not self.control:
@@ -435,6 +441,7 @@ class SSI263:
                 self._speak_phoneme()
             elif not was_standby and self.control:
                 # CTL transition 0->1: standby de-asserts the interrupt too
+                self._end_active_phoneme(self._current_cycle)
                 self.speaking = False
                 self._d7 = False
                 if self._irq_callback:
@@ -459,6 +466,7 @@ class SSI263:
 
     def _speak_phoneme(self) -> None:
         """Capture one phoneme event, notify observers, and schedule INT1."""
+        self._end_active_phoneme(self._current_cycle)
         self.phoneme_log.append(self.phoneme)
 
         if self._on_phoneme:
@@ -475,7 +483,30 @@ class SSI263:
         # which triggers INT1 and lets the ISR queue the next phoneme.  The
         # completion is scheduled whether or not interrupts are enabled,
         # because it also drives the A/!R status bit.
+        self._phoneme_start_cycle = self._current_cycle
+        self._phoneme_modeled_samples = playback_length_samples(
+            self.phoneme,
+            self.playback_duration,
+            self.rate,
+        )
         self._pending_irq_cycle = self._current_cycle + self._calc_phoneme_duration_cycles()
+
+    def _end_active_phoneme(self, end_cycle: int) -> None:
+        """End the active phoneme at an exact emulated-sample boundary."""
+        if self._phoneme_start_cycle is None:
+            return
+
+        elapsed_cycles = max(0, end_cycle - self._phoneme_start_cycle)
+        if self._pending_irq_cycle is not None and end_cycle >= self._pending_irq_cycle:
+            elapsed_samples = self._phoneme_modeled_samples
+        else:
+            elapsed_samples = int(elapsed_cycles * _PHONEME_SAMPLE_RATE / self._clock)
+            elapsed_samples = min(elapsed_samples, self._phoneme_modeled_samples)
+
+        if self._synth is not None:
+            self._synth.end_phoneme(elapsed_samples)
+        self._phoneme_start_cycle = None
+        self._phoneme_modeled_samples = 0
 
     def get_io_handlers(self) -> list[tuple[int, Callable[[int], int], Callable[[int, int], None]]]:
         """Return (port, read_handler, write_handler) for all ports."""

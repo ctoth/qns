@@ -15,6 +15,7 @@ import numpy as np
 from ..ssi263 import SSI263State, playback_length_samples
 from .lpc import SAMPLE_RATE, LPCStream, warm_analysis_cache
 from .player import AudioPlayer
+from .timing import fit_audio_to_elapsed
 
 
 class SSI263LPCSynth:
@@ -31,6 +32,7 @@ class SSI263LPCSynth:
         self._player = AudioPlayer(sample_rate=SAMPLE_RATE) if audio_enabled else None
         self._phoneme_callback: Callable[[int], None] | None = None
         self._stream = LPCStream()
+        self._pending_audio: np.ndarray | None = None
         # Analysing a capture the first time it is spoken would land inside
         # the emulator's real-time budget.  All 62 cost ~40 ms together, so
         # pay it once here instead.
@@ -51,13 +53,24 @@ class SSI263LPCSynth:
         self._phoneme_callback = callback
 
     def play(self, state: SSI263State) -> None:
-        """Produce audio for one decoded phoneme event from the chip."""
-        self._emit(
+        """Stage audio for one decoded phoneme event from the chip."""
+        if self._phoneme_callback is not None:
+            self._phoneme_callback(state.phoneme)
+        self._pending_audio = self.get_phoneme_audio(
             state.phoneme,
             state.amplitude,
             state.playback_duration,
             state.rate,
         )
+
+    def end_phoneme(self, elapsed_samples: int) -> None:
+        """Queue a decay-tail-capped span equal to elapsed chip time."""
+        if self._pending_audio is None:
+            return
+        audio = fit_audio_to_elapsed(self._pending_audio, elapsed_samples)
+        self._pending_audio = None
+        if self._player is not None:
+            self._player.play(audio)
 
     def speak_phoneme(self, phoneme: int, amplitude: int = 15) -> None:
         """Play a phoneme directly, outside emulator integration."""
@@ -86,23 +99,12 @@ class SSI263LPCSynth:
         and pitch phase, which is exactly what removes the boundary.
         """
         if phoneme & 0x3F == 0:
-            # A pause gets no audio, however long the duration model claims.
-            # The model has no capture to measure and borrows the first
-            # phoneme's length, giving 30 ms; measured against the cycle
-            # counts in a --trace-speech run the firmware writes a pause and
-            # the next phoneme without waiting at all, so pauses really
-            # elapse in ~0 ms.  Honouring the model instead put a hole
-            # between every phoneme and stretched the greeting from 3.3 to
-            # 5.7 seconds.  Silence arrives on its own from the emulator not
-            # feeding the player while the firmware is quiet.
-            #
-            # Continuity is deliberately left alone.  A pause that elapses in
-            # no time is a no-op between two phonemes, so resetting the
-            # stream here would start every phoneme cold - and with 88 pauses
-            # around the greeting's 28 phonemes, that is every phoneme,
-            # which is the isolated-capture choppiness this backend exists
-            # to remove.
-            return np.zeros(1, dtype=np.float32)
+            # Preserve LPC continuity while representing the modeled pause;
+            # end_phoneme will truncate this to the time that actually passed.
+            return np.zeros(
+                playback_length_samples(phoneme, duration, rate),
+                dtype=np.float32,
+            )
 
         samples = playback_length_samples(phoneme, duration, rate)
         return self._stream.render(phoneme & 0x3F, samples, amplitude)

@@ -51,6 +51,9 @@ def test_chip_snapshot_reaches_backend_play() -> None:
         def play(self, state) -> None:
             states.append(state)
 
+        def end_phoneme(self, elapsed_samples: int) -> None:
+            pass
+
     chip.set_synth(Backend())
     chip.write(chip.base_port + chip.REG_CTRLAMP, 0x0F)
     chip.write(chip.base_port + chip.REG_DURPHON, 0xC1)
@@ -72,6 +75,9 @@ def test_chip_snapshot_reports_latched_transitioned_inflection_mode() -> None:
 
         def play(self, state) -> None:
             states.append(state)
+
+        def end_phoneme(self, elapsed_samples: int) -> None:
+            pass
 
     chip.set_synth(Backend())
     chip.write(chip.base_port + chip.REG_DURPHON, 0xC2)

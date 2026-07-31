@@ -8,6 +8,7 @@ import numpy as np
 from ..ssi263 import SSI263State, playback_length_samples
 from .phonemes import PHONEME_INFO, SAMPLE_RATE, get_phoneme_samples
 from .player import AudioPlayer
+from .timing import fit_audio_to_elapsed
 
 _NORMAL_INFLECTION = 3072
 _NORMAL_INFLECTION_TARGET = 16
@@ -36,6 +37,7 @@ class SSI263PCMSynth:
         self._inflection_step = 0.0
         self._inflection_frames_remaining = 0
         self._last_inflection_setting: int | None = None
+        self._pending_audio: np.ndarray | None = None
 
     def start(self) -> None:
         """Start the host audio stream when audio output is enabled."""
@@ -52,8 +54,10 @@ class SSI263PCMSynth:
         self._phoneme_callback = callback
 
     def play(self, state: SSI263State) -> None:
-        """Produce audio for one decoded phoneme event from the chip."""
-        self._emit(
+        """Stage audio for one decoded phoneme event from the chip."""
+        if self._phoneme_callback is not None:
+            self._phoneme_callback(state.phoneme)
+        self._pending_audio = self.get_phoneme_audio(
             state.phoneme,
             state.amplitude,
             state.playback_duration,
@@ -61,6 +65,15 @@ class SSI263PCMSynth:
             state.inflection,
             state.transitioned_inflection,
         )
+
+    def end_phoneme(self, elapsed_samples: int) -> None:
+        """Queue only the audio time that the chip says elapsed."""
+        if self._pending_audio is None:
+            return
+        audio = fit_audio_to_elapsed(self._pending_audio, elapsed_samples)
+        self._pending_audio = None
+        if self._player is not None:
+            self._player.play(audio)
 
     def speak_phoneme(self, phoneme: int, amplitude: int = 15) -> None:
         """Play a phoneme directly, outside emulator integration."""
@@ -285,7 +298,10 @@ class SSI263PCMSynth:
         """
         code = phoneme & 0x3F
         if code == 0:
-            samples = np.zeros(1, dtype=np.float32)
+            samples = np.zeros(
+                playback_length_samples(phoneme, duration, rate),
+                dtype=np.float32,
+            )
         else:
             if code == 1:
                 code = 2
