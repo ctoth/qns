@@ -39,9 +39,15 @@ Therefore `MFULL3` is the common source-independent path for both fixed messages
 
 This completes investigation task 2.
 
-### `qns.cpu.Z180.get_reg` and existing PC watch
+### z-core register access and existing PC watch
 
-The existing CPU wrapper already exposes the live `BC` and `HL` register pairs through `get_reg(Z180.BC)` and `get_reg(Z180.HL)`. Its existing native PC watch records only hit count, cycle, and `CBAR`; it does not retain the text registers or bytes. A new generic decoder interface is unnecessary. The narrow implementation observes the existing execution/memory callback at each linked post-`LD HL,SPBUF` capture site.
+The production z-core binding exposes the live `BC` and `HL` register pairs
+through `BNS.cpu.get_reg(CompatZ180.BC)` and
+`BNS.cpu.get_reg(CompatZ180.HL)`. Its native PC watch records only hit count,
+cycle, and `CBAR`; it does not retain the text registers or bytes. A new
+generic decoder interface is unnecessary. The narrow implementation observes
+the existing execution/memory callback at each linked post-`LD HL,SPBUF`
+capture site.
 
 ### `SPTST.C::spmain`
 
@@ -510,8 +516,9 @@ Observed problems (candidate plan items, not yet verified complete):
 5. Loader logic (BNS package CRC scan) inline in `BNS.load_rom`; NOTES above
    prove Millennium packages need a discovered IMAGE_OFFSET contract — loader
    should become its own module with the source-defined boundary scan.
-6. cpu.py `CFFI_AVAILABLE` stub dual-path on every method — candidate: drop
-   stub or isolate. asci_debug_state 60-line dict literal duplicated.
+6. The legacy Python CPU wrapper and its stub dual-path were deleted; z-core
+   is the sole production CPU owner. `asci_debug_state` still has a duplicated
+   60-line dict literal.
 7. io.py holds 8 unrelated device classes in one file — candidate split into
    devices/ package.
 

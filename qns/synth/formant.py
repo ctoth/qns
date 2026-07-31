@@ -5,8 +5,10 @@ Generates speech audio using formant synthesis with parameters from the SC-01 RO
 
 Signal flow:
     VOICE PATH: Glottal wave -> VA amp -> F1 -> F2v -> ...
-    NOISE PATH: LFSR noise -> FA amp -> Noise shaper -> FC amp -> F2n -> ...
-    MIXED: ... -> F3 -> F4 -> Closure -> Final LP -> Output
+    NOISE PATH: LFSR noise -> FA amp -> Noise shaper -> second injection
+    MIXED: Voice -> F3 -> F4 -> second noise injection -> Closure -> Final LP
+
+The primary F2 noise injection is deliberately omitted, matching MAME.
 """
 
 from dataclasses import dataclass, field
@@ -99,7 +101,6 @@ class FormantSynth:
         # Filter coefficients
         self._f1 = FilterCoeffs()
         self._f2v = FilterCoeffs()
-        self._f2n = FilterCoeffs(a=[0.0, 0.0], b=[1.0, 0.0])  # Disabled
         self._f3 = FilterCoeffs()
         self._f4 = FilterCoeffs()
         self._fx = FilterCoeffs(a=[1.0], b=[1.0, 0.0])
@@ -112,8 +113,6 @@ class FormantSynth:
 
         self._noise_1 = [0.0] * 3
         self._noise_2 = [0.0] * 3
-        self._noise_3 = [0.0] * 2
-        self._noise_4 = [0.0] * 2
 
         self._vn_1 = [0.0] * 4
         self._vn_2 = [0.0] * 4
@@ -348,37 +347,30 @@ class FormantSynth:
         n = self._apply_filter(self._noise_1, self._noise_2, self._fn)
         self._shift_hist(n, self._noise_2)
 
-        # 7. Scale with F2 noise coefficient
-        n2 = n * self._filt_fc / 15.0
-        self._shift_hist(n2, self._noise_3)
-
-        # 8. F2 noise filter (currently bypassed like MAME)
-        n2 = self._apply_filter_2(self._noise_3, self._noise_4, self._f2n)
-        self._shift_hist(n2, self._noise_4)
-
         # === MIXED PATH ===
 
-        # 9. Combine voice and noise F2 outputs
-        vn = v + n2
+        # MAME deliberately omits the primary F2 noise injection. The shaped
+        # noise remains live for the second injection after the F2 voice path.
+        vn = v
         self._shift_hist(vn, self._vn_1)
 
-        # 10. F3 filter
+        # 7. F3 filter
         vn = self._apply_filter(self._vn_1, self._vn_2, self._f3)
         self._shift_hist(vn, self._vn_2)
 
-        # 11. Second noise injection
+        # 8. Second noise injection
         vn += n * (5 + (15 - self._filt_fc)) / 20.0
         self._shift_hist(vn, self._vn_3)
 
-        # 12. F4 filter
+        # 9. F4 filter
         vn = self._apply_filter(self._vn_3, self._vn_4, self._f4)
         self._shift_hist(vn, self._vn_4)
 
-        # 13. Glottal closure amplitude
+        # 10. Glottal closure amplitude
         vn = vn * (7 - (self._closure >> 2)) / 7.0
         self._shift_hist(vn, self._vn_5)
 
-        # 14. Final lowpass filter
+        # 11. Final lowpass filter
         vn = self._apply_filter_2(self._vn_5, self._vn_6, self._fx)
         self._shift_hist(vn, self._vn_6)
 
@@ -470,8 +462,6 @@ class FormantSynth:
         c2t = 829 + self._bits_to_caps(self._filt_f2q, [1390, 2965, 5875, 11297])
         c3 = 2352 + self._bits_to_caps(self._filt_f2, [833, 1663, 3164, 6327, 12654])
         self._f2v = self._build_standard_filter(24840, 29154, c2t, 38180, c3, 34270)
-        # F2 noise injection filter is disabled (like MAME)
-        self._f2n = FilterCoeffs(a=[0.0, 0.0], b=[1.0, 0.0])
 
     def _build_f3_filter(self) -> None:
         """Build F3 formant filter."""

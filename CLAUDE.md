@@ -74,7 +74,8 @@ qns/
 ├── qns/
 │   ├── synth/                # SSI-263 audio backends
 │   │   ├── __init__.py       # Exports SSI263Synth, SSI263PCMSynth, FormantSynth
-│   │   ├── phonemes.py       # AppleWin captures: 62 phonemes @ 22050 Hz
+│   │   ├── phonemes.py       # Loader for the generated AppleWin captures
+│   │   ├── phonemes.npz      # 62 compact phoneme captures @ 22050 Hz
 │   │   ├── lpc.py            # LPC analysis + LPCStream continuous voice
 │   │   ├── ssi263_lpc.py     # LPC-resynthesis backend
 │   │   ├── ssi263_pcm.py     # PCM-capture backend (default)
@@ -85,8 +86,6 @@ qns/
 │   │   └── player.py         # sounddevice real-time audio
 │   ├── devices/              # Peripherals: bus, keyboards, displays,
 │   │                         # rtc, clock_pic, gas_gauge, watchdog
-│   ├── _z180_cffi.*.pyd      # Legacy benchmark extension (optional)
-│   ├── cpu.py                # Legacy CFFI benchmark subject
 │   ├── ssi263.py             # SSI-263 chip: register decode, phoneme
 │   │                         # capture, INT1; SpeechBackend protocol
 │   ├── memory.py             # Memory + Z180 MMU (physical addressing)
@@ -100,8 +99,7 @@ qns/
 │   ├── cli.py                # argparse CLI (python -m qns.bns)
 │   └── bns.py                # Main emulator machine
 ├── tools/
-│   ├── build_ffi.py          # Legacy benchmark build script
-│   ├── extract_phonemes.py   # Extract phonemes from AppleWin
+│   ├── extract_phonemes.py   # Regenerate compact captures from AppleWin
 │   ├── decode_sc01_rom.py    # Regenerates qns/synth/sc01_rom.py
 │   ├── extract_firmware.py   # Package -> .bin extraction (uses qns.loader)
 │   ├── probe_terminal_keys.py # What key info a terminal can deliver
@@ -119,7 +117,6 @@ qns/
 ## Related Resources
 
 - **z-core**: `https://github.com/ctoth/z-core` - production Z180 core and Python binding
-- **z180emu**: `C:\Users\Q\src\z180emu\` - legacy CFFI benchmark core
 - **BNS source**: `C:\Users\David\Dropbox\Daiverd and Q\bns\` - Original Blazie
   source. `bsp/` holds the firmware: `BSSPEECH.ASM` and `BSPMON.ASM` (ISSET,
   the SSI-263 driver), `BSSERIAL.ASM` (Echo parameter handlers), `BRL.ASM`
@@ -143,8 +140,8 @@ qns/
 # Refresh the pinned z-core dependency
 uv sync
 
-# Build the optional legacy CFFI benchmark after changes to build_ffi.py
-uv run tools/build_ffi.py
+# Regenerate the compact AppleWin phoneme archive
+uv run python tools/extract_phonemes.py
 
 # Run synth tests
 uv run pytest tests/test_synth.py -v

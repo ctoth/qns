@@ -137,19 +137,12 @@ class SSI263PCMSynth:
         if target_length <= len(samples):
             return samples[:target_length]
 
-        middle = samples[len(samples) // 4 : 3 * len(samples) // 4]
-        if len(middle) < 8:
-            return np.pad(samples, (0, target_length - len(samples)))
-
-        centered = middle - middle.mean()
-        correlation = np.correlate(centered, centered, "full")[len(middle) - 1 :]
-        low = int(SAMPLE_RATE / 400)
-        high = min(int(SAMPLE_RATE / 60), len(correlation) - 1)
-        if high <= low or correlation[0] <= 0:
+        period, strength = SSI263PCMSynth._periodicity(samples)
+        if period == 0:
+            if len(samples) < 8:
+                return np.pad(samples, (0, target_length - len(samples)))
             return np.resize(samples, target_length)
 
-        period = low + int(np.argmax(correlation[low:high]))
-        strength = float(correlation[period] / correlation[0])
         if strength < 0.35:
             return np.resize(samples, target_length)
 

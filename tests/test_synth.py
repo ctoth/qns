@@ -3,6 +3,7 @@
 Run with: uv run pytest tests/test_synth.py -v
 """
 
+import hashlib
 import subprocess
 import sys
 
@@ -90,6 +91,54 @@ def test_get_phoneme_samples():
     samples = get_phoneme_samples(61)
     assert len(samples) > 0
     assert len(samples) == PHONEME_INFO[61][1]
+
+
+def test_pcm_rate_extension_uses_shared_periodicity_owner(monkeypatch):
+    """Rate extension and pitch shifting must share one periodicity decision."""
+    from qns.synth.ssi263_pcm import SSI263PCMSynth
+
+    samples = np.arange(128, dtype=np.float32)
+    observed = []
+
+    def periodicity(candidate):
+        observed.append(candidate)
+        return 16, 1.0
+
+    monkeypatch.setattr(SSI263PCMSynth, "_periodicity", staticmethod(periodicity))
+
+    extended = SSI263PCMSynth._apply_rate(samples, 256)
+
+    assert len(extended) == 256
+    assert len(observed) == 1
+    assert observed[0] is samples
+
+
+def test_pcm_rate_extension_output_is_unchanged_by_periodicity_cleanup():
+    """Pin the pre-cleanup stretched capture byte-for-byte."""
+    from qns.synth.phonemes import get_phoneme_samples
+    from qns.synth.ssi263_pcm import SSI263PCMSynth
+
+    samples = get_phoneme_samples(0).astype(np.float32)
+    extended = SSI263PCMSynth._apply_rate(samples, len(samples) + 1_234)
+
+    assert (
+        hashlib.sha256(extended.astype("<f4").tobytes()).hexdigest()
+        == "65f580e0130a5bffb26a2e0c8e2d45b04e32d71ed906c9b8f5ee2b782fca049c"
+    )
+
+
+def test_disabled_f2n_path_has_no_dead_filter_and_preserves_output():
+    """MAME deliberately omits F2n; QNS should not compute a zeroed branch."""
+    from qns.synth.formant import FormantSynth
+
+    synth = FormantSynth()
+    output = synth.synthesize_phoneme(0x01, duration_override=0.05)
+
+    assert not hasattr(synth, "_f2n")
+    assert (
+        hashlib.sha256(output.astype("<f4").tobytes()).hexdigest()
+        == "aaea168e8509031653d13c6d28a492a2028771e1bec96304891f163d4d62da99"
+    )
 
 
 # =============================================================================

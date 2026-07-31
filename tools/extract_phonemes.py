@@ -1,21 +1,24 @@
-"""Extract phoneme samples from AppleWin SSI263Phonemes.h.
+"""Extract compact phoneme samples from AppleWin ``SSI263Phonemes.h``.
 
-Reads the AppleWin header file and generates qns/synth/phonemes.py
-with numpy arrays for phoneme data.
+The generated NPZ is a release artifact tracked in the repository. Its
+semantic contents are pinned by tests; ZIP container bytes are not.
 
 Usage:
-    uv run python tools/extract_phonemes.py
+    uv run python tools/extract_phonemes.py [path/to/SSI263Phonemes.h]
 """
 
 import re
 import sys
 from pathlib import Path
 
+import numpy as np
+
+SAMPLE_RATE = 22_050
 DEFAULT_HEADERS = (
     Path.home() / "src" / "AppleWin" / "source" / "SSI263Phonemes.h",
     Path(r"C:\Users\Q\src\AppleWin\source\SSI263Phonemes.h"),
 )
-OUTPUT_FILE = Path(__file__).parent.parent / "qns" / "synth" / "phonemes.py"
+OUTPUT_FILE = Path(__file__).parent.parent / "qns" / "synth" / "phonemes.npz"
 
 
 def find_header() -> Path:
@@ -32,139 +35,74 @@ def find_header() -> Path:
 
 
 def extract_phoneme_info(text: str) -> list[tuple[int, int]]:
-    """Parse g_nPhonemeInfo array - returns (offset_samples, length_samples) pairs."""
-    # Find the array content between { and };
+    """Parse g_nPhonemeInfo into (offset_samples, length_samples) pairs."""
     match = re.search(r"g_nPhonemeInfo\[62\]\s*=\s*\{([^;]+)\};", text, re.DOTALL)
     if not match:
         raise ValueError("Could not find g_nPhonemeInfo")
 
-    content = match.group(1)
-    # Parse {offset,length} pairs
-    pairs = re.findall(r"\{(0x[0-9A-Fa-f]+),(0x[0-9A-Fa-f]+)\}", content)
-
-    # nOffset and nLength are already in samples, not bytes: AppleWin indexes
-    # g_nPhonemeData (a short[]) directly with nOffset, and the lengths sum to
-    # exactly the array's declared element count.  Halving them here made every
-    # phoneme read half its length from half its offset.
+    pairs = re.findall(
+        r"\{(0x[0-9A-Fa-f]+),(0x[0-9A-Fa-f]+)\}",
+        match.group(1),
+    )
     info = [(int(offset, 16), int(length, 16)) for offset, length in pairs]
 
+    if len(info) != 62:
+        raise ValueError(f"expected 62 phonemes, found {len(info)}")
     total = info[-1][0] + info[-1][1]
-    if total != sum(length for _, length in info):
+    lengths_total = sum(length for _, length in info)
+    if total != lengths_total:
         raise ValueError(
             f"phoneme table is not contiguous: spans {total} samples but "
-            f"lengths sum to {sum(length for _, length in info)}"
+            f"lengths sum to {lengths_total}"
         )
     return info
 
 
 def extract_phoneme_data(text: str) -> list[int]:
-    """Parse g_nPhonemeData array - returns signed 16-bit samples."""
-    # Find the array content
+    """Parse g_nPhonemeData into signed 16-bit samples."""
     match = re.search(r"g_nPhonemeData\[156566\]\s*=\s*\{([^;]+)\};", text, re.DOTALL)
     if not match:
         raise ValueError("Could not find g_nPhonemeData")
 
-    content = match.group(1)
-    # Parse hex values
-    values = re.findall(r"0x([0-9A-Fa-f]+)", content)
-
-    # Convert unsigned 16-bit to signed
+    values = re.findall(r"0x([0-9A-Fa-f]+)", match.group(1))
     samples = []
-    for v in values:
-        unsigned = int(v, 16)
-        signed = unsigned if unsigned < 32768 else unsigned - 65536
-        samples.append(signed)
+    for value in values:
+        unsigned = int(value, 16)
+        samples.append(unsigned if unsigned < 32768 else unsigned - 65536)
 
+    if len(samples) != 156_566:
+        raise ValueError(f"expected 156566 samples, found {len(samples)}")
     return samples
 
 
-def generate_phonemes_py(info: list[tuple[int, int]], data: list[int]) -> str:
-    """Generate the phonemes.py module content."""
-    lines = [
-        '"""SSI-263 Phoneme Sample Data.',
-        "",
-        "Auto-generated from AppleWin SSI263Phonemes.h",
-        "Do not edit manually - regenerate with tools/extract_phonemes.py",
-        '"""',
-        "",
-        "import numpy as np",
-        "",
-        "# Sample rate for all phoneme data",
-        "SAMPLE_RATE = 22050",
-        "",
-        "# Phoneme info: (offset_in_samples, length_in_samples)",
-        f"# {len(info)} phonemes total",
-        "PHONEME_INFO: list[tuple[int, int]] = [",
-    ]
-
-    for offset, length in info:
-        lines.append(f"    ({offset}, {length}),")
-
-    lines.append("]")
-    lines.append("")
-
-    # For the data, we'll use a more compact representation
-    lines.append(f"# Raw 16-bit signed samples ({len(data)} total)")
-    lines.append("# Stored as numpy array for efficient slicing")
-    lines.append("_PHONEME_DATA_RAW = (")
-
-    # Write data in chunks of 16 values per line for readability
-    chunk_size = 16
-    for i in range(0, len(data), chunk_size):
-        chunk = data[i : i + chunk_size]
-        line = "    " + ",".join(str(v) for v in chunk) + ","
-        lines.append(line)
-
-    lines.append(")")
-    lines.append("")
-    lines.append("PHONEME_DATA = np.array(_PHONEME_DATA_RAW, dtype=np.int16)")
-    lines.append("")
-    lines.append("")
-    lines.append("def get_phoneme_samples(phoneme_index: int) -> np.ndarray:")
-    lines.append('    """Get samples for a specific phoneme.')
-    lines.append("")
-    lines.append("    Args:")
-    lines.append("        phoneme_index: Phoneme index (0-61)")
-    lines.append("")
-    lines.append("    Returns:")
-    lines.append("        numpy array of signed 16-bit samples")
-    lines.append('    """')
-    lines.append("    if not 0 <= phoneme_index < len(PHONEME_INFO):")
-    lines.append(
-        "        raise ValueError("
-        f'f"Invalid phoneme index {{phoneme_index}}, must be 0-{len(info) - 1}")'
+def write_archive(
+    output: Path,
+    info: list[tuple[int, int]],
+    data: list[int],
+) -> None:
+    """Write the compact, typed phoneme archive."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output,
+        sample_rate=np.asarray(SAMPLE_RATE, dtype="<u4"),
+        phoneme_info=np.asarray(info, dtype="<u4"),
+        phoneme_data=np.asarray(data, dtype="<i2"),
     )
-    lines.append("")
-    lines.append("    offset, length = PHONEME_INFO[phoneme_index]")
-    lines.append("    return PHONEME_DATA[offset : offset + length]")
-    lines.append("")
-
-    return "\n".join(lines)
 
 
-def main():
+def main() -> None:
     header = find_header()
     print(f"Reading {header}...")
-    text = header.read_text()
+    text = header.read_text(encoding="utf-8")
 
-    print("Extracting phoneme info...")
     info = extract_phoneme_info(text)
-    print(f"  Found {len(info)} phonemes")
-
-    print("Extracting phoneme data...")
     data = extract_phoneme_data(text)
-    print(f"  Found {len(data)} samples")
+    write_archive(OUTPUT_FILE, info, data)
 
-    print(f"Generating {OUTPUT_FILE}...")
-    content = generate_phonemes_py(info, data)
-
-    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_FILE.write_text(content)
-
-    print("Done!")
+    print(f"Wrote {OUTPUT_FILE}")
     print(f"  Phonemes: {len(info)}")
     print(f"  Samples: {len(data)}")
-    print(f"  Output: {OUTPUT_FILE}")
+    print(f"  Sample rate: {SAMPLE_RATE} Hz")
 
 
 if __name__ == "__main__":
