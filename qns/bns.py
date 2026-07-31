@@ -35,11 +35,13 @@ from .keysource import (
     windows_console_key_events,
 )
 from .loader import (
+    FIFTH_RETAINED_SPEECH_CELL_DEFAULT,
     RETAINED_SPEECH_DEFAULTS,
     EnglishBoundary,
     InputBoundary,
     SpeechParameters,
     find_english_boundary,
+    find_fifth_retained_speech_cell,
     find_input_boundary,
     find_speech_parameters,
     find_speech_power_timeout,
@@ -1229,6 +1231,18 @@ class BNS:
         if voice_inflection_flag is not None:
             self.memory.write(voice_inflection_flag, 1)
             print(f"Voice inflection enabled @ 0x{voice_inflection_flag:05X}")
+
+        fifth_retained_speech_cell = find_fifth_retained_speech_cell(firmware)
+        if fifth_retained_speech_cell is not None:
+            self.memory.write(
+                fifth_retained_speech_cell,
+                FIFTH_RETAINED_SPEECH_CELL_DEFAULT,
+            )
+            print(
+                "Fifth retained speech cell: "
+                f"{FIFTH_RETAINED_SPEECH_CELL_DEFAULT} @ "
+                f"0x{fifth_retained_speech_cell:05X}"
+            )
 
         self._speech_parameters = find_speech_parameters(
             firmware,

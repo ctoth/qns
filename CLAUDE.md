@@ -50,6 +50,11 @@ discovers the cells and `BNS` seeds them at load; `--force-amplitude` is no
 longer needed. Override with `--volume/--rate/--pitch/--frequency` (names follow
 `BSAPI.H`, so `--pitch` is filter frequency and `--frequency` is inflection).
 
+A warm reset legitimately reverts retained speech settings to the firmware's
+factory values: volume 6, rate 11, filter frequency 7, and inflection 69. This
+matches the hardware; do not preserve the load-time seed values across the
+firmware's reset gesture.
+
 ```bash
 # Trace the phoneme stream (streams to CSV as it runs)
 uv run -m qns.bns --cycles 6000000 --trace-speech speech.csv roms/bspeng.bns

@@ -379,6 +379,7 @@ RETAINED_SPEECH_DEFAULTS = {
     "inflection": 128,
     "filter_frequency": 17,
 }
+FIFTH_RETAINED_SPEECH_CELL_DEFAULT = 2
 
 # BS.ASM::DOPITCH recognizes the translator's low/normal/high marker bytes,
 # calculates INFL +/- 1Bh, then consults _VIFLAG before writing the new value.
@@ -451,6 +452,19 @@ def find_voice_inflection_flag(firmware: bytes) -> int | None:
     if logical < _LOWEST_RAM_ADDRESS:
         return None
     return logical + (_COMMON_AREA_CBR << 12)
+
+
+def find_fifth_retained_speech_cell(firmware: bytes) -> int | None:
+    """Locate the fifth retained speech cell relative to `_VIFLAG`.
+
+    Both supported BSP revisions place this otherwise unnamed retained byte
+    two cells after the voice-inflection flag. A reset initializes it to 2,
+    while an ordinary boot leaves it untouched.
+    """
+    voice_inflection_flag = find_voice_inflection_flag(firmware)
+    if voice_inflection_flag is None:
+        return None
+    return voice_inflection_flag + 2
 
 
 # ISSET writes each setting as `LD A,(param)` ... `OUT (reg),A`, so the
