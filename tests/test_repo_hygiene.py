@@ -31,9 +31,7 @@ REPRESENTATIVE_LOCAL_ARTIFACTS = {
 }
 HISTORICAL_LEGACY_RECORD = Path("notes-software-bns.md")
 HISTORICAL_LEGACY_BOUNDARY = "<!-- issue-27-historical-legacy-boundary -->"
-HISTORICAL_LEGACY_PREFIX_SHA256 = (
-    "d61c6c95910bd95bf1170364e9a16f950e5ddf901f99119d577ad6936f512001"
-)
+HISTORICAL_LEGACY_PREFIX_SHA256 = "d61c6c95910bd95bf1170364e9a16f950e5ddf901f99119d577ad6936f512001"
 RETIRED_CURRENT_POINTERS = {
     "build_ffi",
     "cffi_available",
@@ -54,9 +52,7 @@ def _git_paths(*args: str) -> set[Path]:
 
 def _assert_no_retired_pointers(documents: dict[Path, str]) -> None:
     violations = {
-        path: sorted(
-            pointer for pointer in RETIRED_CURRENT_POINTERS if pointer in text.casefold()
-        )
+        path: sorted(pointer for pointer in RETIRED_CURRENT_POINTERS if pointer in text.casefold())
         for path, text in documents.items()
         if any(pointer in text.casefold() for pointer in RETIRED_CURRENT_POINTERS)
     }
