@@ -15,7 +15,7 @@ import numpy as np
 from ..ssi263 import SSI263State, playback_length_samples
 from .lpc import SAMPLE_RATE, LPCStream, warm_analysis_cache
 from .player import AudioPlayer
-from .timing import fit_audio_to_elapsed
+from .timing import conform_audio_to_length, fit_audio_to_elapsed
 
 
 class SSI263LPCSynth:
@@ -100,16 +100,15 @@ class SSI263LPCSynth:
         This is stateful by design: calling it advances the filter history
         and pitch phase, which is exactly what removes the boundary.
         """
+        sample_count = playback_length_samples(phoneme, duration, rate)
         if phoneme & 0x3F == 0:
             # Preserve LPC continuity while representing the modeled pause;
             # end_phoneme will truncate this to the time that actually passed.
-            return np.zeros(
-                playback_length_samples(phoneme, duration, rate),
-                dtype=np.float32,
-            )
+            samples = np.zeros(sample_count, dtype=np.float32)
+        else:
+            samples = self._stream.render(phoneme & 0x3F, sample_count, amplitude)
 
-        samples = playback_length_samples(phoneme, duration, rate)
-        return self._stream.render(phoneme & 0x3F, samples, amplitude)
+        return conform_audio_to_length(samples, sample_count)
 
     def get_elapsed_phoneme_audio(
         self,

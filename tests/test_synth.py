@@ -292,6 +292,64 @@ def test_audio_player_produces_sound():
 # =============================================================================
 
 
+@pytest.mark.parametrize(
+    "backend_type",
+    [
+        pytest.param("pcm", id="pcm"),
+        pytest.param("lpc", id="lpc"),
+        pytest.param("formant", id="formant"),
+    ],
+)
+@pytest.mark.parametrize("phoneme", range(64))
+@pytest.mark.parametrize("duration", range(4))
+@pytest.mark.parametrize("rate", [0, 4, 8, 12, 15])
+def test_synth_backends_match_the_chip_duration_contract(
+    backend_type,
+    phoneme,
+    duration,
+    rate,
+):
+    """Every backend must fill exactly the time scheduled by the chip."""
+    from qns.ssi263 import playback_length_samples
+    from qns.synth import SSI263LPCSynth, SSI263PCMSynth, SSI263Synth
+
+    backend_class = {
+        "pcm": SSI263PCMSynth,
+        "lpc": SSI263LPCSynth,
+        "formant": SSI263Synth,
+    }[backend_type]
+    synth = backend_class(audio_enabled=False)
+
+    samples = synth.get_phoneme_audio(
+        phoneme,
+        amplitude=15,
+        duration=duration,
+        rate=rate,
+    )
+
+    assert len(samples) == playback_length_samples(phoneme, duration, rate)
+
+
+def test_formant_duration_conformance_preserves_rms():
+    """Lengthening formant audio must not fill the extra time with silence."""
+    from qns.synth import SSI263Synth
+
+    phoneme = 0x30
+    raw = np.sin(np.linspace(0.0, 20 * np.pi, 1_400)).astype(np.float32)
+    synth = SSI263Synth(audio_enabled=False)
+    synth._formant.synthesize_phoneme = lambda **_kwargs: raw.copy()
+    conformed = synth.get_phoneme_audio(
+        phoneme,
+        duration=0,
+        rate=8,
+    )
+
+    assert len(conformed) > len(raw)
+    raw_rms = float(np.sqrt(np.mean(raw.astype(np.float64) ** 2)))
+    conformed_rms = float(np.sqrt(np.mean(conformed.astype(np.float64) ** 2)))
+    assert 0.8 <= conformed_rms / raw_rms <= 1.2
+
+
 def test_synth_get_phoneme_audio():
     """get_phoneme_audio returns synthesized samples."""
     from qns.synth import SSI263Synth
