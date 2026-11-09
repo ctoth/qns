@@ -58,7 +58,8 @@ REAL_BSP_REVISIONS = (
     ("nfb99", Path("bspeng.bns"), 0x41A00),
     ("2003", Path("bns640/BSPENG.BNS"), 0x41A04),
 )
-DEFAULT_FILTER_FREQUENCY_TRACE = (0xFF,) * 3 + (0xF1,) * 113
+# ISSET writes PITCH | 0xE0 to R4: the factory filter setting 7 is 0xE7.
+DEFAULT_FILTER_FREQUENCY_TRACE = (0xFF,) * 3 + (0xE7,) * 113
 
 
 def _scripted_bs2_gauge_command(command: int) -> bytes:

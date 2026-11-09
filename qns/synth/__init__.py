@@ -5,12 +5,14 @@ its ``SpeechBackend`` protocol and produce the actual audio.
 """
 
 from .formant import FormantSynth
+from .ssi263_chip import SSI263ChipSynth
 from .ssi263_lpc import SSI263LPCSynth
 from .ssi263_pcm import SSI263PCMSynth
 from .ssi263_synth import SSI263Synth
 
 __all__ = [
     "FormantSynth",
+    "SSI263ChipSynth",
     "SSI263LPCSynth",
     "SSI263PCMSynth",
     "SSI263Synth",

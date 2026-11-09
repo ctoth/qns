@@ -8,6 +8,9 @@ dependencies = [
     "numpy>=1.26.0",
     "sounddevice>=0.4.6",
     "click>=8.0.0",
+    # Register-level SSI-263 engine for --audio chip.  Wheels exist only for
+    # these platforms; the backend reports a clear error elsewhere.
+    "ssi263speech==0.9.1; (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64'))",
 ]
 
 [build-system]
@@ -18,6 +21,11 @@ build-backend = "hatchling.build"
 packages = ["qns"]
 
 [tool.uv.sources]
+ssi263speech = [
+    { url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-win_amd64.whl", marker = "sys_platform == 'win32'" },
+    { url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-linux_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+    { url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-linux_aarch64.whl", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+]
 z180 = { git = "https://github.com/ctoth/z-core", rev = "f144ef8bb7c91a648c5a0a96a79dfb6b286941f9", subdirectory = "crates/z180-py" }
 
 [tool.pytest.ini_options]

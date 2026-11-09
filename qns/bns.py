@@ -59,16 +59,18 @@ from .stdio import (
     WatchPCInput,
     parse_input_event,
 )
-from .synth import SSI263LPCSynth, SSI263PCMSynth, SSI263Synth
+from .synth import SSI263ChipSynth, SSI263LPCSynth, SSI263PCMSynth, SSI263Synth
 
 # Selectable audio backends, in the order they became usable.  Each trades
 # differently: pcm has the chip's timbre but replays isolated captures, lpc
 # resynthesizes those captures through one continuous filter, and formant
 # models the SC-01 - a different chip - but is continuous by construction.
+# chip is a register-level SSI-263 model (ssi263speech) fed the raw writes.
 SYNTH_BACKENDS = {
     "pcm": SSI263PCMSynth,
     "lpc": SSI263LPCSynth,
     "formant": SSI263Synth,
+    "chip": SSI263ChipSynth,
 }
 
 
@@ -275,6 +277,7 @@ class BNS:
         audio: bool = False,
         synth_backend: str = "pcm",
         audio_log: Path | str | None = None,
+        audio_wav: Path | str | None = None,
         model: str = "bsp",
         core: str = "direct",
         trace_io: bool = False,
@@ -302,6 +305,7 @@ class BNS:
             audio: Enable audio output for SSI-263 speech
             synth_backend: Audio backend: pcm, lpc, or formant
             audio_log: Live PCM producer/callback CSV path
+            audio_wav: Also write every rendered sample to this WAV (chip backend)
             model: Hardware profile: bsp, bs2, bsl, bl2, bl4, or tns
             core: z-core API path: compat or direct
             trace_io: Log all I/O port reads/writes
@@ -454,13 +458,20 @@ class BNS:
             raise ValueError(f"Unsupported synth backend: {synth_backend}")
         if audio_log is not None and synth_backend != "pcm":
             raise ValueError("audio_log requires the pcm synth backend")
+        if audio_wav is not None and synth_backend != "chip":
+            raise ValueError("audio_wav requires the chip synth backend")
         self.synth = None
-        if audio:
+        if synth_backend == "chip" and (audio or audio_wav is not None):
+            self.synth = SSI263ChipSynth(
+                audio_enabled=audio, realtime=realtime, clock=clock, wav_path=audio_wav
+            )
+        elif audio:
             self.synth = (
                 SSI263PCMSynth(audio_log=audio_log, realtime=realtime)
                 if synth_backend == "pcm"
                 else SYNTH_BACKENDS[synth_backend](realtime=realtime)
             )
+        if self.synth is not None:
             self.ssi263.set_synth(self.synth)
 
         self._setup_io()

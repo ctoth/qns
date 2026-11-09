@@ -107,8 +107,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Enable SSI-263 audio output, optionally naming the backend: "
             "pcm (AppleWin captures, the chip's timbre but one isolated "
             "recording per phoneme), lpc (those captures resynthesized "
-            "through one continuous filter), or formant (SC-01 model, "
-            f"continuous but a different chip).  Default: {DEFAULT_SYNTH_BACKEND}"
+            "through one continuous filter), formant (SC-01 model, "
+            "continuous but a different chip), or chip (register-level "
+            "SSI-263 model driven by the firmware's own writes).  "
+            f"Default: {DEFAULT_SYNTH_BACKEND}"
         ),
     )
     parser.add_argument(
@@ -116,6 +118,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="FILE",
         help=("Write live PCM producer and sound-callback timing to CSV; requires --audio pcm"),
+    )
+    parser.add_argument(
+        "--audio-wav",
+        type=Path,
+        metavar="FILE",
+        help=(
+            "Write the chip backend's audio to a WAV as emulated time passes. "
+            "Without --audio it renders silently and runs at full speed"
+        ),
     )
     parser.add_argument(
         "--synth",
@@ -274,22 +285,22 @@ def build_parser() -> argparse.ArgumentParser:
         "the midpoint of each range documented in BSAPI.H.",
     )
     speech.add_argument(
-        "--volume", type=_bounded_int(0, 15), metavar="0-15", help="Speech amplitude (default 8)"
+        "--volume", type=_bounded_int(0, 15), metavar="0-15", help="Speech amplitude (default 6)"
     )
     speech.add_argument(
-        "--rate", type=_bounded_int(1, 16), metavar="1-16", help="Speaking rate (default 9)"
+        "--rate", type=_bounded_int(1, 16), metavar="1-16", help="Speaking rate (default 11)"
     )
     speech.add_argument(
         "--pitch",
         type=_bounded_int(1, 32),
         metavar="1-32",
-        help='Filter frequency; the API\'s "Pitch" (default 17)',
+        help='Filter frequency; the API\'s "Pitch" (default 7)',
     )
     speech.add_argument(
         "--frequency",
         type=_bounded_int(0, 255),
         metavar="0-255",
-        help='Inflection; the API\'s "Frequency" (default 128)',
+        help='Inflection; the API\'s "Frequency" (default 69)',
     )
     return parser
 
@@ -464,13 +475,18 @@ def main(argv: list[str] | None = None) -> None:
     audio_enabled = args.audio is not None
     if args.audio_log is not None and args.audio != "pcm":
         parser.error("--audio-log requires --audio pcm")
+    if args.audio_wav is not None and args.audio not in (None, "chip"):
+        parser.error("--audio-wav requires the chip backend")
     realtime = args.realtime if args.realtime is not None else audio_enabled
 
     with output_context:
         bns = BNS(
             audio=audio_enabled,
-            synth_backend=args.audio or DEFAULT_SYNTH_BACKEND,
+            synth_backend=(
+                "chip" if args.audio_wav is not None else args.audio or DEFAULT_SYNTH_BACKEND
+            ),
             audio_log=args.audio_log,
+            audio_wav=args.audio_wav,
             model=args.model,
             core=args.core,
             trace_io=args.trace_io,

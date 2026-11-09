@@ -53,11 +53,13 @@ def test_pcm_backend_uses_captured_ssi263_samples() -> None:
     actual = synth.get_phoneme_audio(2, amplitude=15)
     expected = get_phoneme_samples(0).astype(np.float32) / 32768.0
 
-    np.testing.assert_array_equal(actual, expected)
-    np.testing.assert_array_equal(
-        synth.get_phoneme_audio(1, amplitude=15),
-        expected,
-    )
+    # The data sheet's phoneme duration is longer than the AppleWin
+    # recording, so the backend repeats pitch periods from its middle: the
+    # capture's onset still plays sample for sample.
+    assert len(actual) == playback_length_samples(2, duration=0) > len(expected)
+    onset = len(expected) // 4
+    np.testing.assert_array_equal(actual[:onset], expected[:onset])
+    np.testing.assert_array_equal(synth.get_phoneme_audio(1, amplitude=15), actual)
 
 
 def test_pcm_backend_honors_zero_amplitude() -> None:

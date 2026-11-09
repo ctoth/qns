@@ -443,7 +443,9 @@ def test_formant_duration_conformance_bounds_actual_waveform_seams():
                 assert 0.8 <= conformed_rms / raw_rms <= 1.2, (
                     f"phoneme={phoneme}, duration={duration}, rate={rate}"
                 )
-    assert stretched_cases == 508
+    # Every case the data-sheet durations stretch (they are rate- and
+    # duration-dependent, not per-phoneme).
+    assert stretched_cases == 574
 
 
 def test_audio_conformance_crossfades_short_tails_without_new_jumps():
