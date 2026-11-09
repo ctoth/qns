@@ -1,6 +1,12 @@
 version = 1
 revision = 3
 requires-python = ">=3.11"
+resolution-markers = [
+    "platform_machine == 'AMD64' and sys_platform == 'win32'",
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux') or (platform_machine != 'AMD64' and sys_platform == 'win32') or (sys_platform != 'linux' and sys_platform != 'win32')",
+]
 
 [[package]]
 name = "cffi"
@@ -314,6 +320,9 @@ dependencies = [
     { name = "click" },
     { name = "numpy" },
     { name = "sounddevice" },
+    { name = "ssi263speech", version = "0.9.1", source = { url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-linux_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
+    { name = "ssi263speech", version = "0.9.1", source = { url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "ssi263speech", version = "0.9.1", source = { url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-win_amd64.whl" }, marker = "platform_machine == 'AMD64' and sys_platform == 'win32'" },
     { name = "z180" },
 ]
 
@@ -330,6 +339,9 @@ requires-dist = [
     { name = "click", specifier = ">=8.0.0" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "sounddevice", specifier = ">=0.4.6" },
+    { name = "ssi263speech", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'", url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-linux_aarch64.whl" },
+    { name = "ssi263speech", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-linux_x86_64.whl" },
+    { name = "ssi263speech", marker = "platform_machine == 'AMD64' and sys_platform == 'win32'", url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-win_amd64.whl" },
     { name = "z180", git = "https://github.com/ctoth/z-core?subdirectory=crates%2Fz180-py&rev=f144ef8bb7c91a648c5a0a96a79dfb6b286941f9" },
 ]
 
@@ -389,6 +401,39 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2f/39/714118f8413e0e353436914f2b976665161f1be2b6483ac15a8f61484c14/sounddevice-0.5.3-py3-none-macosx_10_6_x86_64.macosx_10_6_universal2.whl", hash = "sha256:278dc4451fff70934a176df048b77d80d7ce1623a6ec9db8b34b806f3112f9c2", size = 108306, upload-time = "2025-10-19T13:23:53.277Z" },
     { url = "https://files.pythonhosted.org/packages/f5/74/52186e3e5c833d00273f7949a9383adff93692c6e02406bf359cb4d3e921/sounddevice-0.5.3-py3-none-win32.whl", hash = "sha256:845d6927bcf14e84be5292a61ab3359cf8e6b9145819ec6f3ac2619ff089a69c", size = 312882, upload-time = "2025-10-19T13:23:54.829Z" },
     { url = "https://files.pythonhosted.org/packages/66/c7/16123d054aef6d445176c9122bfbe73c11087589b2413cab22aff5a7839a/sounddevice-0.5.3-py3-none-win_amd64.whl", hash = "sha256:f55ad20082efc2bdec06928e974fbcae07bc6c405409ae1334cefe7d377eb687", size = 364025, upload-time = "2025-10-19T13:23:56.362Z" },
+]
+
+[[package]]
+name = "ssi263speech"
+version = "0.9.1"
+source = { url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-linux_aarch64.whl" }
+resolution-markers = [
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
+wheels = [
+    { url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-linux_aarch64.whl", hash = "sha256:c6a694003f147c77f9ca15489b8dea34537f68b39604a55beb878eec2febc265" },
+]
+
+[[package]]
+name = "ssi263speech"
+version = "0.9.1"
+source = { url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-linux_x86_64.whl" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+wheels = [
+    { url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-linux_x86_64.whl", hash = "sha256:af3d83102233def728a18f80b3e438b0d2dd3d8ef4863ce9f41e23df2e3966f1" },
+]
+
+[[package]]
+name = "ssi263speech"
+version = "0.9.1"
+source = { url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-win_amd64.whl" }
+resolution-markers = [
+    "platform_machine == 'AMD64' and sys_platform == 'win32'",
+]
+wheels = [
+    { url = "https://github.com/tgeczy/ssi263-speech/releases/download/v0.9.1/ssi263speech-0.9.1-py3-none-win_amd64.whl", hash = "sha256:16a57f445c174562b73fab14765791367c47e2a34e629951c11fcd9236e88c81" },
 ]
 
 [[package]]

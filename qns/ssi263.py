@@ -100,59 +100,46 @@ _MODE_PHONEME_IMMEDIATE = 2
 _MODE_FRAME_IMMEDIATE = 1
 _MODE_IRQ_DISABLED = 0
 
-# The phoneme waveform table is the model for how long a phoneme lasts.
-# Imported lazily: qns.synth imports back from this module.
 _PHONEME_SAMPLE_RATE = 22050
-_CAPTURE_RATE = 8
-_phoneme_lengths: tuple[int, ...] | None = None
+_DEFAULT_RATE = 8
+
+# SSI-263 master clock (XCK).  The data sheet allows 800-1000 kHz (or twice
+# that with DIV2); 1 MHz is measured on Blazie hardware, from the pitch of a
+# real Braille Lite against F0 = XCK / (8 (4096 - I)) to +-3 cents (tgeczy/
+# ssi263-speech docs/measurements.md).  1.024 MHz would be 41 cents sharp.
+# No BNS has been measured; it is assumed to share the Braille Lite's clock.
+SSI263_XCK_HZ = 1_000_000
+
+# SSI-263A data sheet, "Speech Rate": frame = 4096 (16 - R) / XCK.
+_FRAME_XCK_CYCLES = 4096
 
 
-def _phoneme_length_samples(phoneme: int) -> int:
-    """Waveform length of one phoneme, in samples at _PHONEME_SAMPLE_RATE."""
-    global _phoneme_lengths
-    if _phoneme_lengths is None:
-        from .synth.phonemes import PHONEME_INFO
+def phoneme_xck_cycles(duration: int, rate: int) -> int:
+    """XCK cycles one phoneme lasts, per the SSI-263A data sheet.
 
-        _phoneme_lengths = tuple(length for _, length in PHONEME_INFO)
-
-    code = phoneme & 0x3F
-    if code == 0:
-        # Pause has no capture; AppleWin uses the first phoneme's length.
-        return _phoneme_lengths[0] if _phoneme_lengths else 0
-    if code == 1:
-        code = 2
-    index = code - 2
-    if 0 <= index < len(_phoneme_lengths):
-        return _phoneme_lengths[index]
-    return 0
+    Phoneme duration = frame x (4 - D), frame = 4096 (16 - R) / XCK.  It
+    depends only on the rate and duration bits: every phoneme code lasts the
+    same time, so the firmware's choice of DR bits is what makes a vowel long.
+    Frame timing mode plays every phoneme for one frame, which callers express
+    by passing ``duration=3`` (see :attr:`SSI263.playback_duration`).
+    """
+    return _FRAME_XCK_CYCLES * (16 - (rate & 0x0F)) * (4 - (duration & 0x03))
 
 
 def playback_length_samples(
     phoneme: int,
     duration: int,
-    rate: int = _CAPTURE_RATE,
+    rate: int = _DEFAULT_RATE,
 ) -> int:
-    """How many samples one phoneme plays for under rate and duration.
+    """How many samples at 22050 Hz one phoneme plays for.
 
-    The duration mode decimates the waveform (1, 4/3, 2 or 4), which is what
-    combines with the 4-bit rate control to decide both when the chip reports
-    the phoneme complete and how much audio a backend has to produce to fill
-    that time.  The fixed captures have no recorded register settings, so
-    rate 8 is their neutral playback point; the chip's documented linear
-    ``16 - rate`` timing scale changes their length around that point.
+    This is the data sheet's phoneme duration (:func:`phoneme_xck_cycles`),
+    the same span the chip waits before raising A/R, so a backend fills
+    exactly the time the firmware is held.  ``phoneme`` is accepted for the
+    backends' convenience; the duration does not depend on it.
     """
-    samples = _phoneme_length_samples(phoneme)
-    if samples <= 0:
-        return 0
-    if duration == 1:
-        samples = (samples * 3) // 4
-    elif duration == 2:
-        samples //= 2
-    elif duration == 3:
-        samples //= 4
-
-    rate = rate & 0x0F
-    return max(1, (samples * (16 - rate)) // (16 - _CAPTURE_RATE))
+    del phoneme
+    return round(phoneme_xck_cycles(duration, rate) * _PHONEME_SAMPLE_RATE / SSI263_XCK_HZ)
 
 
 @dataclass(frozen=True)
@@ -228,6 +215,22 @@ class SpeechBackend(Protocol):
         """Return bounded run-ahead needed to keep host audio continuous."""
 
 
+class RegisterBackend(Protocol):
+    """A backend that models the chip itself and wants its raw bus writes.
+
+    Register-level chip models render audio from register values and time,
+    not from decoded phoneme events.  :class:`SSI263` still owns A/R and INT1;
+    these hooks only hand the model each write at its exact CPU cycle and let
+    it render the time in between.
+    """
+
+    def write_register(self, register: int, value: int, cycle: int) -> None:
+        """Apply one bus write (RS2..RS0 = register) at an exact CPU cycle."""
+
+    def advance_to(self, cycle: int) -> None:
+        """Render emulated time up to ``cycle`` with no new write."""
+
+
 class SSI263:
     """SSI-263 speech synthesizer chip emulator.
 
@@ -296,6 +299,7 @@ class SSI263:
         # Callbacks
         self._on_phoneme: Callable[[int, str], None] | None = None
         self._synth: SpeechBackend | None = None
+        self._register_backend: RegisterBackend | None = None
         self._irq_callback: Callable[[int], None] | None = None  # INT1 signal
 
     @property
@@ -339,8 +343,15 @@ class SSI263:
         return self._pending_irq_cycle
 
     def set_synth(self, synth: SpeechBackend | None) -> None:
-        """Connect an audio backend that receives decoded phoneme events."""
+        """Connect an audio backend that receives decoded phoneme events.
+
+        A backend that also has ``write_register`` receives every raw bus
+        write at its exact cycle (see :class:`RegisterBackend`).
+        """
         self._synth = synth
+        self._register_backend = (
+            synth if synth is not None and hasattr(synth, "write_register") else None
+        )
 
     def set_phoneme_callback(self, callback: Callable[[int, str], None]) -> None:
         """Set callback for phoneme events.
@@ -381,6 +392,8 @@ class SSI263:
             )
 
         self._current_cycle = cycle
+        if self._register_backend is not None:
+            self._register_backend.write_register(port - self.base_port, value, cycle)
         if timing.phoneme_end is not None:
             self._finish_deferred_phoneme(timing.phoneme_end, cycle)
         generation = timing.phoneme_generation
@@ -406,28 +419,16 @@ class SSI263:
         return self._current_cycle
 
     def _calc_phoneme_duration_cycles(self) -> int:
-        """Calculate phoneme duration in CPU cycles.
+        """Phoneme duration in CPU cycles, from the SSI-263A data sheet.
 
-        A phoneme lasts as long as it takes to play out, which is the length
-        of the phoneme's waveform divided by the decimation the duration mode
-        selects (1, 4/3, 2 or 4).  This is how AppleWin's SSI263 completes a
-        phoneme: it decrements m_phonemeLengthRemaining per output sample and
-        signals completion when it reaches zero.
-
-        Note the formula in AppleWin's SSI_Output() - (((16-rate)*4096)/1023)
-        * (4-dur) - is not this: it lives inside a LOG_SSI263B debug logger
-        and only estimates a duration for a log line.  Using it here gave
-        256 ms phonemes, roughly four times too long.
+        frame = 4096 (16 - R) / XCK and phoneme = frame (4 - D), counted from
+        the R0 load.  Earlier QNS used the AppleWin capture lengths here,
+        which made vowels ~8% and stops ~3x shorter than the chip holds them.
+        (AppleWin's ``(((16-rate)*4096)/1023) * (4-dur)`` log line is the
+        same formula with a 1.023 MHz Apple II clock, in milliseconds.)
         """
-        samples = playback_length_samples(
-            self.phoneme,
-            self.playback_duration,
-            self.rate,
-        )
-        if samples <= 0:
-            return 0
-
-        return int(samples * self._clock / _PHONEME_SAMPLE_RATE)
+        xck_cycles = phoneme_xck_cycles(self.playback_duration, self.rate)
+        return round(xck_cycles * self._clock / SSI263_XCK_HZ)
 
     def check_pending_irq(self, current_cycle: int) -> None:
         """Complete a scheduled phoneme once its cycle is reached.
@@ -436,6 +437,8 @@ class SSI263:
         when interrupts are disabled; INT1 is only asserted when the latched
         mode enables them.
         """
+        if self._register_backend is not None:
+            self._register_backend.advance_to(current_cycle)
         if self._pending_irq_cycle is not None and current_cycle >= self._pending_irq_cycle:
             self._end_active_phoneme(self._pending_irq_cycle)
             self._pending_irq_cycle = None
@@ -520,6 +523,9 @@ class SSI263:
                 self.filter_freq = value & 0xFF
         finally:
             self._defer_current_write = False
+
+        if not deferred and self._register_backend is not None:
+            self._register_backend.write_register(reg, value, self._current_cycle)
 
         if deferred:
             generation = (

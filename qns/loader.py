@@ -363,21 +363,27 @@ class SpeechParameters:
     """`PITCH` -> filter-frequency register (C4).  API name: "Pitch"."""
 
 
-# The midpoint of each setting's documented range.  `BSAPI.H` and
-# `BNSAPI.H` both specify them, agreeing exactly:
+# The firmware's own factory values, the ones its warm reset restores.
+# Nothing in the firmware records what a unit shipped with - the values in
+# BSSPEECH.ASM::ISINIT are unreachable dead code - and a real unit keeps its
+# owner's settings on battery.  These were the midpoints of each documented
+# range (`BSAPI.H`/`BNSAPI.H`: Volume 0..15, Pitch 1..32, Rate 1..16,
+# Frequency 0..255, where the API's "Pitch" is the filter-frequency cell and
+# its "Frequency" the inflection cell) until a real BNS 2000 recording
+# measured otherwise:
 #
-#     Volume 0..15   Pitch 1..32   Rate 1..16   Frequency 0..255
-#
-# where the API's "Pitch" is the filter-frequency cell and its
-# "Frequency" is the inflection cell (see SpeechParameters).  Nothing in
-# the firmware records what a unit actually shipped with - the values in
-# BSSPEECH.ASM::ISINIT are unreachable dead code - so the midpoint is a
-# deliberate neutral choice, not a recovered default.
+#   inflection 69   F0 81.4 Hz, as recorded (128 gave 122 Hz)
+#   rate 11         the recorded greeting's rhythm matches rate 11 (envelope
+#                   correlation 0.80; rates 9, 10, 12, 13 score <= 0.20)
+#   filter 7        FF 0xE7, a 20 kHz vocal-tract clock, the data sheet's
+#                   "about 20 kHz"; 17 gave 33 kHz and formants 1.65x high
+#   volume 6        factory value; a speaker-and-microphone recording cannot
+#                   measure it
 RETAINED_SPEECH_DEFAULTS = {
-    "volume": 8,
-    "rate": 9,
-    "inflection": 128,
-    "filter_frequency": 17,
+    "volume": 6,
+    "rate": 11,
+    "inflection": 69,
+    "filter_frequency": 7,
 }
 FIFTH_RETAINED_SPEECH_CELL_DEFAULT = 2
 

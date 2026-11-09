@@ -9,12 +9,15 @@ Emulator for the Blazie Engineering BNS (Braille 'N Speak) family of devices.
 **The firmware speaks, at real settings.** Its own text-to-speech emits correct
 phoneme codes ~0.23s into emulated boot ("Braille 'n Speak ready, help, one
 page"), and the SSI-263 now receives a real volume, rate, inflection and filter
-frequency. **`--audio` speaks live, in real time** - the greeting takes the
-3.6 s the hardware takes - and the device answers the keyboard.
+frequency. **`--audio` speaks live, in real time** - phonemes last the SSI-263A
+data sheet's time, and a real BNS 2000's greeting matches rate 11's rhythm and
+inflection 69's 81.4 Hz pitch - and the device answers the keyboard.
 
 ```bash
 uv run -m qns.bns --audio roms/bspeng.bns          # speaks, then type at it
-uv run -m qns.bns --audio lpc roms/bspeng.bns      # pcm (default), lpc, or formant
+uv run -m qns.bns --audio lpc roms/bspeng.bns      # pcm (default), lpc, formant, or chip
+uv run -m qns.bns --audio chip roms/bspeng.bns     # register-level SSI-263 model
+uv run -m qns.bns --cycles 26000000 --input none --audio-wav out.wav roms/bspeng.bns  # chip, offline
 uv run -m qns.bns --audio --input 6-key roms/bspeng.bns   # fdsjkl = dots 1-6
 ```
 
@@ -187,7 +190,7 @@ pause phonemes (0x00) during the boot sequence.
    - The image boundary is discovered from the package's own length/CRC
      metadata (0x3000 classic, 0x7000/0x8000 Millennium)
 
-3. **SSI-263 Synthesizer** - Three selectable audio backends (`--audio BACKEND`)
+3. **SSI-263 Synthesizer** - Four selectable audio backends (`--audio BACKEND`)
    - `pcm` (default): AppleWin phoneme captures
    - `lpc`: those same captures analysed into an all-pole filter plus
      excitation (`qns/synth/lpc.py`) and resynthesized through one
@@ -195,6 +198,18 @@ pause phonemes (0x00) during the boot sequence.
    - `formant`: SC-01 formant synthesis ported from MAME's Votrax,
      with the SC-02 to SC-01 mapping from the datasheet
      (see `docs/sc02-phoneme-mapping.md` and `datasheet.pdf`)
+   - `chip`: Tamas Geczy's register-level SSI-263 engine (`ssi263speech`
+     wheel, MIT, pinned 0.9.1, `qns/synth/ssi263_chip.py`) fed the
+     firmware's raw register writes at their exact cycles.  No recordings;
+     the phoneme ROM is read from the die.  Its `release_lookahead` is off:
+     it raised A/R 1.75 frames early before T/P/K, which is not data-sheet
+     behaviour.  `--audio-wav FILE` renders it offline at full speed
+   - **Phoneme timing is the SSI-263A data sheet's**: frame = 4096 (16 - R)
+     / XCK, phoneme = frame (4 - D), XCK = 1 MHz (measured on Braille Lite
+     pitch; no BNS measured).  Every code lasts the same time; the firmware's
+     DR bits make vowels long.  The old AppleWin capture lengths ran vowels
+     ~8% and stops ~3x short.  `tests/test_ssi263_chip.py` holds both QNS and
+     the engine's A/R to the formula
    - The chip (`qns/ssi263.py`) owns register decode and pushes decoded
      `SSI263State` snapshots to a backend via `set_synth()`
    - Backends produce modeled candidate audio. The SSI-263 calls
