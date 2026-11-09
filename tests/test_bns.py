@@ -23,6 +23,7 @@ from qns.bns import (
 )
 from qns.cli import build_parser, settle_audio_backend
 from qns.cli import main as bns_main
+from qns.clock import HD64180_PHI_HZ
 from qns.input_driver import (
     ASCII_TO_BNS_KEY,
     ChordInputDriver,
@@ -213,6 +214,64 @@ def test_bsp_cycle_clock_is_phi_not_the_crystal_input():
     assert bns.clock == HD64180_PHI_HZ
     assert bns.ssi263._clock == HD64180_PHI_HZ
     assert bns._chunk_cycles == HD64180_PHI_HZ // 1000
+
+
+@pytest.mark.parametrize("chunk_cycles", (HD64180_PHI_HZ // 1000, 1000))
+def test_speech_isr_loads_one_phoneme_per_ar_request(chunk_cycles):
+    """INT1 must drop when the firmware acknowledges A/R, not at budget end.
+
+    Device IRQ lines reach z-core only between core calls.  While INT1 stayed
+    asserted for the rest of a real-time budget, the speech ISR re-entered
+    and loaded four or five phonemes back to back, each cutting off the last:
+    live audio skipped most of the greeting.  Every distinct phoneme must
+    instead play for its whole data-sheet duration.
+    """
+    from qns.ssi263 import phoneme_xck_cycles
+
+    rom = ROM_ROOT / "bspeng.bns"
+    if not rom.exists():
+        pytest.skip(f"missing ROM {rom}")
+    bns = BNS()
+    bns._chunk_cycles = chunk_cycles
+    loads: list[tuple[int, int, int, int]] = []
+
+    class Recorder:
+        def write_register(self, register, value, cycle):
+            if register == 0 and not bns.ssi263.control:
+                loads.append((cycle, value & 0x3F, value >> 6, bns.ssi263.rate))
+
+        def advance_to(self, cycle):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def play(self, state):
+            pass
+
+        def end_phoneme(self, elapsed_samples):
+            pass
+
+        def realtime_lead_seconds(self):
+            return 0.0
+
+    bns.ssi263.set_synth(Recorder())
+    bns.load_rom(rom)
+    bns.run(max_cycles=20_000_000)
+
+    spoken = [load for load in loads if load[1]]
+    assert len(spoken) >= 25  # the greeting's 28
+    cut_short = []
+    for (cycle, code, duration, rate), (next_cycle, next_code, _, _) in zip(loads, loads[1:]):
+        if not code or next_code == code:
+            continue  # pauses, and ISSET's own reload of the same phoneme
+        due = phoneme_xck_cycles(duration, rate) * HD64180_PHI_HZ // 1_000_000
+        if next_cycle - cycle < due * 0.9:
+            cut_short.append((cycle, code, next_cycle - cycle, due))
+    assert cut_short == []
 
 
 def test_english_stdio_characters_use_firmware_keyboard_chords():

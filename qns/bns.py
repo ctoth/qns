@@ -1186,12 +1186,31 @@ class BNS:
                 actual += step_cycles
             return actual
 
+        # Device IRQ lines reach the core only between core calls, so a line a
+        # bus write drops mid-budget would stay asserted for the rest of it.
+        # For INT1 that is wrong in a way the firmware hears: its speech ISR
+        # acknowledges A/R by loading the next phoneme, and while INT1 still
+        # reads asserted it re-enters and loads the one after that too.  A
+        # 6144-cycle real-time budget fits four or five such loads, each
+        # cutting off the last.  INT1 is only raised between budgets
+        # (check_pending_irq), so step while it is up - a few hundred cycles
+        # of ISR per phoneme - and let the acknowledging write drop it at the
+        # next instruction boundary, as the chip's A/R line does.
+        actual = 0
+        while actual < cycles and (self._pending_irq_states[1] or self._applied_irq_states[1]):
+            step_cycles = self._execute_instruction()
+            if step_cycles == 0:
+                return actual
+            actual += step_cycles
+        if actual >= cycles:
+            return actual
+
         self._apply_pending_irqs()
         self._pump_serial_inputs()
         self._callback_cycle = self.cpu.cycle_count()
         self.ssi263.set_cycle_count(self._callback_cycle)
         self._callback_pc = self.cpu.reg(Reg.PC)
-        actual = self.cpu.run(cycles)
+        actual += self.cpu.run(cycles - actual)
         self._finish_execution()
         return actual
 
@@ -1490,6 +1509,11 @@ class BNS:
                         )
 
                 chunk_size = self._chunk_cycles
+                # End the budget where the active phoneme does, so INT1 rises
+                # on time rather than up to a whole budget late.
+                irq_cycle = self.ssi263.pending_irq_cycle
+                if irq_cycle is not None:
+                    chunk_size = max(1, min(chunk_size, irq_cycle - self._executed_cycles()))
                 chunk = (
                     chunk_size if max_cycles == 0 else min(chunk_size, max_cycles - budget_cycles)
                 )
